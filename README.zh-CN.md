@@ -74,7 +74,7 @@ pretty URL 三形态（尾斜杠、无扩展名、`/title/X`）全部处理；se
 
 `ask` 采用**按块嵌入选段**而非截正文开头：同一语料同一问题，修前"信息不足"，修后给出带引用的完整答案（答案段落原本落在长 FAQ 页中部，被截断丢掉了）。
 
-已知限制：纯客户端渲染、无 SSR HTML 的 SPA 仍需 Crawl4AI 后端（路线图），内建爬虫读服务端渲染标记。
+纯客户端渲染的 SPA：抓回来是空框架壳的页面会被识别（空的 `#app`/`#root` 根节点，或可见文本近零且无内链），再用 headless Chromium（Playwright）补渲染。静态抓取永远先跑，只有壳页才付浏览器开销。已用本地 CSR 对照件验证：BFS 能发现 JS 注入的链接、图谱达 READY、渲染后的正文进入语料。
 
 ## 部署
 
@@ -93,7 +93,7 @@ WantedBy=default.target
 ## 路线图
 
 - 语义增强（可选）：配置 `LLM_API_KEY` 后用 cognee `cognify` 在结构边之上叠加实体/关系边。
-- JS 渲染站点走 Crawl4AI 深爬后端（依赖已是可选的 `.[crawl]`）。
+- 壳页兜底失效的 JS 站点（无限滚动、重反爬）走 Crawl4AI 深爬，经 `.[crawl]` extra 启用。
 - 复用 [an earlier internal prototype](https://github.com/CallMeHFK/an earlier internal prototype) 的静态图谱可视化。
 
 ## 许可

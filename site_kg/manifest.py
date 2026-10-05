@@ -112,9 +112,9 @@ async def from_doxygen_navtree(client: httpx.AsyncClient, base: str) -> list[str
 
 
 async def bfs(client: httpx.AsyncClient, base: str, max_pages: int, max_depth: int) -> list[str]:
-    """Same-site BFS over <a href>. For JS shells this under-discovers; the CLI
-    warns and suggests installing the crawl extra (Crawl4AI)."""
-    from bs4 import BeautifulSoup
+    """Same-site BFS over <a href>. Pages that fetch as client-side shells are
+    re-rendered headlessly so their links are discoverable."""
+    from .render import internal_links, is_js_shell, render_urls, ambient_proxy
 
     seen, queue, out = {base}, [(base, 0)], []
     while queue and len(out) < max_pages:
@@ -125,15 +125,15 @@ async def bfs(client: httpx.AsyncClient, base: str, max_pages: int, max_depth: i
             continue
         if r.status_code != 200 or "text/html" not in r.headers.get("content-type", ""):
             continue
+        html = r.text
+        if is_js_shell(html):
+            rendered = await render_urls([url], proxy=ambient_proxy(url))
+            html = rendered.get(url, html)
         out.append(url)
         if depth >= max_depth:
             continue
-        soup = BeautifulSoup(r.text, "html.parser")
-        for a in soup.select("a[href]"):
-            u = urljoin(url, a["href"].split("#")[0])
-            if not u or CONTENT_RE.search(urlparse(u).path):
-                continue
-            if u not in seen and same_site(base, u):
+        for u in internal_links(html, url, base):
+            if u not in seen:
                 seen.add(u)
                 queue.append((u, depth + 1))
     return sorted(out)

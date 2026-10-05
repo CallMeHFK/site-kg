@@ -76,7 +76,7 @@ Every pretty-URL shape is handled (trailing slash, extension-less, `/title/X`); 
 
 `ask` uses block-level embedding selection, not head truncation: the same question on the same corpus went from "insufficient information" to a fully cited answer after that fix (the answer paragraph sat mid-page in a long FAQ).
 
-Known limit: purely client-rendered SPAs with no SSR HTML still need the Crawl4AI backend (roadmap); the built-in crawler reads server-rendered markup.
+Client-rendered SPAs: pages that fetch as empty framework shells are detected (empty `#app`/`#root` root, or near-zero visible text and no internal links) and re-rendered with headless Chromium (Playwright). Static fetch always runs first — only shell pages pay for a browser. Verified with a local CSR fixture: BFS discovers the JS-injected links, the graph reaches READY, and the JS-rendered body lands in the corpus.
 
 ## Deployment
 
@@ -96,7 +96,7 @@ WantedBy=default.target
 ## Roadmap
 
 - Semantic enrichment (optional): cognee `cognify` over the crawled corpus when `LLM_API_KEY` is present — entity/relation edges alongside the structural ones.
-- Crawl4AI deep-crawl backend for JS-rendered sites (dependency already optional as `.[crawl]`).
+- Crawl4AI deep-crawl for JS sites that defeat the Playwright shell-fallback (infinite scroll, heavy anti-bot), via the `.[crawl]` extra.
 - Static graph visualization reuse from [an earlier internal prototype](https://github.com/CallMeHFK/an earlier internal prototype).
 
 ## License

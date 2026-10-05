@@ -82,7 +82,22 @@ async def fetch_pages(urls: list[str], base: str, concurrency: int = 4, delay: f
 
     async with httpx.AsyncClient(headers=UA, timeout=30) as client:
         await asyncio.gather(*(one(client, u) for u in urls))
+    # detection first, browser second: only shell pages pay for a JS render
+    shells = [u for u, h in out.items() if _is_shell(h)]
+    if shells:
+        from .render import render_urls, ambient_proxy, better_than_static
+        rendered = await render_urls(shells, proxy=ambient_proxy(base))
+        stats["js_rendered"] = 0
+        for u, h in rendered.items():
+            if better_than_static(h, out[u]):
+                out[u] = h
+                stats["js_rendered"] += 1
     return out, stats
+
+
+def _is_shell(html: str) -> bool:
+    from .render import is_js_shell
+    return is_js_shell(html)
 
 
 def _internal_links(soup: BeautifulSoup, page_url: str, base: str, own_id: str) -> list[str]:
