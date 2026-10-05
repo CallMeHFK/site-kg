@@ -68,6 +68,24 @@ async def from_sitemap(client: httpx.AsyncClient, base: str) -> list[str] | None
 CONTENT_RE = re.compile(r"\.(png|jpe?g|gif|svg|css|js|ico|pdf|zip|tar|woff2?)$", re.I)
 
 
+async def from_doxygen_navtree(client: httpx.AsyncClient, base: str) -> list[str] | None:
+    """Doxygen sites are JS shells: the page inventory lives in navtreeindex0.js
+    (URLMap keys). Anchors are stripped and files deduped to page level."""
+    urls, found = [], False
+    for n in range(0, 40):
+        name = "navtreeindex0.js" if n == 0 else f"navtreeindex{n}.js"
+        try:
+            r = await client.get(urljoin(base, name))
+        except Exception:
+            break
+        if r.status_code != 200:
+            break
+        found = True
+        for key in re.findall(r'"([^"#]+\.html)', r.text):
+            urls.append(urljoin(base, key))
+    return sorted(set(urls)) if found else None
+
+
 async def bfs(client: httpx.AsyncClient, base: str, max_pages: int, max_depth: int) -> list[str]:
     """Same-site BFS over <a href>. For JS shells this under-discovers; the CLI
     warns and suggests installing the crawl extra (Crawl4AI)."""
@@ -97,11 +115,14 @@ async def bfs(client: httpx.AsyncClient, base: str, max_pages: int, max_depth: i
 
 
 async def page_inventory(base: str, max_pages: int = 500, max_depth: int = 4) -> tuple[list[str], str]:
-    """Returns (urls, source) where source is objects_inv|sitemap|bfs."""
+    """Returns (urls, source) where source is objects_inv|navtree|sitemap|bfs."""
     async with httpx.AsyncClient(headers=UA, timeout=30, follow_redirects=True) as client:
         inv = await from_objects_inv(client, base)
         if inv:
             return inv[:max_pages], "objects_inv"
+        nav = await from_doxygen_navtree(client, base)
+        if nav:
+            return nav[:max_pages], "navtree"
         sm = await from_sitemap(client, base)
         if sm:
             return sm[:max_pages], "sitemap"

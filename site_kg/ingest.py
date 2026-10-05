@@ -14,11 +14,15 @@ import html2text
 
 from .manifest import UA, page_id, same_site
 
-MAIN_SELECTORS = ["div[role=main]", "main", "article", "div.document div.body", "div.body", "body"]
+MAIN_SELECTORS = ["div[role=main]", "main", "article", "div.document div.body", "div.body", "div.contents", "body"]
 LINK_RE = re.compile(r"\[[^\]]*\]\(([^)\s#]+\.html?)(#[^)\s]*)?\)", re.I)
 
 
 def _title(soup: BeautifulSoup, fallback: str) -> str:
+    # Doxygen puts the real page name in .headertitle .title; its h1/<title> are site boilerplate
+    dt = soup.select_one(".headertitle .title, div.headertitle div.title")
+    if dt and dt.get_text(strip=True):
+        return dt.get_text(" ", strip=True)
     h1 = soup.find("h1")
     if h1 and h1.get_text(strip=True):
         # Sphinx headerlinks render as a trailing "#"
