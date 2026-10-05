@@ -161,6 +161,8 @@ def serve(transport: str = "stdio", host: str = "127.0.0.1", port: int = 8766) -
     if transport == "http":
         mcp.settings.host = host
         mcp.settings.port = port
+        # stateless: clients holding a pre-restart session id must not 404
+        mcp.settings.stateless_http = True
         mcp.run(transport="streamable-http")
     else:
         mcp.run(transport="stdio")
