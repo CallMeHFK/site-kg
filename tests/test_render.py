@@ -74,3 +74,20 @@ def test_csr_spa_full_pipeline(tmp_path: Path):
     assert built["report"]["verdict"] == "READY"
     assert built["report"]["edges"] >= 2
     assert "flux capacitance" in built["docs"]["index"]["body"]
+
+
+def test_viewer_file_is_self_contained(tmp_path: Path):
+    import json
+
+    from site_kg.viewer import render_viewer
+    g = {"nodes": [{"i": "a", "c": "c1", "t": "A", "u": "http://x/a", "g": 1},
+                   {"i": "b", "c": "c2", "t": "B", "u": "http://x/b", "g": 0}],
+         "edges": [{"s": "a", "t": "b", "k": "ref"}]}
+    out = render_viewer(g, {"url": "http://x/", "docs": 2, "verdict": "READY"},
+                        tmp_path / "viewer.html")
+    s = out.read_text(encoding="utf-8")
+    assert "<canvas" in s and "const G = " in s
+    data = s.split("const G = ", 1)[1].split(";", 1)[0]
+    assert json.loads(data)["nodes"][0]["i"] == "a"
+    head = s.split("</head>", 1)[0]
+    assert "<script src" not in head and "<link" not in head  # no external resources

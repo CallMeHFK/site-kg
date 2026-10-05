@@ -53,6 +53,7 @@ MCP client config (streamable HTTP):
 | `search(site_id, query)` | idf-weighted full-text search |
 | `get_page(site_id, page_id)` | full markdown body + source URL |
 | `neighbors(site_id, page_id, depth)` | subgraph expansion (multi-hop context) |
+| `render_site(site_id)` | self-contained HTML graph viewer (human inspection) |
 
 Resource: `site://<site_id>/graph` — the full graph JSON.
 
@@ -108,7 +109,7 @@ WantedBy=default.target
 
 - Semantic enrichment (optional): cognee `cognify` over the crawled corpus when `LLM_API_KEY` is present — entity/relation edges alongside the structural ones.
 - Crawl4AI deep-crawl for JS sites that defeat the Playwright shell-fallback (infinite scroll, heavy anti-bot), via the `.[crawl]` extra.
-- Static graph visualization reuse from [an earlier internal prototype](https://github.com/CallMeHFK/an earlier internal prototype).
+- ~~Static graph visualization~~ done: `render_site` emits a zero-dependency canvas viewer per site.
 
 ## License
 

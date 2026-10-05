@@ -138,6 +138,21 @@ def neighbors(site_id: str, page_id: str, depth: int = 1) -> dict:
 
 
 @mcp.tool()
+def render_site(site_id: str) -> dict:
+    """Render the graph as a self-contained HTML viewer (human inspection path).
+    Returns the file path; AI-facing queries stay on search/ask/neighbors."""
+    try:
+        g = store.load(site_id, "graph")
+        meta = store.load(site_id, "meta")
+    except KeyError as e:
+        return {"ok": False, "error": str(e)}
+    from .viewer import render_viewer
+    out = store.site_dir(site_id) / "viewer.html"
+    render_viewer(g, meta, out)
+    return {"ok": True, "path": str(out), "pages": len(g["nodes"]), "edges": len(g["edges"])}
+
+
+@mcp.tool()
 def ask(site_id: str, question: str, top_k: int = 4) -> dict:
     """LLM Q&A grounded in the site's pages: keyword retrieval + graph-neighborhood
     expansion, then embedding rerank and a cited answer. Requires SITE_KG_LLM_BASE

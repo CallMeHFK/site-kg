@@ -20,6 +20,8 @@ def main() -> None:
     s.add_argument("--port", type=int, default=8766)
     t = sub.add_parser("stats")
     t.add_argument("site_id", nargs="?")
+    v = sub.add_parser("render")
+    v.add_argument("site_id")
     args = ap.parse_args()
 
     if args.cmd == "ingest":
@@ -30,6 +32,12 @@ def main() -> None:
     elif args.cmd == "serve":
         from .mcp_server import serve
         serve(args.transport, args.host, args.port)
+    elif args.cmd == "render":
+        from . import store
+        from .viewer import render_viewer
+        out = store.site_dir(args.site_id) / "viewer.html"
+        render_viewer(store.load(args.site_id, "graph"), store.load(args.site_id, "meta"), out)
+        print(out)
     else:
         from . import store
         if args.site_id:
