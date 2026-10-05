@@ -126,6 +126,30 @@ def neighbors(site_id: str, page_id: str, depth: int = 1) -> dict:
             "edges": es}
 
 
+@mcp.tool()
+def ask(site_id: str, question: str, top_k: int = 4) -> dict:
+    """LLM Q&A grounded in the site's pages: keyword retrieval + graph-neighborhood
+    expansion, then embedding rerank and a cited answer. Requires SITE_KG_LLM_BASE
+    and SITE_KG_LLM_KEY in the server environment."""
+    try:
+        from . import semantic
+        search = store.load(site_id, "search")
+        g = store.load(site_id, "graph")
+        docs = store.load(site_id, "docs")
+    except KeyError as e:
+        return {"ok": False, "error": str(e)}
+    except RuntimeError as e:
+        return {"ok": False, "error": str(e)}
+    from .graph import search_index
+    graph_ctx: list[str] = []
+    for pid in [h["id"] for h in search_index(search, question, limit=3)]:
+        graph_ctx += [n["id"] for n in neighbors(site_id, pid, depth=1).get("nodes", [])]
+    try:
+        return semantic.answer({"search": search}, docs, question, graph_ctx[:6], top_k)
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
 @mcp.resource("site://{site_id}/graph")
 def graph_resource(site_id: str) -> str:
     """The full graph.json of a site."""

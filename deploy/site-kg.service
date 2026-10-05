@@ -9,6 +9,7 @@ ExecStart=%h/.qwenpaw/workspaces/default/site-kg/.venv/bin/python -m site_kg.cli
 Restart=on-failure
 RestartSec=5
 Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=-%h/.qwenpaw/workspaces/default/site-kg/.env
 
 [Install]
 WantedBy=default.target
