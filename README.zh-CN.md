@@ -53,7 +53,7 @@ MCP 客户端配置（streamable HTTP）：
 | `search(site_id, query)` | idf 加权全文检索 |
 | `get_page(site_id, page_id)` | 完整 markdown 正文+源 URL |
 | `neighbors(site_id, page_id, depth)` | 子图扩展（多跳上下文） |
-| `render_site(site_id)` | 自包含 HTML 图谱查看器（人工巡检） |
+| `render_site(site_id)` | 自包含 **3D** Three.js 图谱查看器（人工巡检） |
 
 资源：`site://<site_id>/graph` —— 完整图 JSON。
 
@@ -106,7 +106,7 @@ WantedBy=default.target
 
 - 语义增强（可选）：配置 `LLM_API_KEY` 后用 cognee `cognify` 在结构边之上叠加实体/关系边。
 - 壳页兜底失效的 JS 站点（无限滚动、重反爬）走 Crawl4AI 深爬，经 `.[crawl]` extra 启用。
-- ~~复用 an earlier internal prototype 的可视化~~已完成：`render_site` 产出零依赖 canvas 查看器。
+- ~~复用 an earlier internal prototype 的可视化~~已完成：`render_site` 产出自包含 3D Three.js 查看器（bundle 内嵌可离线，布局在渲染期用固定种子计算）。
 
 ## 许可
 

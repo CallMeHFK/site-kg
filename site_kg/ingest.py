@@ -15,7 +15,9 @@ from bs4 import BeautifulSoup
 
 from .manifest import CONTENT_RE, UA, page_id, same_site
 
-MAIN_SELECTORS = ["div[role=main]", "main", "article",
+# content regions first; generic main/body last (framework nav lives inside them)
+MAIN_SELECTORS = ["#doc-content", ".vp-doc", ".markdown-body", ".theme-default-content",
+                  "div[role=main]", "main", "article",
                   "div.document div.body", "div.body", "div.contents", "body"]
 SKIP_HREF = re.compile(r"^(#|mailto:|javascript:|tel:|data:)")
 
@@ -34,15 +36,19 @@ def _title(soup: BeautifulSoup, fallback: str) -> str:
     return fallback
 
 
-def _main_html(soup: BeautifulSoup) -> str:
+def _content_el(soup: BeautifulSoup):
     for sel in MAIN_SELECTORS:
         el = soup.select_one(sel)
         if el:
-            for bad in el.select("nav, script, style, header, footer, .related, .sphinxsidebar"):
+            for bad in el.select("nav, script, style, header, footer, aside, "
+                                 ".related, .sphinxsidebar, .pager, .VPDocFooter, .VPSidebar"):
                 bad.decompose()
-            return str(el)
-    body = str(soup.body or soup)
-    return body
+            return el
+    return soup.body or soup
+
+
+def _main_html(soup: BeautifulSoup) -> str:
+    return str(_content_el(soup))
 
 
 def _robots(base: str) -> RobotFileParser:
@@ -128,10 +134,11 @@ def to_markdown(html: str, url: str, base: str) -> dict:
     soup = BeautifulSoup(html, "html.parser")
     title = _title(soup, url.rsplit("/", 1)[-1])
     pid = page_id(base, url)
-    links = _internal_links(soup, url, base, pid)
+    main = _content_el(soup)
+    links = _internal_links(main, url, base, pid)
     conv = html2text.HTML2Text()
     conv.body_width = 0
-    md_body = conv.handle(_main_html(soup))
+    md_body = conv.handle(str(main))
     raw = md_body.encode()
     fm = (f"---\ntitle: {esc(title)}\nsource_url: {url}\n"
           f"sha256: {hashlib.sha256(raw).hexdigest()}\n---\n\n")
