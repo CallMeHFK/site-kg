@@ -53,6 +53,7 @@ MCP client config (streamable HTTP):
 | `search(site_id, query)` | idf-weighted full-text search |
 | `get_page(site_id, page_id)` | full markdown body + source URL |
 | `neighbors(site_id, page_id, depth)` | subgraph expansion (multi-hop context) |
+| `ask(site_id, question)` | LLM Q&A with citations (needs LLM config) |
 | `render_site(site_id)` | self-contained **3D** Three.js graph viewer (human inspection) |
 
 Resource: `site://<site_id>/graph` — the full graph JSON.

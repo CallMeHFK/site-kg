@@ -53,6 +53,7 @@ MCP 客户端配置（streamable HTTP）：
 | `search(site_id, query)` | idf 加权全文检索 |
 | `get_page(site_id, page_id)` | 完整 markdown 正文+源 URL |
 | `neighbors(site_id, page_id, depth)` | 子图扩展（多跳上下文） |
+| `ask(site_id, question)` | LLM 带引用问答（需配置 LLM） |
 | `render_site(site_id)` | 自包含 **3D** Three.js 图谱查看器（人工巡检） |
 
 资源：`site://<site_id>/graph` —— 完整图 JSON。
