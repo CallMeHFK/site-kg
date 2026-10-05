@@ -1,5 +1,9 @@
 # site-kg
 
+[![ci](https://github.com/CallMeHFK/site-kg/actions/workflows/ci.yml/badge.svg)](https://github.com/CallMeHFK/site-kg/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](pyproject.toml)
+
 给一个网站链接，自动爬取、创建知识图谱，并通过 MCP 接口提供给 AI 访问。
 
 English: [README.md](README.md)
@@ -75,6 +79,13 @@ pretty URL 三形态（尾斜杠、无扩展名、`/title/X`）全部处理；se
 `ask` 采用**按块嵌入选段**而非截正文开头：同一语料同一问题，修前"信息不足"，修后给出带引用的完整答案（答案段落原本落在长 FAQ 页中部，被截断丢掉了）。
 
 纯客户端渲染的 SPA：抓回来是空框架壳的页面会被识别（空的 `#app`/`#root` 根节点，或可见文本近零且无内链），再用 headless Chromium（Playwright）补渲染。静态抓取永远先跑，只有壳页才付浏览器开销。已用本地 CSR 对照件验证：BFS 能发现 JS 注入的链接、图谱达 READY、渲染后的正文进入语料。
+
+## 常见问题
+
+- **摄入返回 `blocked by robots.txt`**：站点 robots 禁了这个 UA。联系站点所有者，或仅在你有权爬取时才传 `respect_robots=false`。
+- **只发现 1–2 页**：seed URL 大概是叶子节点，改传文档根目录（结果里的 `seed_hint` 会明说）。纯客户端渲染的 SPA 壳页由 Playwright 兜底自动处理。
+- **必须要 LLM 吗？** 爬取/检索/图遍历都不需要。只有 `ask` 需要 `SITE_KG_LLM_BASE` + `SITE_KG_LLM_KEY`（任意 OpenAI 兼容网关；vLLM/new-api 已实测）。
+- **判定 NOT-READY**：该站没有内部交叉引用——是目录树不是图。全文检索和正文仍可用，图遍历如实禁用而不是画噪声。
 
 ## 部署
 

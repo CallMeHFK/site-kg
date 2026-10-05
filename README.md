@@ -1,5 +1,9 @@
 # site-kg
 
+[![ci](https://github.com/CallMeHFK/site-kg/actions/workflows/ci.yml/badge.svg)](https://github.com/CallMeHFK/site-kg/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](pyproject.toml)
+
 Give it a website URL; it crawls the site, builds a knowledge graph, and serves it to AI agents over MCP.
 
 中文文档：[README.zh-CN.md](README.zh-CN.md)
@@ -77,6 +81,13 @@ Every pretty-URL shape is handled (trailing slash, extension-less, `/title/X`); 
 `ask` uses block-level embedding selection, not head truncation: the same question on the same corpus went from "insufficient information" to a fully cited answer after that fix (the answer paragraph sat mid-page in a long FAQ).
 
 Client-rendered SPAs: pages that fetch as empty framework shells are detected (empty `#app`/`#root` root, or near-zero visible text and no internal links) and re-rendered with headless Chromium (Playwright). Static fetch always runs first — only shell pages pay for a browser. Verified with a local CSR fixture: BFS discovers the JS-injected links, the graph reaches READY, and the JS-rendered body lands in the corpus.
+
+## FAQ
+
+- **The ingest says `blocked by robots.txt`.** The site disallows this crawler's user agent. Ask the owner, or pass `respect_robots=false` only if you are authorized to crawl it.
+- **It found only 1-2 pages.** Your seed URL is probably a section leaf; re-ingest with the docs root (the `seed_hint` field says so). If the site is a client-rendered SPA, the Playwright fallback handles shell pages automatically.
+- **Do I need an LLM?** No for crawl/search/graph/neighbors. Only `ask` needs `SITE_KG_LLM_BASE` + `SITE_KG_LLM_KEY` (any OpenAI-compatible gateway; vLLM/new-api verified).
+- **NOT-READY verdict.** The site has no internal cross-references — it is a directory tree, not a graph. You still get full-text search and page bodies; graph traversal is honestly disabled instead of drawing noise.
 
 ## Deployment
 
