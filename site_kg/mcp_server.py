@@ -1,0 +1,146 @@
+"""MCP server: AI-facing access to site knowledge graphs.
+
+Transports: stdio (default, for IDE/agent hosts) or streamable-http (for network clients).
+Tools: ingest_url, list_sites, site_stats, search, get_page, neighbors.
+"""
+from __future__ import annotations
+
+import asyncio
+
+from mcp.server.fastmcp import FastMCP
+
+from . import graph as graphmod
+from . import ingest as ingestmod
+from . import manifest, store
+
+mcp = FastMCP("site-kg", instructions=(
+    "Knowledge graphs of crawled websites. Workflow: ingest_url(url) -> search/get_page/neighbors. "
+    "A site whose verdict is NOT-READY has no link structure; use search, not graph traversal."
+))
+
+
+@mcp.tool()
+async def ingest_url(url: str, max_pages: int = 200, max_depth: int = 4,
+                     concurrency: int = 4, respect_robots: bool = True) -> dict:
+    """Crawl a website, build its knowledge graph, and register it as a queryable site.
+
+    Returns site_id for later tools plus a graph-quality verdict:
+    READY (cross-references found) or NOT-READY (tree without links; graph traversal useless).
+    """
+    urls, source = await manifest.page_inventory(url, max_pages=max_pages, max_depth=max_depth)
+    if not urls:
+        return {"ok": False, "error": "no pages discovered", "url": url}
+    pages = await ingestmod.fetch_pages(urls, url, concurrency=concurrency, respect_robots=respect_robots)
+    if not pages:
+        return {"ok": False, "error": "all fetches failed", "url": url, "discovered": len(urls)}
+    site_id = store.site_id_for(url)
+    corpus = store.site_dir(site_id) / "corpus"
+    ingestmod.write_corpus(pages, url, corpus)
+    built = graphmod.build_graph(corpus)
+    meta = store.save_site(site_id, url, built)
+    return {"ok": True, "site_id": site_id, "inventory_source": source,
+            "discovered": len(urls), "fetched": len(pages), **meta}
+
+
+@mcp.tool()
+def list_sites() -> list[dict]:
+    """List ingested sites with their verdicts and graph sizes."""
+    return store.list_sites()
+
+
+@mcp.tool()
+def site_stats(site_id: str) -> dict:
+    """Graph health for one site: doc/edge counts, edge types, verdict, top hubs."""
+    try:
+        g = store.load(site_id, "graph")
+        meta = store.load(site_id, "meta")
+    except KeyError as e:
+        return {"ok": False, "error": str(e)}
+    deg = {}
+    for e in g["edges"]:
+        deg[e["s"]] = deg.get(e["s"], 0) + 1
+        deg[e["t"]] = deg.get(e["t"], 0) + 1
+    top = sorted(deg.items(), key=lambda kv: -kv[1])[:5]
+    return {"ok": True, **{k: meta[k] for k in ("url", "docs", "edges", "edgeTypes", "verdict", "built_at")},
+            "top_degree_nodes": top}
+
+
+@mcp.tool()
+def search(site_id: str, query: str, limit: int = 10) -> dict:
+    """Full-text search over the site's pages (inverted index, idf-weighted)."""
+    try:
+        s = store.load(site_id, "search")
+        g = store.load(site_id, "graph")
+    except KeyError as e:
+        return {"ok": False, "error": str(e)}
+    titles = {n["i"]: n["t"] for n in g["nodes"]}
+    urls = {n["i"]: n["u"] for n in g["nodes"]}
+    hits = graphmod.search_index(s, query, limit)
+    for h in hits:
+        h["title"] = titles.get(h["id"], "")
+        h["url"] = urls.get(h["id"], "")
+    return {"ok": True, "hits": hits}
+
+
+@mcp.tool()
+def get_page(site_id: str, page_id: str) -> dict:
+    """Full markdown body of one page, with title and source URL."""
+    try:
+        docs = store.load(site_id, "docs")
+    except KeyError as e:
+        return {"ok": False, "error": str(e)}
+    d = docs.get(page_id)
+    if not d:
+        return {"ok": False, "error": f"unknown page '{page_id}'", "known": len(docs)}
+    return {"ok": True, "id": page_id, "title": d["title"], "url": d["url"], "body": d["body"]}
+
+
+@mcp.tool()
+def neighbors(site_id: str, page_id: str, depth: int = 1) -> dict:
+    """Subgraph around a page up to `depth` hops (capped at 2). Use after search to expand context."""
+    depth = min(depth, 2)
+    try:
+        g = store.load(site_id, "graph")
+    except KeyError as e:
+        return {"ok": False, "error": str(e)}
+    adj: dict[str, set[str]] = {}
+    etype: dict[frozenset, str] = {}
+    for e in g["edges"]:
+        adj.setdefault(e["s"], set()).add(e["t"])
+        adj.setdefault(e["t"], set()).add(e["s"])
+        etype[frozenset((e["s"], e["t"]))] = e["k"]
+    if page_id not in adj and page_id not in {n["i"] for n in g["nodes"]}:
+        return {"ok": False, "error": f"unknown page '{page_id}'"}
+    frontier, seen = {page_id}, {page_id}
+    for _ in range(depth):
+        nxt = set()
+        for p in frontier:
+            nxt |= adj.get(p, set())
+        nxt -= seen
+        seen |= nxt
+        frontier = nxt
+    titles = {n["i"]: n["t"] for n in g["nodes"] if n["i"] in seen}
+    es = [{"s": e["s"], "t": e["t"], "k": e["k"]} for e in g["edges"]
+          if e["s"] in seen and e["t"] in seen]
+    return {"ok": True, "center": page_id, "nodes": [{"id": i, "title": t} for i, t in titles.items()],
+            "edges": es}
+
+
+@mcp.resource("site://{site_id}/graph")
+def graph_resource(site_id: str) -> str:
+    """The full graph.json of a site."""
+    import json
+    return json.dumps(store.load(site_id, "graph"), ensure_ascii=False)
+
+
+def serve(transport: str = "stdio", host: str = "127.0.0.1", port: int = 8766) -> None:
+    if transport == "http":
+        mcp.settings.host = host
+        mcp.settings.port = port
+        mcp.run(transport="streamable-http")
+    else:
+        mcp.run(transport="stdio")
+
+
+if __name__ == "__main__":
+    serve()

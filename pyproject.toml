@@ -1,0 +1,27 @@
+[project]
+name = "site-kg"
+version = "0.1.0"
+description = "Give a website URL, get a knowledge graph with an MCP interface for AI access"
+requires-python = ">=3.11"
+dependencies = [
+    "mcp>=1.12,<2",
+    "httpx[socks]>=0.28",
+    "beautifulsoup4>=4.12",
+    "html2text>=2025.4.15",
+]
+
+[project.optional-dependencies]
+# JS-rendered sites: BFS deep crawl through the Crawl4AI wheel
+crawl = ["crawl4ai>=0.7"]
+# LLM-enriched semantic layer (entity/relation extraction) via cognee
+semantic = ["cognee>=0.3"]
+
+[project.scripts]
+site-kg = "site_kg.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["site_kg"]

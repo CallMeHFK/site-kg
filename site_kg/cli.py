@@ -1,0 +1,43 @@
+"""CLI: site-kg ingest URL [--max-pages N] | site-kg serve [--transport http] | site-kg stats SITE_ID"""
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(prog="site-kg")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    p = sub.add_parser("ingest")
+    p.add_argument("url")
+    p.add_argument("--max-pages", type=int, default=200)
+    p.add_argument("--max-depth", type=int, default=4)
+    p.add_argument("--no-robots", action="store_true")
+    s = sub.add_parser("serve")
+    s.add_argument("--transport", choices=["stdio", "http"], default="stdio")
+    s.add_argument("--host", default="127.0.0.1")
+    s.add_argument("--port", type=int, default=8766)
+    t = sub.add_parser("stats")
+    t.add_argument("site_id", nargs="?")
+    args = ap.parse_args()
+
+    if args.cmd == "ingest":
+        from .mcp_server import ingest_url
+        print(json.dumps(asyncio.run(ingest_url(
+            args.url, max_pages=args.max_pages, max_depth=args.max_depth,
+            respect_robots=not args.no_robots)), indent=1, ensure_ascii=False))
+    elif args.cmd == "serve":
+        from .mcp_server import serve
+        serve(args.transport, args.host, args.port)
+    else:
+        from . import store
+        if args.site_id:
+            from .mcp_server import site_stats
+            print(json.dumps(site_stats(args.site_id), indent=1, ensure_ascii=False))
+        else:
+            print(json.dumps(store.list_sites(), indent=1, ensure_ascii=False))
+
+
+if __name__ == "__main__":
+    main()
