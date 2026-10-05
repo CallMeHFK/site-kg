@@ -5,8 +5,6 @@ Tools: ingest_url, list_sites, site_stats, search, get_page, neighbors.
 """
 from __future__ import annotations
 
-import asyncio
-
 from mcp.server.fastmcp import FastMCP
 
 from . import graph as graphmod
@@ -31,16 +29,19 @@ async def ingest_url(url: str, max_pages: int = 200, max_depth: int = 4,
     seed_hint = None
     if len(urls) <= 2:
         seed_hint = ("only the seed page was discovered -- the seed looks like a section leaf. "
-                     "Re-ingest with the docs root (e.g. https://site/docs/) so scope covers siblings.")
+                     "Re-ingest with the docs root (e.g. https://site/docs/) "
+                     "so scope covers siblings.")
     if not urls:
         return {"ok": False, "error": "no pages discovered", "url": url}
-    pages, stats = await ingestmod.fetch_pages(urls, url, concurrency=concurrency, respect_robots=respect_robots)
+    pages, stats = await ingestmod.fetch_pages(urls, url, concurrency=concurrency,
+                                               respect_robots=respect_robots)
     if not pages:
         if stats["robots_blocked"]:
             return {"ok": False, "url": url, "discovered": len(urls), **stats,
                     "error": "blocked by robots.txt: the site disallows this user agent. "
                              "Ask the site owner or pass respect_robots=false only if authorized."}
-        return {"ok": False, "error": "all fetches failed", "url": url, "discovered": len(urls), **stats}
+        return {"ok": False, "error": "all fetches failed", "url": url,
+                "discovered": len(urls), **stats}
     site_id = store.site_id_for(url)
     corpus = store.site_dir(site_id) / "corpus"
     ingestmod.write_corpus(pages, url, corpus)
@@ -70,8 +71,8 @@ def site_stats(site_id: str) -> dict:
         deg[e["s"]] = deg.get(e["s"], 0) + 1
         deg[e["t"]] = deg.get(e["t"], 0) + 1
     top = sorted(deg.items(), key=lambda kv: -kv[1])[:5]
-    return {"ok": True, **{k: meta[k] for k in ("url", "docs", "edges", "edgeTypes", "verdict", "built_at")},
-            "top_degree_nodes": top}
+    keep = ("url", "docs", "edges", "edgeTypes", "verdict", "built_at")
+    return {"ok": True, **{k: meta[k] for k in keep}, "top_degree_nodes": top}
 
 
 @mcp.tool()
@@ -106,7 +107,8 @@ def get_page(site_id: str, page_id: str) -> dict:
 
 @mcp.tool()
 def neighbors(site_id: str, page_id: str, depth: int = 1) -> dict:
-    """Subgraph around a page up to `depth` hops (capped at 2). Use after search to expand context."""
+    """Subgraph around a page up to `depth` hops (capped at 2).
+    Use after search to expand context."""
     depth = min(depth, 2)
     try:
         g = store.load(site_id, "graph")
@@ -131,8 +133,8 @@ def neighbors(site_id: str, page_id: str, depth: int = 1) -> dict:
     titles = {n["i"]: n["t"] for n in g["nodes"] if n["i"] in seen}
     es = [{"s": e["s"], "t": e["t"], "k": e["k"]} for e in g["edges"]
           if e["s"] in seen and e["t"] in seen]
-    return {"ok": True, "center": page_id, "nodes": [{"id": i, "title": t} for i, t in titles.items()],
-            "edges": es}
+    return {"ok": True, "center": page_id, "edges": es,
+            "nodes": [{"id": i, "title": t} for i, t in titles.items()]}
 
 
 @mcp.tool()
@@ -143,7 +145,6 @@ def ask(site_id: str, question: str, top_k: int = 4) -> dict:
     try:
         from . import semantic
         search = store.load(site_id, "search")
-        g = store.load(site_id, "graph")
         docs = store.load(site_id, "docs")
     except KeyError as e:
         return {"ok": False, "error": str(e)}

@@ -18,7 +18,8 @@ def _cfg() -> dict:
     base = os.environ.get("SITE_KG_LLM_BASE", "").rstrip("/")
     key = os.environ.get("SITE_KG_LLM_KEY", "")
     if not base or not key:
-        raise RuntimeError("semantic layer not configured: set SITE_KG_LLM_BASE and SITE_KG_LLM_KEY")
+        raise RuntimeError(
+            "semantic layer not configured: set SITE_KG_LLM_BASE and SITE_KG_LLM_KEY")
     return {"base": base, "key": key,
             "chat": os.environ.get("SITE_KG_CHAT_MODEL", ""),
             "embed": os.environ.get("SITE_KG_EMBED_MODEL", ""),
@@ -37,9 +38,11 @@ def discover_models() -> dict:
     r = _client().get("/models")
     r.raise_for_status()
     ids = [m["id"] for m in r.json().get("data", [])]
-    pick = lambda *kw: next((i for i in ids if any(k in i.lower() for k in kw)), "")
+    def pick(*kw):
+        return next((i for i in ids if any(k in i.lower() for k in kw)), "")
     return {"all": ids,
-            "chat": _cfg()["chat"] or pick("qwen", "llama", "gpt", "chat", "instruct", "deepseek", "glm"),
+            "chat": _cfg()["chat"] or pick("qwen", "llama", "gpt", "chat",
+                                            "instruct", "deepseek", "glm"),
             "embed": _cfg()["embed"] or pick("embed", "bge-m3", "gte"),
             "rerank": _cfg()["rerank"] or pick("rerank", "reranker")}
 
@@ -97,7 +100,7 @@ def best_excerpt(query_vec: list[float] | None, body: str, model: str, budget: i
 
 
 def answer(site: dict, docs: dict, query: str, graph_ctx: list[str], top_k: int = 4) -> dict:
-    """Retrieve (keyword ∪ graph neighborhood), rerank, then answer with citations."""
+    """Retrieve (keyword + graph neighborhood), rerank, then answer with citations."""
     from .graph import search_index
 
     models = discover_models()
@@ -121,7 +124,8 @@ def answer(site: dict, docs: dict, query: str, graph_ctx: list[str], top_k: int 
         qv = embed([query], models["embed"])[0]
         dvs = embed([bodies[c] for c in cand], models["embed"])
         scored = sorted(zip(cand, (cosine(qv, dv) for dv in dvs)), key=lambda kv: -kv[1])
-        order = rerank(query, [bodies[c] for c, _ in scored], models["rerank"], min(top_k, len(scored)))
+        order = rerank(query, [bodies[c] for c, _ in scored], models["rerank"],
+                       min(top_k, len(scored)))
         chosen = [scored[i][0] for i in order]
     else:  # endpoint without embed/rerank: keyword ranking only
         chosen, qv = cand[:top_k], None

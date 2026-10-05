@@ -2,19 +2,21 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import re
 from pathlib import Path
 from urllib.parse import urljoin, urlparse, urlsplit
 from urllib.robotparser import RobotFileParser
 
+import html2text
 import httpx
 from bs4 import BeautifulSoup
-import html2text
 
-from .manifest import UA, page_id, same_site, CONTENT_RE
+from .manifest import CONTENT_RE, UA, page_id, same_site
 
-MAIN_SELECTORS = ["div[role=main]", "main", "article", "div.document div.body", "div.body", "div.contents", "body"]
+MAIN_SELECTORS = ["div[role=main]", "main", "article",
+                  "div.document div.body", "div.body", "div.contents", "body"]
 SKIP_HREF = re.compile(r"^(#|mailto:|javascript:|tel:|data:)")
 
 
@@ -46,10 +48,8 @@ def _main_html(soup: BeautifulSoup) -> str:
 def _robots(base: str) -> RobotFileParser:
     rp = RobotFileParser()
     rp.set_url(f"{urlparse(base).scheme}://{urlparse(base).netloc}/robots.txt")
-    try:
+    with contextlib.suppress(Exception):
         rp.read()
-    except Exception:
-        pass
     return rp
 
 
@@ -74,7 +74,8 @@ async def fetch_pages(urls: list[str], base: str, concurrency: int = 4, delay: f
                 elif r.status_code == 200:
                     stats["skipped"] += 1
                 else:
-                    stats["errors"][str(r.status_code)] = stats["errors"].get(str(r.status_code), 0) + 1
+                    code = str(r.status_code)
+                    stats["errors"][code] = stats["errors"].get(code, 0) + 1
             except Exception as e:
                 key = type(e).__name__
                 stats["errors"][key] = stats["errors"].get(key, 0) + 1
@@ -85,7 +86,7 @@ async def fetch_pages(urls: list[str], base: str, concurrency: int = 4, delay: f
     # detection first, browser second: only shell pages pay for a JS render
     shells = [u for u, h in out.items() if _is_shell(h)]
     if shells:
-        from .render import render_urls, ambient_proxy, better_than_static
+        from .render import ambient_proxy, better_than_static, render_urls
         rendered = await render_urls(shells, proxy=ambient_proxy(base))
         stats["js_rendered"] = 0
         for u, h in rendered.items():
@@ -132,7 +133,8 @@ def to_markdown(html: str, url: str, base: str) -> dict:
     conv.body_width = 0
     md_body = conv.handle(_main_html(soup))
     raw = md_body.encode()
-    fm = f"---\ntitle: {esc(title)}\nsource_url: {url}\nsha256: {hashlib.sha256(raw).hexdigest()}\n---\n\n"
+    fm = (f"---\ntitle: {esc(title)}\nsource_url: {url}\n"
+          f"sha256: {hashlib.sha256(raw).hexdigest()}\n---\n\n")
     return {"id": pid, "title": title, "md": fm + md_body, "links": links}
 
 

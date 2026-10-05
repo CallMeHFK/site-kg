@@ -1,4 +1,4 @@
-"""CLI: site-kg ingest URL [--max-pages N] | site-kg serve [--transport http] | site-kg stats SITE_ID"""
+"""CLI: ingest / serve / stats. See `python -m site_kg.cli <cmd> --help`."""
 from __future__ import annotations
 
 import argparse

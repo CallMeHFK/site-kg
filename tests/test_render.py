@@ -4,12 +4,14 @@ from pathlib import Path
 
 import pytest
 
-from site_kg.render import is_js_shell, better_than_static, text_len
+from site_kg.render import better_than_static, is_js_shell
 
-SHELL = '<html><head><title>x</title></head><body><div id="app"></div>' \
-        '<script>document.getElementById("app").innerHTML=`<p>real text</p>`</script></body></html>'
-CONTENT = "<html><body><main><h1>Alpha</h1><p>" + "real prose " * 40 + \
-          '</p><a href="b.html">next</a></main></body></html>'
+SHELL = (
+    '<html><head><title>x</title></head><body><div id="app"></div>'
+    '<script>document.getElementById("app").innerHTML=`<p>real text</p>`</script></body></html>'
+)
+CONTENT = ("<html><body><main><h1>Alpha</h1><p>" + "real prose " * 40 +
+           '</p><a href="b.html">next</a></main></body></html>')
 
 
 def test_shell_detection():
@@ -40,9 +42,13 @@ Return to the <a href="index.html">alpha module</a>.</p></main></body></html>'''
 def test_csr_spa_full_pipeline(tmp_path: Path):
     """Negative control: static fetch of index is a shell. Positive: the same
     pipeline discovers + renders the SPA and builds a real graph."""
-    playwright = pytest.importorskip("playwright.async_api")
-    import asyncio, threading, http.server, functools
-    from site_kg import manifest, ingest, graph
+    pytest.importorskip("playwright.async_api")
+    import asyncio
+    import functools
+    import http.server
+    import threading
+
+    from site_kg import graph, ingest, manifest
 
     site = tmp_path / "site"
     site.mkdir()
@@ -54,7 +60,7 @@ def test_csr_spa_full_pipeline(tmp_path: Path):
     url = f"http://127.0.0.1:{srv.server_address[1]}/index.html"
 
     async def run():
-        urls, src = await manifest.page_inventory(url, max_pages=10)
+        urls, _src = await manifest.page_inventory(url, max_pages=10)
         pages, stats = await ingest.fetch_pages(urls, url, respect_robots=False)
         corpus = tmp_path / "corpus"
         ingest.write_corpus(pages, url, corpus)

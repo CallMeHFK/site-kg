@@ -114,7 +114,7 @@ async def from_doxygen_navtree(client: httpx.AsyncClient, base: str) -> list[str
 async def bfs(client: httpx.AsyncClient, base: str, max_pages: int, max_depth: int) -> list[str]:
     """Same-site BFS over <a href>. Pages that fetch as client-side shells are
     re-rendered headlessly so their links are discoverable."""
-    from .render import internal_links, is_js_shell, render_urls, ambient_proxy
+    from .render import ambient_proxy, internal_links, is_js_shell, render_urls
 
     seen, queue, out = {base}, [(base, 0)], []
     while queue and len(out) < max_pages:
@@ -139,7 +139,8 @@ async def bfs(client: httpx.AsyncClient, base: str, max_pages: int, max_depth: i
     return sorted(out)
 
 
-async def page_inventory(base: str, max_pages: int = 500, max_depth: int = 4) -> tuple[list[str], str]:
+async def page_inventory(base: str, max_pages: int = 500,
+                         max_depth: int = 4) -> tuple[list[str], str]:
     """Returns (urls, source) where source is objects_inv|navtree|sitemap|bfs."""
     async with httpx.AsyncClient(headers=UA, timeout=30, follow_redirects=True) as client:
         inv = await from_objects_inv(client, base)

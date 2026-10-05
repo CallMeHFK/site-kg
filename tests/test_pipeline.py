@@ -1,8 +1,6 @@
 """Offline regression tests -- no network. Run: pytest -q"""
 from pathlib import Path
 
-import pytest
-
 from site_kg import graph, ingest, manifest
 
 
@@ -10,14 +8,17 @@ def test_page_id_pretty_urls():
     base = "https://docs.astral.sh/uv/"
     assert manifest.page_id(base, "https://docs.astral.sh/uv/") == "index"
     assert manifest.page_id(base, "https://docs.astral.sh/uv/concepts/") == "concepts"
-    assert manifest.page_id(base, "https://docs.astral.sh/uv/concepts/authentication/") == "concepts_authentication"
+    got = manifest.page_id(base, "https://docs.astral.sh/uv/concepts/authentication/")
+    assert got == "concepts_authentication"
     # extension-less within a file seed's directory
     b2 = "https://vuejs.org/guide/introduction.html"
-    assert manifest.page_id(b2, "https://vuejs.org/guide/essentials/reactivity.html") == "essentials_reactivity"
+    got = manifest.page_id(b2, "https://vuejs.org/guide/essentials/reactivity.html")
+    assert got == "essentials_reactivity"
     assert manifest.page_id(b2, "https://vuejs.org/guide/introduction") == "introduction"
     # mediawiki
     b3 = "https://wiki.archlinux.org/title/Main_page"
-    assert manifest.page_id(b3, "https://wiki.archlinux.org/title/Package_management") == "Package_management"
+    got = manifest.page_id(b3, "https://wiki.archlinux.org/title/Package_management")
+    assert got == "Package_management"
 
 
 def test_same_site_scopes_to_seed_dir():
@@ -29,10 +30,13 @@ def test_same_site_scopes_to_seed_dir():
 
 def test_internal_links_catch_pretty_urls():
     from bs4 import BeautifulSoup
-    html = '<a href="/uv/concepts/">c</a><a href="https://docs.astral.sh/uv/help/">h</a>' \
-           '<a href="#frag">f</a><a href="mailto:x@y">m</a><a href="https://ext.example/x">e</a>'
+    html = (
+        '<a href="/uv/concepts/">c</a><a href="https://docs.astral.sh/uv/help/">h</a>'
+        '<a href="#frag">f</a><a href="mailto:x@y">m</a><a href="https://ext.example/x">e</a>'
+    )
     soup = BeautifulSoup(html, "html.parser")
-    links = ingest._internal_links(soup, "https://docs.astral.sh/uv/", "https://docs.astral.sh/uv/", "index")
+    u = "https://docs.astral.sh/uv/"
+    links = ingest._internal_links(soup, u, u, "index")
     assert links == ["concepts", "help"]
 
 
@@ -70,13 +74,15 @@ def test_page_id_stable_for_classic_sphinx_sites():
     # regression guard: ids of the originally verified sites must not drift
     base = "https://docs.example-vendor.com/docs/drive/drive-os/7.0.3/public/drive-os-linux-sdk/index.html"
     assert manifest.page_id(base, base) == "index"
-    assert manifest.page_id(base, "https://docs.example-vendor.com/docs/drive/drive-os/7.0.3/public/drive-os-linux-sdk/core-concepts/IST.html") == "core-concepts_IST"
+    got = manifest.page_id(base, base.rsplit("/", 1)[0] + "/core-concepts/IST.html")
+    assert got == "core-concepts_IST"
     b2 = "https://docs.pipewire.org/page_api.html"
     assert manifest.page_id(b2, "https://docs.pipewire.org/page_modules.html") == "page_modules"
 
 
 def test_sitemap_index_child_pages_are_flattened():
-    import asyncio, httpx
+    import asyncio
+
 
     index = '<?xml version="1.0"?><sitemapindex><sitemap><loc>https://s.example/docs-sitemap.xml</loc></sitemap></sitemapindex>'
     child = ('<?xml version="1.0"?><urlset>'

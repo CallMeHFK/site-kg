@@ -18,9 +18,14 @@ TOKEN = re.compile(r"[a-z0-9][a-z0-9._/-]{1,40}", re.I)
 
 POSTING_CAP = 40
 DF_RATIO_CAP = 0.35
-STOP = set("""a an and are as at be been but by can could did does for from had has have how i if in
-is it its no not of on or our so that the their them then there these they this to was we were when
-which will with you your use used using via etc also may must shall""".split())
+STOP = {
+    "a", "an", "and", "are", "as", "at", "be", "been", "but", "by", "can", "could",
+    "did", "does", "for", "from", "had", "has", "have", "how", "i", "if", "in", "is",
+    "it", "its", "no", "not", "of", "on", "or", "our", "so", "that", "the", "their",
+    "them", "then", "there", "these", "they", "this", "to", "was", "we", "were",
+    "when", "which", "will", "with", "you", "your", "use", "used", "using", "via",
+    "etc", "also", "may", "must", "shall",
+}
 
 
 def _parse(path: Path) -> dict:
@@ -107,7 +112,11 @@ def build_graph(corpus_dir: Path) -> dict:
         terms.append(term)
 
     in_deg: Counter = Counter(t for _, t in edges)
-    nodes = [{"i": d["id"], "c": d["chapter"], "t": d["title"], "u": d["url"], "g": in_deg.get(d["id"], 0)} for d in docs]
+    nodes = [
+        {"i": d["id"], "c": d["chapter"], "t": d["title"], "u": d["url"],
+         "g": in_deg.get(d["id"], 0)}
+        for d in docs
+    ]
     edge_list = [{"s": a, "t": b, "k": k} for (a, b), k in sorted(edges.items())]
     edge_counts = Counter(k for k in edges.values())
 

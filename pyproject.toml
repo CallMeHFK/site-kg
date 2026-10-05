@@ -11,7 +11,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8"]
+dev = ["pytest>=8", "ruff>=0.6"]
 # JS-rendered sites: BFS deep crawl through the Crawl4AI wheel
 crawl = ["crawl4ai>=0.7"]
 # LLM-enriched semantic layer (entity/relation extraction) via cognee
@@ -26,3 +26,12 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["site_kg"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+# Explicit select: ruff defaults drag in BLE/S, which flag deliberate patterns
+# (e.g. broad except at the crawl boundary).
+select = ["E", "F", "W", "I", "UP", "SIM", "ISC", "RUF", "G"]

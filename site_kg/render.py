@@ -8,14 +8,15 @@ lack is rendered HTML, not a second crawl orchestrator.
 from __future__ import annotations
 
 import re
-
-import httpx
-from bs4 import BeautifulSoup
-
-from .manifest import UA, same_site, CONTENT_RE
 from urllib.parse import urljoin, urlsplit
 
-STRIP = re.compile(r"<script[\s\S]*?</script>|<style[\s\S]*?</style>|<noscript[\s\S]*?</noscript>", re.I)
+from bs4 import BeautifulSoup
+
+from .manifest import CONTENT_RE, UA, same_site
+
+STRIP = re.compile(
+    r"<script[\s\S]*?</script>|<style[\s\S]*?</style>|<noscript[\s\S]*?</noscript>",
+    re.I)
 SHELL_ROOTS = re.compile(r'<div id="(app|root|__next|___gatsby)">\s*</div>', re.I)
 
 
@@ -58,7 +59,8 @@ def better_than_static(rendered: str, static: str) -> bool:
     return (tr >= ts + 100) or (ts < 50 and tr > 50)
 
 
-async def render_urls(urls: list[str], proxy: str | None = None, timeout_ms: int = 20000) -> dict[str, str]:
+async def render_urls(urls: list[str], proxy: str | None = None,
+                      timeout_ms: int = 20000) -> dict[str, str]:
     """Render pages with headless Chromium; returns {url: html_after_js}.
     External sites need the ambient proxy because Chromium ignores env vars."""
     from playwright.async_api import async_playwright

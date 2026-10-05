@@ -11,6 +11,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
       - run: uv sync --all-extras
+      # the CSR-shell test renders a loopback page with real Chromium
+      - run: uv run playwright install --with-deps chromium
       # `python -m pytest`, not a bare `pytest`: a bare pytest can resolve
       # outside this environment and import a stale installed copy.
       - run: uv run python -m pytest -q
