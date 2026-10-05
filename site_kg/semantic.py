@@ -75,6 +75,27 @@ def cosine(a: list[float], b: list[float]) -> float:
     return dot / (na * nb + 1e-12)
 
 
+def _blocks(text: str, size: int = 600) -> list[str]:
+    return [text[i:i + size] for i in range(0, len(text), size)] or [""]
+
+
+def best_excerpt(query_vec: list[float] | None, body: str, model: str, budget: int = 1800) -> str:
+    """Head truncation drops the answer when it sits mid-page (real failure on a
+    long FAQ page). With an embed model available, keep the blocks closest to the query."""
+    if not model or query_vec is None:
+        return body[:budget]
+    bl = _blocks(body)
+    vecs = embed(bl, model)
+    order = sorted(range(len(bl)), key=lambda i: -cosine(query_vec, vecs[i]))
+    picked, out = [], ""
+    for i in order[:6]:
+        if len(out) >= budget:
+            break
+        picked.append(i)
+        out += bl[i]
+    return "\n…\n".join(bl[i] for i in sorted(picked))[:budget * 2]
+
+
 def answer(site: dict, docs: dict, query: str, graph_ctx: list[str], top_k: int = 4) -> dict:
     """Retrieve (keyword ∪ graph neighborhood), rerank, then answer with citations."""
     from .graph import search_index
@@ -103,9 +124,10 @@ def answer(site: dict, docs: dict, query: str, graph_ctx: list[str], top_k: int 
         order = rerank(query, [bodies[c] for c, _ in scored], models["rerank"], min(top_k, len(scored)))
         chosen = [scored[i][0] for i in order]
     else:  # endpoint without embed/rerank: keyword ranking only
-        chosen = cand[:top_k]
+        chosen, qv = cand[:top_k], None
 
-    ctx = "\n\n".join(f"[{i}] {docs[p]['title']} ({docs[p]['url']})\n{bodies[p][:1800]}"
+    excerpts = {p: best_excerpt(qv, docs[p]["body"], models["embed"]) for p in chosen}
+    ctx = "\n\n".join(f"[{i}] {docs[p]['title']} ({docs[p]['url']})\n{excerpts[p]}"
                       for i, p in enumerate(chosen, 1))
     text = chat([
         {"role": "system", "content":

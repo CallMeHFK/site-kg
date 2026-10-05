@@ -69,7 +69,8 @@ def build_graph(corpus_dir: Path) -> dict:
             return set(link_map.get(doc["id"], [])) - {doc["id"]}
         hits = set()
         for m in MD_LINK_ID.finditer(doc["body"]):
-            cand = m.group(1).replace("/", "_").removesuffix(".html").removesuffix(".htm")
+            cand = (m.group(1).replace("/", "_")
+                    .removesuffix(".html").removesuffix(".htm").removesuffix(".md"))
             if cand in known:
                 hits.add(cand)
         return hits - {doc["id"]}

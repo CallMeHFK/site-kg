@@ -58,6 +58,24 @@ MCP 客户端配置（streamable HTTP）：
 
 `ask` 已对内网 vLLM 网关（qwen3.5-122b 语言模型 + bge-m3 嵌入 + bge-reranker-v2-m3 重排序）实测：英文问题返回带引用的分步答案；中文跨语言问题在关键词检索落空时经嵌入兜底正常作答。Doxygen API Reference 站另测一组：navtree 清单 300 页 → 301 文档、527 条 ref 边、READY，`ask` 返回带 4 条引用的正确答案。
 
+## 站点类型覆盖（实测）
+
+| 引擎 | 用到的清单层 | 结果 |
+|---|---|---|
+| Sphinx（嵌入式厂商指南） | `objects.inv` | READY，40 文档 / 32 边 |
+| Doxygen（vendor platform API Reference） | `navtreeindex0.js` | READY，301 文档 / 527 边 |
+| MkDocs Material（squidfunk） | `sitemap.xml` | READY，60 文档 / 2801 边 |
+| Docusaurus（Checkly） | `sitemap.xml` 索引→子图展平 | READY，60 文档 / 460 边 |
+| VitePress（Vue 指南） | `sitemap.xml` | READY，50 文档 / 2402 边 |
+| MediaWiki（Arch Wiki） | 同站 BFS | READY，44 文档 / 1201 边 |
+| robots 禁止（docs.astral.sh、docusaurus.io） | — | 明确报 `blocked by robots.txt`，绝不静默交空图 |
+
+pretty URL 三形态（尾斜杠、无扩展名、`/title/X`）全部处理；seed 传成叶子目录导致只发现 ≤2 页时返回 `seed_hint` 提示改传文档根。
+
+`ask` 采用**按块嵌入选段**而非截正文开头：同一语料同一问题，修前"信息不足"，修后给出带引用的完整答案（答案段落原本落在长 FAQ 页中部，被截断丢掉了）。
+
+已知限制：纯客户端渲染、无 SSR HTML 的 SPA 仍需 Crawl4AI 后端（路线图），内建爬虫读服务端渲染标记。
+
 ## 部署
 
 本机优先。免 sudo 的 systemd 用户单元：

@@ -5,17 +5,17 @@ import asyncio
 import hashlib
 import re
 from pathlib import Path
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin, urlparse, urlsplit
 from urllib.robotparser import RobotFileParser
 
 import httpx
 from bs4 import BeautifulSoup
 import html2text
 
-from .manifest import UA, page_id, same_site
+from .manifest import UA, page_id, same_site, CONTENT_RE
 
 MAIN_SELECTORS = ["div[role=main]", "main", "article", "div.document div.body", "div.body", "div.contents", "body"]
-LINK_RE = re.compile(r"\[[^\]]*\]\(([^)\s#]+\.html?)(#[^)\s]*)?\)", re.I)
+SKIP_HREF = re.compile(r"^(#|mailto:|javascript:|tel:|data:)")
 
 
 def _title(soup: BeautifulSoup, fallback: str) -> str:
@@ -39,7 +39,8 @@ def _main_html(soup: BeautifulSoup) -> str:
             for bad in el.select("nav, script, style, header, footer, .related, .sphinxsidebar"):
                 bad.decompose()
             return str(el)
-    return str(soup.body or soup)
+    body = str(soup.body or soup)
+    return body
 
 
 def _robots(base: str) -> RobotFileParser:
@@ -53,49 +54,74 @@ def _robots(base: str) -> RobotFileParser:
 
 
 async def fetch_pages(urls: list[str], base: str, concurrency: int = 4, delay: float = 0.2,
-                      respect_robots: bool = True) -> dict[str, str]:
+                      respect_robots: bool = True) -> tuple[dict[str, str], dict]:
+    """Returns (pages, stats). stats surfaces why pages are missing instead of
+    silently producing an empty corpus."""
     rp = _robots(base) if respect_robots else None
     sem = asyncio.Semaphore(concurrency)
     out: dict[str, str] = {}
+    stats = {"robots_blocked": 0, "errors": {}, "skipped": 0}
 
     async def one(client: httpx.AsyncClient, url: str) -> None:
         if rp and not rp.can_fetch(UA["User-Agent"], url):
+            stats["robots_blocked"] += 1
             return
         async with sem:
             try:
                 r = await client.get(url, follow_redirects=True)
                 if r.status_code == 200 and "text/html" in r.headers.get("content-type", ""):
                     out[url] = r.text
-            except Exception:
-                pass
+                elif r.status_code == 200:
+                    stats["skipped"] += 1
+                else:
+                    stats["errors"][str(r.status_code)] = stats["errors"].get(str(r.status_code), 0) + 1
+            except Exception as e:
+                key = type(e).__name__
+                stats["errors"][key] = stats["errors"].get(key, 0) + 1
             await asyncio.sleep(delay)
 
     async with httpx.AsyncClient(headers=UA, timeout=30) as client:
         await asyncio.gather(*(one(client, u) for u in urls))
-    return out
+    return out, stats
+
+
+def _internal_links(soup: BeautifulSoup, page_url: str, base: str, own_id: str) -> list[str]:
+    """Resolve every anchor to a page id. Pretty URLs (trailing slash or no
+    extension) are first-class here -- a .html-only rule loses every non-Sphinx site."""
+    ids = set()
+    for a in soup.select("a[href]"):
+        href = a.get("href", "").strip()
+        if not href or SKIP_HREF.match(href):
+            continue
+        clean = urlsplit(href)
+        if clean.query or CONTENT_RE.search(clean.path):
+            continue
+        target = urljoin(page_url, href.split("#")[0])
+        ts = urlsplit(target)
+        target = f"{ts.scheme}://{ts.netloc}{ts.path}"
+        if not same_site(base, target):
+            continue
+        pid = page_id(base, target)
+        if pid and pid != own_id:
+            ids.add(pid)
+    return sorted(ids)
 
 
 def to_markdown(html: str, url: str, base: str) -> dict:
     """Returns {id, title, md, links}: md has frontmatter; links are resolved same-site page ids."""
     soup = BeautifulSoup(html, "html.parser")
     title = _title(soup, url.rsplit("/", 1)[-1])
+    pid = page_id(base, url)
+    links = _internal_links(soup, url, base, pid)
     conv = html2text.HTML2Text()
     conv.body_width = 0
-    conv.ignore_images = False
-    conv.ignore_emphasis = False
     md_body = conv.handle(_main_html(soup))
-    links = set()
-    for m in LINK_RE.finditer(md_body):
-        target = urljoin(url, m.group(1))
-        if same_site(base, target):
-            links.add(page_id(base, target))
-    pid = page_id(base, url)
     raw = md_body.encode()
-    fm = f"---\ntitle: {json_escape(title)}\nsource_url: {url}\nsha256: {hashlib.sha256(raw).hexdigest()}\n---\n\n"
-    return {"id": pid, "title": title, "md": fm + md_body, "links": sorted(links - {pid})}
+    fm = f"---\ntitle: {esc(title)}\nsource_url: {url}\nsha256: {hashlib.sha256(raw).hexdigest()}\n---\n\n"
+    return {"id": pid, "title": title, "md": fm + md_body, "links": links}
 
 
-def json_escape(s: str) -> str:
+def esc(s: str) -> str:
     return s.replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ")
 
 
@@ -107,11 +133,11 @@ def write_corpus(pages: dict[str, str], base: str, out_dir: Path) -> list[dict]:
     for url, html in sorted(pages.items()):
         d = to_markdown(html, url, base)
         chapter = d["id"].split("_", 1)[0] if "_" in d["id"] else "_root"
-        chapter_dir = out_dir / chapter
-        chapter_dir.mkdir(exist_ok=True)
-        (chapter_dir / f"{d['id']}.md").write_text(d["md"], encoding="utf-8")
+        (out_dir / chapter).mkdir(exist_ok=True)
+        (out_dir / chapter / f"{d['id']}.md").write_text(d["md"], encoding="utf-8")
         link_map[d["id"]] = d["links"]
-        docs.append({k: d[k] for k in ("id", "title", "links")} | {"url": url, "chapter": chapter})
+        docs.append({"id": d["id"], "title": d["title"], "links": d["links"],
+                     "url": url, "chapter": chapter})
     # sidecar: ids resolved against page URLs at crawl time; markdown hrefs are
     # page-relative and cannot be re-resolved from the corpus tree alone
     (out_dir / "_links.json").write_text(json.dumps(link_map, indent=0, sort_keys=True))

@@ -11,19 +11,30 @@ INV_LINE = re.compile(r"^(.+?)\s+(\S+):(\S+)\s+(-?\d+)\s+(\S+)\s+(.*)$")
 UA = {"User-Agent": "site-kg/0.1 (+https://github.com/CallMeHFK/site-kg)"}
 
 
+def _base_prefix(base: str) -> str:
+    """Directory scope of the seed URL: '/uv/' -> '/uv/', '/docs/installation' -> '/docs/'.
+    Crawling and id derivation stay inside this prefix."""
+    p = urlparse(base).path
+    return p if p.endswith("/") else p.rsplit("/", 1)[0] + "/"
+
+
 def same_site(base: str, url: str) -> bool:
     b, u = urlparse(base), urlparse(url)
-    return b.netloc == u.netloc and u.path.startswith(b.path.rstrip("/").rsplit("/", 1)[0] if not b.path.endswith("/") else b.path)
+    if b.netloc.lower() != u.netloc.lower():
+        return False
+    pre = _base_prefix(base)
+    return True if pre == "/" else u.path.startswith(pre)
 
 
 def page_id(base: str, url: str) -> str:
-    """Relative path -> stable id: strip .html, '/' -> '_'."""
+    """Relative path -> stable id. Handles trailing-slash and extension-less
+    pretty URLs (mkdocs / Docusaurus / VitePress / MediaWiki), not just *.html."""
     p = urlparse(url).path
-    b = urlparse(base).path
-    if b and p.startswith(b.rsplit("/", 1)[0] if not b.endswith("/") else b):
-        p = p[len(b.rsplit("/", 1)[0] if not b.endswith("/") else b):]
+    pre = _base_prefix(base)
+    if pre != "/" and p.startswith(pre):
+        p = p[len(pre):]
     p = p.strip("/")
-    p = re.sub(r"\.(html?|php)$", "", p, flags=re.I)
+    p = re.sub(r"\.(html?|php|aspx?)$", "", p, flags=re.I)
     return p.replace("/", "_") or "index"
 
 
@@ -51,6 +62,7 @@ async def from_objects_inv(client: httpx.AsyncClient, base: str) -> list[str] | 
 
 
 async def from_sitemap(client: httpx.AsyncClient, base: str) -> list[str] | None:
+    """Handles both flat sitemaps and sitemap *index* files (one level of recursion)."""
     root = f"{urlparse(base).scheme}://{urlparse(base).netloc}"
     for cand in (urljoin(base, "sitemap.xml"), f"{root}/sitemap.xml"):
         try:
@@ -58,8 +70,21 @@ async def from_sitemap(client: httpx.AsyncClient, base: str) -> list[str] | None
             if r.status_code != 200 or "<loc>" not in r.text:
                 continue
             urls = re.findall(r"<loc>([^<]+)</loc>", r.text)
-            urls = [u for u in urls if same_site(base, u)]
-            return sorted(set(urls)) or None
+            child_indexes = [u for u in urls if u.endswith(".xml")]
+            page_urls = [u for u in urls if not u.endswith(".xml") and same_site(base, u)]
+            if page_urls:
+                return sorted(set(page_urls))
+            for child in child_indexes[:20]:
+                try:
+                    rc = await client.get(child)
+                    if rc.status_code == 200:
+                        page_urls += [u for u in re.findall(r"<loc>([^<]+)</loc>", rc.text)
+                                      if not u.endswith(".xml") and same_site(base, u)]
+                except Exception:
+                    continue
+                if len(page_urls) >= 2000:
+                    break
+            return sorted(set(page_urls)) or None
         except Exception:
             continue
     return None

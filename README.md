@@ -60,7 +60,26 @@ Measured on the embedded vendor 7.0.3 docs site (static Sphinx): 40-page bounded
 
 Second-site check on the Doxygen API reference (`drive-os-linux-sdk-api-ref`, 300-page bounded ingest): the first attempt correctly reported NOT-READY (JS shell => BFS discovered 1 page); after the navtree manifest source landed, 301 docs / 527 `ref` edges, verdict READY, and `ask` returned a correct cited answer across header/source pages.
 
+## Site-type coverage (measured)
+
+| engine | manifest tier used | result |
+|---|---|---|
+| Sphinx (embedded vendor guide) | `objects.inv` | READY, 40 docs / 32 edges |
+| Doxygen (vendor platform API reference) | `navtreeindex0.js` | READY, 301 docs / 527 edges |
+| MkDocs Material (squidfunk) | `sitemap.xml` | READY, 60 docs / 2801 edges |
+| Docusaurus (Checkly) | `sitemap.xml` index → child flattening | READY, 60 docs / 460 edges |
+| VitePress (Vue guide) | `sitemap.xml` | READY, 50 docs / 2402 edges |
+| MediaWiki (Arch Wiki) | same-site BFS | READY, 44 docs / 1201 edges |
+| robots-disallowed (docs.astral.sh, docusaurus.io) | n/a | reported `blocked by robots.txt`, never a silent empty graph |
+
+Every pretty-URL shape is handled (trailing slash, extension-less, `/title/X`); a leaf seed that discovers <=2 pages returns a `seed_hint` telling you to seed the docs root.
+
+`ask` uses block-level embedding selection, not head truncation: the same question on the same corpus went from "insufficient information" to a fully cited answer after that fix (the answer paragraph sat mid-page in a long FAQ).
+
+Known limit: purely client-rendered SPAs with no SSR HTML still need the Crawl4AI backend (roadmap); the built-in crawler reads server-rendered markup.
+
 ## Deployment
+
 
 Local-first. A sudo-free systemd user unit:
 

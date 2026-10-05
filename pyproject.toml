@@ -11,6 +11,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+dev = ["pytest>=8"]
 # JS-rendered sites: BFS deep crawl through the Crawl4AI wheel
 crawl = ["crawl4ai>=0.7"]
 # LLM-enriched semantic layer (entity/relation extraction) via cognee

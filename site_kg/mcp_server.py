@@ -28,18 +28,27 @@ async def ingest_url(url: str, max_pages: int = 200, max_depth: int = 4,
     READY (cross-references found) or NOT-READY (tree without links; graph traversal useless).
     """
     urls, source = await manifest.page_inventory(url, max_pages=max_pages, max_depth=max_depth)
+    seed_hint = None
+    if len(urls) <= 2:
+        seed_hint = ("only the seed page was discovered -- the seed looks like a section leaf. "
+                     "Re-ingest with the docs root (e.g. https://site/docs/) so scope covers siblings.")
     if not urls:
         return {"ok": False, "error": "no pages discovered", "url": url}
-    pages = await ingestmod.fetch_pages(urls, url, concurrency=concurrency, respect_robots=respect_robots)
+    pages, stats = await ingestmod.fetch_pages(urls, url, concurrency=concurrency, respect_robots=respect_robots)
     if not pages:
-        return {"ok": False, "error": "all fetches failed", "url": url, "discovered": len(urls)}
+        if stats["robots_blocked"]:
+            return {"ok": False, "url": url, "discovered": len(urls), **stats,
+                    "error": "blocked by robots.txt: the site disallows this user agent. "
+                             "Ask the site owner or pass respect_robots=false only if authorized."}
+        return {"ok": False, "error": "all fetches failed", "url": url, "discovered": len(urls), **stats}
     site_id = store.site_id_for(url)
     corpus = store.site_dir(site_id) / "corpus"
     ingestmod.write_corpus(pages, url, corpus)
     built = graphmod.build_graph(corpus)
     meta = store.save_site(site_id, url, built)
     return {"ok": True, "site_id": site_id, "inventory_source": source,
-            "discovered": len(urls), "fetched": len(pages), **meta}
+            "discovered": len(urls), "fetched": len(pages), "fetch_stats": stats,
+            **({"seed_hint": seed_hint} if seed_hint else {}), **meta}
 
 
 @mcp.tool()
