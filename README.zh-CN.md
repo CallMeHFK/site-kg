@@ -107,7 +107,7 @@ WantedBy=default.target
 
 - 语义增强（可选）：配置 `LLM_API_KEY` 后用 cognee `cognify` 在结构边之上叠加实体/关系边。
 - 壳页兜底失效的 JS 站点（无限滚动、重反爬）走 Crawl4AI 深爬，经 `.[crawl]` extra 启用。
-- ~~复用 an earlier internal prototype 的可视化~~已完成：`render_site` 产出自包含 3D Three.js 查看器（bundle 内嵌可离线，布局在渲染期用固定种子计算）。
+- 可视化已完成：`render_site` 产出自包含 3D Three.js 查看器（bundle 内嵌可离线，布局在渲染期用固定种子计算）。
 
 ## 许可
 

@@ -1,5 +1,5 @@
-"""Corpus -> graph.json + search.json. Port of an earlier internal prototype tools/build.mjs edge logic.
-Edges come from the corpus only; zero resolvable edges => NOT-READY, never invent links."""
+"""Corpus -> graph.json + search.json. Edges are hub/ref/contains links
+resolved against the crawled corpus only; zero resolvable edges => NOT-READY, never invent links."""
 from __future__ import annotations
 
 import json
