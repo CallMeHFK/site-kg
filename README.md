@@ -54,7 +54,7 @@ MCP client config (streamable HTTP):
 | `get_page(site_id, page_id)` | full markdown body + source URL |
 | `neighbors(site_id, page_id, depth)` | subgraph expansion (multi-hop context) |
 | `ask(site_id, question)` | LLM Q&A with citations (needs LLM config) |
-| `render_site(site_id)` | self-contained **3D** Three.js graph viewer (human inspection) |
+| `render_site(site_id)` | self-contained **3D** Three.js graph viewer (human inspection): degree-sized glowing nodes, hover tooltip, click-to-focus neighbourhood, chapters aggregate view (click a sphere to isolate), instant search with focus, live status bar (nodes/edges/view%/FPS) |
 
 Resource: `site://<site_id>/graph` — the full graph JSON.
 
