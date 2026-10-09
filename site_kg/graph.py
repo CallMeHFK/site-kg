@@ -163,7 +163,10 @@ def build_graph(corpus_dir: Path) -> dict:
     edge_list = [{"s": a, "t": b, "k": k} for (a, b), k in sorted(edges.items())]
     edge_counts = Counter(k for k in edges.values())
 
-    verdict = "READY" if edge_list else "NOT-READY"
+    # hub/contains fan-out is a table of contents, not a graph; only real
+    # cross-references (ref from prose links, imports from code) make it READY
+    structural = edge_counts["ref"] + edge_counts["imports"]
+    verdict = "READY" if structural > 0 else "NOT-READY"
     report = {
         "docs": len(docs),
         "edges": len(edge_list),

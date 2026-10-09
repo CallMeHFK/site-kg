@@ -127,8 +127,13 @@ async def bfs(client: httpx.AsyncClient, base: str, max_pages: int, max_depth: i
             continue
         html = r.text
         if is_js_shell(html):
-            rendered = await render_urls([url], proxy=ambient_proxy(url))
-            html = rendered.get(url, html)
+            try:
+                rendered = await render_urls([url], proxy=ambient_proxy(url))
+            except Exception:
+                # renderer is an optional extra; shell links stay undiscovered
+                pass
+            else:
+                html = rendered.get(url, html)
         out.append(url)
         if depth >= max_depth:
             continue

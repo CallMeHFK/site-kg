@@ -83,7 +83,17 @@ def test_local_readme_hub_contains(tmp_path: Path):
     pairs = {(e["s"], e["t"], e["k"]) for e in r["graph"]["edges"]}
     assert ("docs_README", "docs_a", "contains") in pairs
     assert ("docs_README", "docs_b", "contains") in pairs
+    assert r["report"]["verdict"] == "NOT-READY"  # fan-out alone is a ToC
+
+
+def test_local_imports_only_verdict_is_ready(tmp_path: Path):
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "a.py").write_text("import b\n")
+    (src / "b.py").write_text("x = 1\n")
+    r = build(src, tmp_path / "corpus")
     assert r["report"]["verdict"] == "READY"
+    assert set(r["report"]["edgeTypes"]) == {"imports"}
 
 
 def test_local_not_ready_when_no_structure(tmp_path: Path):
@@ -174,15 +184,15 @@ def test_fenced_code_and_images_make_no_edges(tmp_path: Path):
     assert r["stats"]["dropped_refs"] == 0  # image never counted as a doc ref
 
 
-def test_hub_only_verdict_is_ready(tmp_path: Path):
-    # new semantics: any real edge (hub/contains included) => READY
+def test_hub_only_verdict_is_not_ready(tmp_path: Path):
+    # index fan-out alone is a table of contents, not a traversable graph
     d = tmp_path / "c"
     d.mkdir()
     (d / "index.md").write_text("---\ntitle: I\n---\n\n[a](a.md) [b](b.md)")
     (d / "a.md").write_text("---\ntitle: A\n---\n\nprose")
     (d / "b.md").write_text("---\ntitle: B\n---\n\nprose")
     built = graph.build_graph(d)
-    assert built["report"]["verdict"] == "READY"
+    assert built["report"]["verdict"] == "NOT-READY"
     assert set(built["report"]["edgeTypes"]) == {"hub"}
 
 
