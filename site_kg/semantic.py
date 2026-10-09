@@ -105,33 +105,35 @@ def answer(site: dict, docs: dict, query: str, graph_ctx: list[str], top_k: int 
 
     models = discover_models()
     kw = [h["id"] for h in search_index(site["search"], query, limit=8)]
-    cand = list(dict.fromkeys(kw + graph_ctx))[:12]
-    if not cand and models["embed"]:
-        # keyword recall failed (e.g. cross-lingual query on an ASCII index):
-        # fall back to embedding similarity. Embed title + body head, not the
-        # 150-char display digest: measured on the Vue guide corpus, digest-level
-        # similarity missed paraphrase targets (rank 14/18) that title+body[:600]
-        # pulls into the candidate window (rank 7/16).
+    qv: list[float] | None = None
+    em: list[str] = []
+    if models["embed"]:
+        # Union candidate generation, not a serial fallback: keyword hits can be
+        # confidently wrong while the right page sits mid-rank in embedding space
+        # (measured on the Vue guide corpus). RRF rank-fusion was evaluated and
+        # rejected: a noisy keyword channel dilutes the fused ranking. Embed text
+        # is title + body head, not the 150-char display digest (digest-level
+        # similarity ranked paraphrase targets at 14/18; title+body[:600] 7/16).
         ids = list(docs.keys())
         texts = [f"{docs[i]['title']}\n{docs[i]['body'][:600]}" for i in ids]
         qv = embed([query], models["embed"])[0]
         dvs = embed(texts, models["embed"])
-        cand = [i for i, _ in sorted(zip(ids, (cosine(qv, dv) for dv in dvs)),
-                                     key=lambda kv: -kv[1])[:8]]
+        em = [i for i, _ in sorted(zip(ids, (cosine(qv, dv) for dv in dvs)),
+                                   key=lambda kv: -kv[1])[:8]]
+    cand = list(dict.fromkeys(kw + em + graph_ctx))[:16]
     if not cand:
         return {"ok": False, "error": "no candidate pages retrieved"}
     bodies = {pid: docs[pid]["body"][:3000] for pid in cand if pid in docs}
     cand = [c for c in cand if c in bodies]
 
     if models["embed"] and models["rerank"]:
-        qv = embed([query], models["embed"])[0]
         dvs = embed([bodies[c] for c in cand], models["embed"])
         scored = sorted(zip(cand, (cosine(qv, dv) for dv in dvs)), key=lambda kv: -kv[1])
         order = rerank(query, [bodies[c] for c, _ in scored], models["rerank"],
                        min(top_k, len(scored)))
         chosen = [scored[i][0] for i in order]
     else:  # endpoint without embed/rerank: keyword ranking only
-        chosen, qv = cand[:top_k], None
+        chosen = cand[:top_k]
 
     excerpts = {p: best_excerpt(qv, docs[p]["body"], models["embed"]) for p in chosen}
     ctx = "\n\n".join(f"[{i}] {docs[p]['title']} ({docs[p]['url']})\n{excerpts[p]}"
