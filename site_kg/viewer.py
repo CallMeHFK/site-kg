@@ -201,7 +201,8 @@ function setFocus(i){
 let Q = "";
 function applyFilter(){
   let c=0;
-  G.nodes.forEach((n,i)=>{ const v = (!Q || n.t.toLowerCase().includes(Q)); vis[i]=v?1:0; if(v)c++; });
+  G.nodes.forEach((n,i)=>{
+    const v = (!Q || n.t.toLowerCase().includes(Q)); vis[i]=v?1:0; if(v)c++; });
   document.getElementById("cnt").textContent = c+"/"+Nn;
   applyDims();
 }
@@ -370,7 +371,8 @@ function updateCull(){
   for(let i=0;i<En;i++){
     const a=idx.get(refE[i].s), b=idx.get(refE[i].t);
     if(!vis[a]||!vis[b]) continue; v++;
-    const mx=eMid[i*3]-camera.position.x, my=eMid[i*3+1]-camera.position.y, mz=eMid[i*3+2]-camera.position.z;
+    const mx=eMid[i*3]-camera.position.x, my=eMid[i*3+1]-camera.position.y,
+      mz=eMid[i*3+2]-camera.position.z;
     if (mx*mx+my*my+mz*mz <= cull*cull) kept++; }
   visE=v; keepPct = v? Math.round(kept/v*100) : 100; }
 function updateStatus(){
@@ -388,7 +390,8 @@ function loop(){
     else if (fpsEMA>58 && pxStep>0){ pxStep--; applyPx(); } }
   /* status on a time cadence (~300ms), never on a frame count: at low FPS a
      frame-count cadence leaves the readout seconds stale */
-  if (now-lastStatus>300 || statusDirty){ lastStatus=now; statusDirty=false; updateCull(); updateStatus(); }
+  if (now-lastStatus>300 || statusDirty){
+    lastStatus=now; statusDirty=false; updateCull(); updateStatus(); }
   else updateCullUniforms();
   if (camTween){ const k=Math.min(1,(now-camTween.start)/camTween.dur);
     const e=1-Math.pow(1-k,3);
