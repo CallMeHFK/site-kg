@@ -108,11 +108,14 @@ def answer(site: dict, docs: dict, query: str, graph_ctx: list[str], top_k: int 
     cand = list(dict.fromkeys(kw + graph_ctx))[:12]
     if not cand and models["embed"]:
         # keyword recall failed (e.g. cross-lingual query on an ASCII index):
-        # fall back to embedding similarity over every page digest
+        # fall back to embedding similarity. Embed title + body head, not the
+        # 150-char display digest: measured on the Vue guide corpus, digest-level
+        # similarity missed paraphrase targets (rank 14/18) that title+body[:600]
+        # pulls into the candidate window (rank 7/16).
         ids = list(docs.keys())
-        digests = [site["search"]["digest"].get(i) or docs[i]["title"] for i in ids]
+        texts = [f"{docs[i]['title']}\n{docs[i]['body'][:600]}" for i in ids]
         qv = embed([query], models["embed"])[0]
-        dvs = embed(digests, models["embed"])
+        dvs = embed(texts, models["embed"])
         cand = [i for i, _ in sorted(zip(ids, (cosine(qv, dv) for dv in dvs)),
                                      key=lambda kv: -kv[1])[:8]]
     if not cand:
