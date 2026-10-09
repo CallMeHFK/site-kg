@@ -18,6 +18,29 @@ TOKEN = re.compile(r"[a-z0-9][a-z0-9._/-]{1,40}", re.I)
 
 POSTING_CAP = 40
 DF_RATIO_CAP = 0.35
+
+
+def _pagerank(ids: list[str], edges: list[tuple[str, str]], damping: float = 0.85,
+              iters: int = 20) -> dict[str, float]:
+    """aider-style structural ranking over the edge list, no dependencies."""
+    n = len(ids)
+    if not n:
+        return {}
+    out: dict[str, list[str]] = {}
+    for a, b in edges:
+        out.setdefault(a, []).append(b)
+    pr = dict.fromkeys(ids, 1.0 / n)
+    for _ in range(iters):
+        new = dict.fromkeys(ids, (1.0 - damping) / n)
+        dangling = damping * sum(pr[i] for i in ids if i not in out) / n
+        for a, targets in out.items():
+            share = damping * pr[a] / len(targets)
+            for b in targets:
+                new[b] = new.get(b, (1.0 - damping) / n) + share
+        for i in ids:
+            new[i] += dangling
+        pr = new
+    return pr
 STOP = {
     "a", "an", "and", "are", "as", "at", "be", "been", "but", "by", "can", "could",
     "did", "does", "for", "from", "had", "has", "have", "how", "i", "if", "in", "is",
@@ -62,10 +85,25 @@ def build_graph(corpus_dir: Path) -> dict:
         })
     known = {d["id"] for d in docs}
 
+    # Typed sidecar from local ingest (s/t/k triples: ref/imports/contains/...).
+    # Preferred over everything else; edges were resolved at scan time.
+    typed_sidecar = corpus_dir / "_edges.json"
+    typed_edges: list[tuple[str, str, str]] | None = None
+    if typed_sidecar.exists():
+        try:
+            raw = json.loads(typed_sidecar.read_text())
+        except (OSError, json.JSONDecodeError):
+            raw = []
+        typed_edges = [(e["s"], e["t"], e["k"]) for e in raw
+                       if isinstance(e, dict)
+                       and isinstance(e.get("s"), str) and isinstance(e.get("t"), str)
+                       and isinstance(e.get("k"), str)
+                       and e["s"] in known and e["t"] in known and e["s"] != e["t"]]
+
     # Prefer the crawler's URL-resolved sidecar; markdown hrefs are page-relative.
     sidecar = corpus_dir / "_links.json"
     link_map: dict[str, list[str]] | None = None
-    if sidecar.exists():
+    if typed_edges is None and sidecar.exists():
         link_map = {k: [t for t in v if t in known]
                     for k, v in json.loads(sidecar.read_text()).items()}
 
@@ -81,12 +119,16 @@ def build_graph(corpus_dir: Path) -> dict:
         return hits - {doc["id"]}
 
     edges: dict[tuple[str, str], str] = {}
-    for d in docs:
-        targets = targets_of(d)
-        is_hub = d["id"] == "index" or d["id"].endswith("_index")
-        for t in sorted(targets):
-            etype = ("hub" if d["id"] == "index" else "contains") if is_hub else "ref"
-            edges.setdefault((d["id"], t), etype)
+    if typed_edges is not None:
+        for a, b, k in typed_edges:
+            edges.setdefault((a, b), k)
+    else:
+        for d in docs:
+            targets = targets_of(d)
+            is_hub = d["id"] == "index" or d["id"].endswith("_index")
+            for t in sorted(targets):
+                etype = ("hub" if d["id"] == "index" else "contains") if is_hub else "ref"
+                edges.setdefault((d["id"], t), etype)
 
     # inverted index over prose
     df: Counter = Counter()
@@ -112,24 +154,24 @@ def build_graph(corpus_dir: Path) -> dict:
         terms.append(term)
 
     in_deg: Counter = Counter(t for _, t in edges)
+    rank = _pagerank([d["id"] for d in docs], list(edges))
     nodes = [
         {"i": d["id"], "c": d["chapter"], "t": d["title"], "u": d["url"],
-         "g": in_deg.get(d["id"], 0)}
+         "g": in_deg.get(d["id"], 0), "r": round(rank.get(d["id"], 0.0), 6)}
         for d in docs
     ]
     edge_list = [{"s": a, "t": b, "k": k} for (a, b), k in sorted(edges.items())]
     edge_counts = Counter(k for k in edges.values())
 
-    ref_edges = edge_counts.get("ref", 0)
-    verdict = "READY" if ref_edges > 0 else "NOT-READY"
+    verdict = "READY" if edge_list else "NOT-READY"
     report = {
         "docs": len(docs),
         "edges": len(edge_list),
         "edgeTypes": dict(edge_counts),
         "terms": len(terms),
         "verdict": verdict,
-        "verdictNote": "link structure present" if ref_edges else
-            "zero resolvable cross-references: this site is a directory tree, not a graph. "
+        "verdictNote": "link structure present" if edge_list else
+            "zero resolvable cross-references: this corpus is a pile of files, not a graph. "
             "Serve search+outline, or enable the semantic layer (LLM extraction).",
     }
     return {

@@ -4,7 +4,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](pyproject.toml)
 
-给一个网站链接，自动爬取、创建知识图谱，并通过 MCP 接口提供给 AI 访问。
+给一个网站链接或本地目录，自动把文档**和代码**建成知识图谱，并通过 MCP 接口提供给 AI 访问。
 
 English: [README.md](README.md)
 
@@ -14,6 +14,10 @@ English: [README.md](README.md)
 URL ──► 清单探测 ──► 爬取 ──► markdown 语料 ──► graph.json + search.json ──► MCP 服务
         （objects.inv →    （httpx+bs4+html2text，   （链接导出的边、           （search / get_page /
          sitemap.xml → BFS）  遵守 robots.txt、限速）     倒排索引、可行性判定）       neighbors / site_stats）
+
+本地目录 ──► 遍历（识别 .gitignore） ──► 同一语料格式 ──► 同一图谱 + MCP
+            （md/txt/wiki 文档 + 代码文件；
+             边：md 链接、[[wikilink]]、import 依赖、README hub）
 ```
 
 - **清单探测**：Sphinx 站用 `objects.inv` 拿权威页面清单，Doxygen 站用 `navtreeindex0.js`（其 `index.html` 是 JS 空壳、无静态链接），其次 `sitemap.xml`，最后同站 BFS 兜底。不从本地文件名反猜。
@@ -29,6 +33,9 @@ uv pip install -e ".[crawl]"
 
 # 摄入一个站点（有界）
 python -m site_kg.cli ingest https://example.org/docs/index.html --max-pages 200
+
+# 或摄入本地目录（wiki 文档 + 代码仓库）
+python -m site_kg.cli ingest-local /path/to/repo-or-wiki
 
 # streamable HTTP 起 MCP 服务（供网络客户端）
 python -m site_kg.cli serve --transport http --port 8766
@@ -48,6 +55,7 @@ MCP 客户端配置（streamable HTTP）：
 | 工具 | 用途 |
 |---|---|
 | `ingest_url(url, max_pages, max_depth)` | 爬取+建图；返回 `site_id` 与 `verdict` |
+| `ingest_local(path, max_files, respect_gitignore)` | 本地目录（文档+代码）→ 图；产出同上 |
 | `list_sites()` | 列出已摄入站点及判定 |
 | `site_stats(site_id)` | 文档/边计数、边类型、top hub |
 | `search(site_id, query)` | idf 加权全文检索 |
@@ -57,6 +65,20 @@ MCP 客户端配置（streamable HTTP）：
 | `render_site(site_id)` | 自包含 **3D** Three.js 图谱查看器（人工巡检） |
 
 资源：`site://<site_id>/graph` —— 完整图 JSON。
+
+## 本地目录（文档 + 代码）
+
+`ingest_local` 把本地目录遍历成与爬虫完全同构的语料，下游所有工具（search/get_page/neighbors/ask/render）无需改动即可用。
+
+- **文档**（`.md/.markdown/.mdx/.txt/.wiki/.rst/.adoc`）正文原样保留。边来自相对 markdown 链接（含无扩展名与根绝对路径形式）和 `[[wikilink]]`（Obsidian/MediaWiki 风格，大小写/下划线不敏感按基名匹配）。解析不了的引用计入 `dropped_refs`，绝不成边。
+- **代码**（27 种扩展名：py、js/ts、go、rust、c/c++、java/kotlin、ruby……）生成可检索文档，正文开头是散文头（路径、语言、检测到的顶层符号），标识符因此能进倒排索引。边来自真实依赖语句：Python `import`/`from…import`（含相对导入与括号折行）、JS/TS `import`/`require`、C/C++ 引号 `#include`、Go `import`（识别 go.mod）、Rust `mod`/`use crate::`、JVM `import`、Ruby `require_relative`。
+- **README/index 是 hub**：向同目录成员发 `contains` 边，与站点侧 hub 语义一致。
+- **遵循 `.gitignore`**（经 `pathspec`），并内置噪音清单（`node_modules`、`__pycache__`、lockfile、`*.min.js` 等）；>512 KB 与二进制文件跳过。
+- **PageRank** 跑在边表上（aider repo-map 式），落到每个节点的 `r` 字段，`site_stats`/查看器可据此排出结构中心文件。
+
+设计取舍（调研 aider、Serena、CocoIndex、gitingest、GraphRAG、LightRAG、cognee、khoj 及 GraphCoder/CGM 论文后）：结构层坚持**零 LLM、诚实边**——每条边都能回溯到显式链接或 import 语句。LLM 抽取实体/关系边（GraphRAG/LightRAG 路线）换来召回但引入幻觉边与构建成本，因此只放在可选 cognee 语义层。编译器级精度（LSP/SCIP、Serena 路线）与 tree-sitter 符号图列入路线图，作为可选 extra 而非硬依赖。
+
+实测（2026-10-09，自举本仓库）：22 个文件（7 文档 + 15 代码）→ 30 条 `imports` + 2 条 `ref` + 2 条 `contains`，判定 `READY`；按标识符检索（`pagerank`、`gitignore`）命中正确源文件。
 
 ## 实测
 
@@ -106,6 +128,7 @@ WantedBy=default.target
 ## 路线图
 
 - 语义增强（可选）：配置 `LLM_API_KEY` 后用 cognee `cognify` 在结构边之上叠加实体/关系边。
+- 本地代码摄入的 tree-sitter 符号/引用边（aider 式 tags），作为正则层之上的可选 extra。
 - 壳页兜底失效的 JS 站点（无限滚动、重反爬）走 Crawl4AI 深爬，经 `.[crawl]` extra 启用。
 - 可视化已完成：`render_site` 产出自包含 3D Three.js 查看器（bundle 内嵌可离线，布局在渲染期用固定种子计算）。
 
