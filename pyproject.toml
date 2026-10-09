@@ -1,13 +1,14 @@
 [project]
 name = "site-kg"
 version = "0.1.0"
-description = "Give a website URL, get a knowledge graph with an MCP interface for AI access"
+description = "Give a website URL or local directory, get a knowledge graph with an MCP interface for AI access"
 requires-python = ">=3.11"
 dependencies = [
     "mcp>=1.12,<2",
     "httpx[socks]>=0.28",
     "beautifulsoup4>=4.12",
     "html2text>=2025.4.15",
+    "pathspec>=0.12",
 ]
 
 [project.optional-dependencies]

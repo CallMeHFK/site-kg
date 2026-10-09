@@ -4,7 +4,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](pyproject.toml)
 
-Give it a website URL; it crawls the site, builds a knowledge graph, and serves it to AI agents over MCP.
+Give it a website URL or a local directory; it builds a knowledge graph from docs **and code**, and serves it to AI agents over MCP.
 
 中文文档：[README.zh-CN.md](README.zh-CN.md)
 
@@ -14,6 +14,10 @@ Give it a website URL; it crawls the site, builds a knowledge graph, and serves 
 URL ──► manifest probe ──► crawl ──► markdown corpus ──► graph.json + search.json ──► MCP server
         (objects.inv →          (httpx+bs4+html2text,   (link-derived edges,          (search / get_page /
          sitemap.xml → BFS)      robots.txt, rate-limited)  inverted index, verdict)     neighbors / site_stats)
+
+local dir ──► walk (.gitignore-aware) ──► same corpus format ──► same graph + MCP
+              (md/txt/wiki docs, code files;
+               edges: md links, [[wikilinks]], imports, README hubs)
 ```
 
 - **Manifest probe** — Sphinx sites are enumerated from `objects.inv` (the authoritative page list), Doxygen sites from `navtreeindex0.js` (their `index.html` is a JS shell with no static links), then `sitemap.xml`, then same-site BFS. No guessing from local filenames.
@@ -29,6 +33,9 @@ uv pip install -e ".[crawl]"
 
 # ingest a site (bounded)
 python -m site_kg.cli ingest https://example.org/docs/index.html --max-pages 200
+
+# or ingest a local directory (docs wiki + code repo)
+python -m site_kg.cli ingest-local /path/to/repo-or-wiki
 
 # serve MCP over streamable HTTP (for network clients)
 python -m site_kg.cli serve --transport http --port 8766
@@ -48,6 +55,7 @@ MCP client config (streamable HTTP):
 | tool | purpose |
 |---|---|
 | `ingest_url(url, max_pages, max_depth)` | crawl + build graph; returns `site_id` and `verdict` |
+| `ingest_local(path, max_files, respect_gitignore)` | local directory (docs + code) → graph; same outputs |
 | `list_sites()` | ingested sites with verdicts |
 | `site_stats(site_id)` | doc/edge counts, edge types, top hubs |
 | `search(site_id, query)` | idf-weighted full-text search |
@@ -57,6 +65,20 @@ MCP client config (streamable HTTP):
 | `render_site(site_id)` | self-contained **3D** Three.js graph viewer (human inspection): degree-sized glowing nodes, hover tooltip, click-to-focus neighbourhood, chapters aggregate view (click a sphere to isolate), instant search with focus, live status bar (nodes/edges/view%/FPS) |
 
 Resource: `site://<site_id>/graph` — the full graph JSON.
+
+## Local directories (docs + code)
+
+`ingest_local` walks a directory into the same corpus format the crawler produces, so every downstream tool (search/get_page/neighbors/ask/render) works unchanged.
+
+- **Docs** (`.md/.markdown/.mdx/.txt/.wiki/.rst/.adoc`) keep their body. Edges come from relative markdown links (extension-less and root-absolute forms included) and `[[wikilinks]]` (Obsidian/MediaWiki style, case/underscore-insensitive basename match). Unresolvable references are counted in `dropped_refs`, never turned into edges.
+- **Code** (27 extensions: py, js/ts, go, rust, c/c++, java/kotlin, ruby, …) becomes searchable docs whose body starts with a prose header (path, language, detected top-level symbols) so identifiers hit the inverted index. Edges come from real dependency statements: Python `import`/`from…import` (including relative and parenthesized forms), JS/TS `import`/`require`, C/C++ quoted `#include`, Go `import` (go.mod-aware), Rust `mod`/`use crate::`, JVM `import`, Ruby `require_relative`.
+- **README/index files are hubs**: `contains` edges to their directory siblings, mirroring the site-side hub semantics.
+- **`.gitignore` is honored** (via `pathspec`) plus a builtin noise list (`node_modules`, `__pycache__, lockfiles, *.min.js`, …); >512 KB and binary files are skipped.
+- **PageRank** runs over the edge list (aider repo-map style) and lands on each node as `r`, so `site_stats`/the viewer can rank structurally central files.
+
+Design choices, after surveying the field (aider, Serena, CocoIndex, gitingest; GraphRAG, LightRAG, cognee, khoj; GraphCoder/CGM papers): the structural layer stays **LLM-free and honest** — every edge traces to an explicit link or import statement. LLM-extracted entity/relation edges (the GraphRAG/LightRAG approach) buy recall at the cost of hallucinated edges and build cost, so they stay in the optional cognee semantic layer. Compiler-grade precision (LSP/SCIP, Serena-style) and tree-sitter symbol graphs are roadmap items as optional extras, not hard dependencies.
+
+Measured (2026-10-09, dogfooding this repo): 22 files (7 docs + 15 code) → 30 `imports` + 2 `ref` + 2 `contains` edges, verdict `READY`; identifier search (`pagerank`, `gitignore`) lands on the right source file.
 
 ## Verified
 
@@ -109,6 +131,7 @@ WantedBy=default.target
 ## Roadmap
 
 - Semantic enrichment (optional): cognee `cognify` over the crawled corpus when `LLM_API_KEY` is present — entity/relation edges alongside the structural ones.
+- tree-sitter symbol/reference edges for local code ingest (aider-style tags), as an optional extra over the regex layer.
 - Crawl4AI deep-crawl for JS sites that defeat the Playwright shell-fallback (infinite scroll, heavy anti-bot), via the `.[crawl]` extra.
 - ~~Static graph visualization~~ done: `render_site` emits a self-contained 3D Three.js viewer per site (bundle embedded, works offline; seeded layout computed at render time).
 

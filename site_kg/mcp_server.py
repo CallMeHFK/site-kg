@@ -5,6 +5,8 @@ Tools: ingest_url, list_sites, site_stats, search, get_page, neighbors.
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 from mcp.server.fastmcp import FastMCP
 
 from . import graph as graphmod
@@ -12,9 +14,48 @@ from . import ingest as ingestmod
 from . import manifest, store
 
 mcp = FastMCP("site-kg", instructions=(
-    "Knowledge graphs of crawled websites. Workflow: ingest_url(url) -> search/get_page/neighbors. "
+    "Knowledge graphs of crawled websites and local directories. Workflow: "
+    "ingest_url(url) or ingest_local(path) -> search/get_page/neighbors. "
     "A site whose verdict is NOT-READY has no link structure; use search, not graph traversal."
 ))
+
+
+@mcp.tool()
+async def ingest_local(path: str, max_files: int = 2000, respect_gitignore: bool = True) -> dict:
+    """Build a knowledge graph from a local directory of docs and/or code files.
+
+    Docs (md/markdown/mdx/txt/wiki/rst/adoc) are indexed as-is with edges from markdown
+    links and [[wikilinks]]; code files contribute import/include edges and searchable
+    symbol headers. Returns site_id plus a graph-quality verdict:
+    READY (traversable edges found) or NOT-READY (no links/imports; use search).
+    """
+    import anyio
+
+    from . import local
+    p = Path(path).expanduser()
+    if p.is_file():
+        return {"ok": False, "error": f"'{path}' is a file; pass its parent directory."}
+    if not p.is_dir():
+        return {"ok": False, "error": f"not a directory: {path}"}
+    max_files = max(1, min(max_files, 100_000))
+    root = p.resolve()
+    source = f"file://{root}"
+    site_id = store.site_id_for(source)
+    corpus = store.site_dir(site_id) / "corpus"
+
+    def _build() -> tuple[dict, dict]:
+        store.reset_corpus(corpus)
+        stats = local.build_local_corpus(root, corpus, max_files=max_files,
+                                         respect_gitignore=respect_gitignore)
+        return stats, graphmod.build_graph(corpus)
+
+    stats, built = await anyio.to_thread.run_sync(_build)
+    if not stats["files"]:
+        return {"ok": False, "error": "no usable doc/code files found",
+                "root": str(root), "scan_stats": stats}
+    meta = store.save_site(site_id, source, built)
+    return {"ok": True, "site_id": site_id, "root": str(root),
+            "scan_stats": stats, **meta}
 
 
 @mcp.tool()
@@ -23,7 +64,7 @@ async def ingest_url(url: str, max_pages: int = 200, max_depth: int = 4,
     """Crawl a website, build its knowledge graph, and register it as a queryable site.
 
     Returns site_id for later tools plus a graph-quality verdict:
-    READY (cross-references found) or NOT-READY (tree without links; graph traversal useless).
+    READY (traversable edges found) or NOT-READY (tree without links; graph traversal useless).
     """
     urls, source = await manifest.page_inventory(url, max_pages=max_pages, max_depth=max_depth)
     seed_hint = None
@@ -44,6 +85,7 @@ async def ingest_url(url: str, max_pages: int = 200, max_depth: int = 4,
                 "discovered": len(urls), **stats}
     site_id = store.site_id_for(url)
     corpus = store.site_dir(site_id) / "corpus"
+    store.reset_corpus(corpus)
     ingestmod.write_corpus(pages, url, corpus)
     built = graphmod.build_graph(corpus)
     meta = store.save_site(site_id, url, built)

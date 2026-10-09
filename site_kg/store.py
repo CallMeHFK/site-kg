@@ -19,6 +19,14 @@ def site_dir(site_id: str) -> Path:
     return DATA / site_id
 
 
+def reset_corpus(corpus_dir: Path) -> None:
+    """Re-ingest must not leave ghost docs from deleted/renamed sources."""
+    import shutil
+
+    if corpus_dir.exists():
+        shutil.rmtree(corpus_dir)
+
+
 def list_sites() -> list[dict]:
     if not DATA.exists():
         return []
