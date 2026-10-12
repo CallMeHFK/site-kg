@@ -84,7 +84,7 @@ MCP 客户端配置（streamable HTTP）：
 
 在 某嵌入式厂商文档站（静态 Sphinx）上：40 页有界摄入 → 40 文档、32 条 `ref` 边、1709 个索引词、判定 `READY`；七个 MCP 工具全部经真实 streamable-HTTP 会话调用通过（2026-10-06）。这同时证明：原始网站（不只是 wiki 导出）自带足以成图的链接结构。
 
-`ask` 已对内网 vLLM 网关（qwen3.5-122b 语言模型 + bge-m3 嵌入 + bge-reranker-v2-m3 重排序）实测：英文问题返回带引用的分步答案；中文跨语言问题在关键词检索落空时经嵌入兜底正常作答。Doxygen API Reference 站另测一组：navtree 清单 300 页 → 301 文档、527 条 ref 边、READY，`ask` 返回带 4 条引用的正确答案。
+`ask` 已对内网 vLLM 网关（qwen3.5-122b 语言模型 + bge-m3 嵌入 + bge-reranker-v2-m3 重排序）实测：英文问题返回带引用的分步答案；中文跨语言问题在 ASCII 索引零召回时由嵌入通道（与关键词命中取并集，嵌入文本为标题+正文开头而非摘要）正常作答。Doxygen API Reference 站另测一组：navtree 清单 300 页 → 301 文档、527 条 ref 边、READY，`ask` 返回带 4 条引用的正确答案。
 
 ## 站点类型覆盖（实测）
 

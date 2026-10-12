@@ -86,6 +86,17 @@ async def render_urls(urls: list[str], proxy: str | None = None,
     return out
 
 
+async def try_render_urls(urls: list[str], proxy: str | None = None,
+                          timeout_ms: int = 20000) -> tuple[dict[str, str], str | None]:
+    """render_urls that never raises: playwright is an optional extra, so a
+    missing or broken browser degrades to ({}, error-class-name) instead of
+    failing the crawl. Callers keep the static HTML and record the skip."""
+    try:
+        return await render_urls(urls, proxy=proxy, timeout_ms=timeout_ms), None
+    except Exception as e:
+        return {}, type(e).__name__
+
+
 def ambient_proxy(url: str) -> str | None:
     """Loopback traffic goes direct; everything else may need the proxy."""
     import os

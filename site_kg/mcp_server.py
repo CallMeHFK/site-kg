@@ -66,7 +66,8 @@ async def ingest_url(url: str, max_pages: int = 200, max_depth: int = 4,
     Returns site_id for later tools plus a graph-quality verdict:
     READY (traversable edges found) or NOT-READY (tree without links; graph traversal useless).
     """
-    urls, source = await manifest.page_inventory(url, max_pages=max_pages, max_depth=max_depth)
+    urls, source, inv_stats = await manifest.page_inventory(url, max_pages=max_pages,
+                                                            max_depth=max_depth)
     seed_hint = None
     if len(urls) <= 2:
         seed_hint = ("only the seed page was discovered -- the seed looks like a section leaf. "
@@ -76,6 +77,8 @@ async def ingest_url(url: str, max_pages: int = 200, max_depth: int = 4,
         return {"ok": False, "error": "no pages discovered", "url": url}
     pages, stats = await ingestmod.fetch_pages(urls, url, concurrency=concurrency,
                                                respect_robots=respect_robots)
+    for k, v in inv_stats["errors"].items():
+        stats["errors"][k] = stats["errors"].get(k, 0) + v
     if not pages:
         if stats["robots_blocked"]:
             return {"ok": False, "url": url, "discovered": len(urls), **stats,
@@ -88,7 +91,11 @@ async def ingest_url(url: str, max_pages: int = 200, max_depth: int = 4,
     store.reset_corpus(corpus)
     ingestmod.write_corpus(pages, url, corpus)
     built = graphmod.build_graph(corpus)
-    meta = store.save_site(site_id, url, built)
+    # persist renderer degradation so `site_stats` shows it days later, not only
+    # in this one-shot response
+    meta = store.save_site(site_id, url, built, extra={
+        "js_render_skipped": inv_stats.get("js_render_skipped", 0)
+                             + stats.get("js_render_skipped", 0)})
     return {"ok": True, "site_id": site_id, "inventory_source": source,
             "discovered": len(urls), "fetched": len(pages), "fetch_stats": stats,
             **({"seed_hint": seed_hint} if seed_hint else {}), **meta}
@@ -113,8 +120,8 @@ def site_stats(site_id: str) -> dict:
         deg[e["s"]] = deg.get(e["s"], 0) + 1
         deg[e["t"]] = deg.get(e["t"], 0) + 1
     top = sorted(deg.items(), key=lambda kv: -kv[1])[:5]
-    keep = ("url", "docs", "edges", "edgeTypes", "verdict", "built_at")
-    return {"ok": True, **{k: meta[k] for k in keep}, "top_degree_nodes": top}
+    keep = ("url", "docs", "edges", "edgeTypes", "verdict", "js_render_skipped", "built_at")
+    return {"ok": True, **{k: meta[k] for k in keep if k in meta}, "top_degree_nodes": top}
 
 
 @mcp.tool()

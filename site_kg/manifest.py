@@ -111,10 +111,12 @@ async def from_doxygen_navtree(client: httpx.AsyncClient, base: str) -> list[str
     return sorted(set(urls)) if found else None
 
 
-async def bfs(client: httpx.AsyncClient, base: str, max_pages: int, max_depth: int) -> list[str]:
+async def bfs(client: httpx.AsyncClient, base: str, max_pages: int, max_depth: int,
+              stats: dict) -> list[str]:
     """Same-site BFS over <a href>. Pages that fetch as client-side shells are
-    re-rendered headlessly so their links are discoverable."""
-    from .render import ambient_proxy, internal_links, is_js_shell, render_urls
+    re-rendered headlessly so their links are discoverable. Renderer failures
+    degrade to the static HTML and are counted in stats."""
+    from .render import ambient_proxy, internal_links, is_js_shell, try_render_urls
 
     seen, queue, out = {base}, [(base, 0)], []
     while queue and len(out) < max_pages:
@@ -127,11 +129,11 @@ async def bfs(client: httpx.AsyncClient, base: str, max_pages: int, max_depth: i
             continue
         html = r.text
         if is_js_shell(html):
-            try:
-                rendered = await render_urls([url], proxy=ambient_proxy(url))
-            except Exception:
+            rendered, err = await try_render_urls([url], proxy=ambient_proxy(url))
+            if err:
                 # renderer is an optional extra; shell links stay undiscovered
-                pass
+                stats["js_render_skipped"] = stats.get("js_render_skipped", 0) + 1
+                stats["errors"][err] = stats["errors"].get(err, 0) + 1
             else:
                 html = rendered.get(url, html)
         out.append(url)
@@ -145,17 +147,19 @@ async def bfs(client: httpx.AsyncClient, base: str, max_pages: int, max_depth: i
 
 
 async def page_inventory(base: str, max_pages: int = 500,
-                         max_depth: int = 4) -> tuple[list[str], str]:
-    """Returns (urls, source) where source is objects_inv|navtree|sitemap|bfs."""
+                         max_depth: int = 4) -> tuple[list[str], str, dict]:
+    """Returns (urls, source, stats) where source is objects_inv|navtree|sitemap|bfs.
+    stats carries renderer-degradation counters from the BFS probe."""
+    stats: dict = {"errors": {}}
     async with httpx.AsyncClient(headers=UA, timeout=30, follow_redirects=True) as client:
         inv = await from_objects_inv(client, base)
         if inv:
-            return inv[:max_pages], "objects_inv"
+            return inv[:max_pages], "objects_inv", stats
         nav = await from_doxygen_navtree(client, base)
         if nav:
-            return nav[:max_pages], "navtree"
+            return nav[:max_pages], "navtree", stats
         sm = await from_sitemap(client, base)
         if sm:
-            return sm[:max_pages], "sitemap"
-        urls = await bfs(client, base, max_pages, max_depth)
-        return urls, "bfs"
+            return sm[:max_pages], "sitemap", stats
+        urls = await bfs(client, base, max_pages, max_depth, stats)
+        return urls, "bfs", stats

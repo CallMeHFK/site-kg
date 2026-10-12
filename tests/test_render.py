@@ -60,7 +60,7 @@ def test_csr_spa_full_pipeline(tmp_path: Path):
     url = f"http://127.0.0.1:{srv.server_address[1]}/index.html"
 
     async def run():
-        urls, _src = await manifest.page_inventory(url, max_pages=10)
+        urls, _src, _inv_stats = await manifest.page_inventory(url, max_pages=10)
         pages, stats = await ingest.fetch_pages(urls, url, respect_robots=False)
         corpus = tmp_path / "corpus"
         ingest.write_corpus(pages, url, corpus)
@@ -74,6 +74,64 @@ def test_csr_spa_full_pipeline(tmp_path: Path):
     assert built["report"]["verdict"] == "READY"
     assert built["report"]["edges"] >= 2
     assert "flux capacitance" in built["docs"]["index"]["body"]
+
+
+def _serve(tmp_path: Path, files: dict[str, str]) -> tuple[str, object]:
+    """Loopback http.server over a fixture dir; returns (base_url, server)."""
+    import functools
+    import http.server
+    import threading
+
+    site = tmp_path / "site"
+    site.mkdir()
+    for n, c in files.items():
+        (site / n).write_text(c)
+    handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=site)
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return f"http://127.0.0.1:{srv.server_address[1]}", srv
+
+
+def _no_renderer(monkeypatch):
+    """Simulate playwright not installed: render_urls raises on import-time use."""
+    async def boom(urls, proxy=None, timeout_ms=20000):
+        raise ModuleNotFoundError("No module named 'playwright'")
+    from site_kg import render
+    monkeypatch.setattr(render, "render_urls", boom)
+
+
+def test_fetch_pages_degrades_when_renderer_missing(tmp_path: Path, monkeypatch):
+    """Regression: renderer absent must keep static HTML and record the skip,
+    not crash the crawl (was ModuleNotFoundError escaping fetch_pages)."""
+    import asyncio
+
+    from site_kg import ingest
+
+    base, srv = _serve(tmp_path, {"shell.html": SHELL})
+    _no_renderer(monkeypatch)
+    url = f"{base}/shell.html"
+    pages, stats = asyncio.run(ingest.fetch_pages([url], url, respect_robots=False))
+    srv.shutdown()
+    assert url in pages  # static HTML kept
+    assert stats["js_render_skipped"] == 1
+    assert stats["errors"].get("ModuleNotFoundError") == 1
+
+
+def test_bfs_records_render_skip_when_renderer_missing(tmp_path: Path, monkeypatch):
+    """The BFS inventory probe hits the same renderer; it must degrade and count
+    the skip in inventory stats instead of silently passing."""
+    import asyncio
+
+    from site_kg import manifest
+
+    base, srv = _serve(tmp_path, {"index.html": SHELL})
+    _no_renderer(monkeypatch)
+    url = f"{base}/index.html"
+    urls, source, stats = asyncio.run(manifest.page_inventory(url, max_pages=5))
+    srv.shutdown()
+    assert source == "bfs" and urls == [url]  # shell kept, links undiscovered
+    assert stats["js_render_skipped"] == 1
+    assert stats["errors"].get("ModuleNotFoundError") == 1
 
 
 def test_viewer_file_is_self_contained(tmp_path: Path):

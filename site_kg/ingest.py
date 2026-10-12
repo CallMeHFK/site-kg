@@ -92,14 +92,12 @@ async def fetch_pages(urls: list[str], base: str, concurrency: int = 4, delay: f
     # detection first, browser second: only shell pages pay for a JS render
     shells = [u for u, h in out.items() if _is_shell(h)]
     if shells:
-        try:
-            from .render import ambient_proxy, better_than_static, render_urls
-            rendered = await render_urls(shells, proxy=ambient_proxy(base))
-        except Exception as e:
+        from .render import ambient_proxy, better_than_static, try_render_urls
+        rendered, err = await try_render_urls(shells, proxy=ambient_proxy(base))
+        if err:
             # renderer is an optional extra; keep the static HTML, record the skip
             stats["js_render_skipped"] = len(shells)
-            key = type(e).__name__
-            stats["errors"][key] = stats["errors"].get(key, 0) + 1
+            stats["errors"][err] = stats["errors"].get(err, 0) + 1
         else:
             stats["js_rendered"] = 0
             for u, h in rendered.items():

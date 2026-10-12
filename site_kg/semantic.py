@@ -78,6 +78,12 @@ def cosine(a: list[float], b: list[float]) -> float:
     return dot / (na * nb + 1e-12)
 
 
+def _rank_by_cosine(qv: list[float], texts: list[str], model: str) -> list[int]:
+    """Indexes of texts ordered by descending cosine similarity to the query vector."""
+    vecs = embed(texts, model)
+    return sorted(range(len(texts)), key=lambda i: -cosine(qv, vecs[i]))
+
+
 def _blocks(text: str, size: int = 600) -> list[str]:
     return [text[i:i + size] for i in range(0, len(text), size)] or [""]
 
@@ -88,8 +94,7 @@ def best_excerpt(query_vec: list[float] | None, body: str, model: str, budget: i
     if not model or query_vec is None:
         return body[:budget]
     bl = _blocks(body)
-    vecs = embed(bl, model)
-    order = sorted(range(len(bl)), key=lambda i: -cosine(query_vec, vecs[i]))
+    order = _rank_by_cosine(query_vec, bl, model)
     picked, out = [], ""
     for i in order[:6]:
         if len(out) >= budget:
@@ -100,13 +105,14 @@ def best_excerpt(query_vec: list[float] | None, body: str, model: str, budget: i
 
 
 def answer(site: dict, docs: dict, query: str, graph_ctx: list[str], top_k: int = 4) -> dict:
-    """Retrieve (keyword + graph neighborhood), rerank, then answer with citations."""
+    """Retrieve (keyword + embedding union, plus graph neighborhood), rerank,
+    then answer with citations."""
     from .graph import search_index
 
     models = discover_models()
     kw = [h["id"] for h in search_index(site["search"], query, limit=8)]
     qv: list[float] | None = None
-    em: list[str] = []
+    emb: list[str] = []
     if models["embed"]:
         # Union candidate generation, not a serial fallback: keyword hits can be
         # confidently wrong while the right page sits mid-rank in embedding space
@@ -117,21 +123,22 @@ def answer(site: dict, docs: dict, query: str, graph_ctx: list[str], top_k: int 
         ids = list(docs.keys())
         texts = [f"{docs[i]['title']}\n{docs[i]['body'][:600]}" for i in ids]
         qv = embed([query], models["embed"])[0]
-        dvs = embed(texts, models["embed"])
-        em = [i for i, _ in sorted(zip(ids, (cosine(qv, dv) for dv in dvs)),
-                                   key=lambda kv: -kv[1])[:8]]
-    cand = list(dict.fromkeys(kw + em + graph_ctx))[:16]
+        emb = [ids[i] for i in _rank_by_cosine(qv, texts, models["embed"])[:8]]
+    # The cap applies to the kw+emb union only; the graph channel keeps its
+    # slots -- two full channels would otherwise truncate graph_ctx to zero.
+    cand = list(dict.fromkeys(kw + emb))[:12]
+    cand = list(dict.fromkeys(cand + graph_ctx))
     if not cand:
         return {"ok": False, "error": "no candidate pages retrieved"}
     bodies = {pid: docs[pid]["body"][:3000] for pid in cand if pid in docs}
     cand = [c for c in cand if c in bodies]
 
     if models["embed"] and models["rerank"]:
-        dvs = embed([bodies[c] for c in cand], models["embed"])
-        scored = sorted(zip(cand, (cosine(qv, dv) for dv in dvs)), key=lambda kv: -kv[1])
-        order = rerank(query, [bodies[c] for c, _ in scored], models["rerank"],
-                       min(top_k, len(scored)))
-        chosen = [scored[i][0] for i in order]
+        ranked = [cand[i] for i in _rank_by_cosine(qv, [bodies[c] for c in cand],
+                                                 models["embed"])]
+        order = rerank(query, [bodies[c] for c in ranked], models["rerank"],
+                       min(top_k, len(ranked)))
+        chosen = [ranked[i] for i in order]
     else:  # endpoint without embed/rerank: keyword ranking only
         chosen = cand[:top_k]
 

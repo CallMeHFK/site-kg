@@ -39,7 +39,8 @@ def list_sites() -> list[dict]:
     return out
 
 
-def save_site(site_id: str, base_url: str, built: dict) -> dict:
+def save_site(site_id: str, base_url: str, built: dict,
+              extra: dict | None = None) -> dict:
     d = site_dir(site_id)
     d.mkdir(parents=True, exist_ok=True)
     (d / "graph.json").write_text(json.dumps(built["graph"], ensure_ascii=False))
@@ -49,6 +50,7 @@ def save_site(site_id: str, base_url: str, built: dict) -> dict:
         "url": base_url,
         "built_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         **built["report"],
+        **(extra or {}),
     }
     (d / "meta.json").write_text(json.dumps(meta, indent=1, ensure_ascii=False))
     return meta

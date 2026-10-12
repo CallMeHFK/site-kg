@@ -1,5 +1,6 @@
-"""Corpus -> graph.json + search.json. Edges are hub/ref/contains links
-resolved against the crawled corpus only; zero resolvable edges => NOT-READY, never invent links."""
+"""Corpus -> graph.json + search.json. Edges are hub/ref/contains/imports links
+resolved against the crawled corpus only; zero cross-references (ref/imports)
+=> NOT-READY, never invent links."""
 from __future__ import annotations
 
 import json
@@ -173,7 +174,7 @@ def build_graph(corpus_dir: Path) -> dict:
         "edgeTypes": dict(edge_counts),
         "terms": len(terms),
         "verdict": verdict,
-        "verdictNote": "link structure present" if edge_list else
+        "verdictNote": "link structure present" if structural else
             "zero resolvable cross-references: this corpus is a pile of files, not a graph. "
             "Serve search+outline, or enable the semantic layer (LLM extraction).",
     }

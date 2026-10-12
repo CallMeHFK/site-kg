@@ -194,6 +194,8 @@ def test_hub_only_verdict_is_not_ready(tmp_path: Path):
     built = graph.build_graph(d)
     assert built["report"]["verdict"] == "NOT-READY"
     assert set(built["report"]["edgeTypes"]) == {"hub"}
+    # the note must agree with the verdict: hub fan-out is not link structure
+    assert "link structure present" not in built["report"]["verdictNote"]
 
 
 def test_ingest_local_tool_guards_and_clamp(tmp_path: Path):
