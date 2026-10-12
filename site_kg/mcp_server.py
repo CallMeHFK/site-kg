@@ -77,8 +77,6 @@ async def ingest_url(url: str, max_pages: int = 200, max_depth: int = 4,
         return {"ok": False, "error": "no pages discovered", "url": url}
     pages, stats = await ingestmod.fetch_pages(urls, url, concurrency=concurrency,
                                                respect_robots=respect_robots)
-    for k, v in inv_stats["errors"].items():
-        stats["errors"][k] = stats["errors"].get(k, 0) + v
     if not pages:
         if stats["robots_blocked"]:
             return {"ok": False, "url": url, "discovered": len(urls), **stats,
@@ -91,13 +89,15 @@ async def ingest_url(url: str, max_pages: int = 200, max_depth: int = 4,
     store.reset_corpus(corpus)
     ingestmod.write_corpus(pages, url, corpus)
     built = graphmod.build_graph(corpus)
-    # persist renderer degradation so `site_stats` shows it days later, not only
-    # in this one-shot response
+    # persist the fetch-side count only: it means "corpus pages that kept static
+    # HTML". The BFS probe attempts the same shell pages, so summing both phases
+    # would double-count one page as two.
     meta = store.save_site(site_id, url, built, extra={
-        "js_render_skipped": inv_stats.get("js_render_skipped", 0)
-                             + stats.get("js_render_skipped", 0)})
+        "js_render_skipped": stats.get("js_render_skipped", 0)})
     return {"ok": True, "site_id": site_id, "inventory_source": source,
             "discovered": len(urls), "fetched": len(pages), "fetch_stats": stats,
+            **({"inventory_stats": inv_stats} if inv_stats["errors"]
+               or inv_stats.get("js_render_skipped") else {}),
             **({"seed_hint": seed_hint} if seed_hint else {}), **meta}
 
 
