@@ -22,7 +22,7 @@ URL ──► 清单探测 ──► 爬取 ──► markdown 语料 ──► 
 
 - **清单探测**：Sphinx 站用 `objects.inv` 拿权威页面清单，Doxygen 站用 `navtreeindex0.js`（其 `index.html` 是 JS 空壳、无静态链接），其次 `sitemap.xml`，最后同站 BFS 兜底。不从本地文件名反猜。
 - **边只来自语料**：站点没有交叉引用时判定 `NOT-READY`，明说"这是目录树不是图"，绝不为了好看造边。
-- **结构层零 LLM**：检索、正文、图遍历全部不需要 key。可选语义层（实体关系抽取，用于问答）在配置 `LLM_API_KEY` 后经 cognee 启用。
+- **结构层零 LLM**：检索、正文、图遍历全部不需要 key。可选问答层 `ask` 走任意 OpenAI 兼容网关（`SITE_KG_LLM_BASE` + `SITE_KG_LLM_KEY`）。
 - **轮子优先**：MCP 用官方 `mcp` SDK；JS 重站点可选 Crawl4AI 深爬；语义层用 cognee。只有"清单→语料→图谱→MCP"的编排是自研。
 
 ## 快速开始
@@ -118,8 +118,8 @@ pretty URL 三形态（尾斜杠、无扩展名、`/title/X`）全部处理；se
 ```ini
 # ~/.config/systemd/user/site-kg.service
 [Service]
-WorkingDirectory=%h/.qwenpaw/workspaces/default/site-kg
-ExecStart=%h/.qwenpaw/workspaces/default/site-kg/.venv/bin/python -m site_kg.cli serve --transport http --port 8766
+WorkingDirectory=%h/develop/site-kg
+ExecStart=%h/develop/site-kg/.venv/bin/python -m site_kg.cli serve --transport http --port 8766
 Restart=on-failure
 [Install]
 WantedBy=default.target
@@ -127,7 +127,7 @@ WantedBy=default.target
 
 ## 路线图
 
-- 语义增强（可选）：配置 `LLM_API_KEY` 后用 cognee `cognify` 在结构边之上叠加实体/关系边。
+- 语义增强（可选）：配置 `SITE_KG_LLM_KEY` 后用 cognee `cognify` 在结构边之上叠加实体/关系边。
 - 本地代码摄入的 tree-sitter 符号/引用边（aider 式 tags），作为正则层之上的可选 extra。
 - 壳页兜底失效的 JS 站点（无限滚动、重反爬）走 Crawl4AI 深爬，经 `.[crawl]` extra 启用。
 - 可视化已完成：`render_site` 产出自包含 3D Three.js 查看器（bundle 内嵌可离线，布局在渲染期用固定种子计算）。

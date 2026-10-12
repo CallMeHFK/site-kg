@@ -1,7 +1,8 @@
 """MCP server: AI-facing access to site knowledge graphs.
 
 Transports: stdio (default, for IDE/agent hosts) or streamable-http (for network clients).
-Tools: ingest_url, list_sites, site_stats, search, get_page, neighbors.
+Tools: ingest_url, ingest_local, list_sites, site_stats, search, get_page, neighbors,
+ask, render_site.
 """
 from __future__ import annotations
 

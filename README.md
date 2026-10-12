@@ -22,7 +22,7 @@ local dir ──► walk (.gitignore-aware) ──► same corpus format ──�
 
 - **Manifest probe** — Sphinx sites are enumerated from `objects.inv` (the authoritative page list), Doxygen sites from `navtreeindex0.js` (their `index.html` is a JS shell with no static links), then `sitemap.xml`, then same-site BFS. No guessing from local filenames.
 - **Edges come from the corpus only.** If a site has no cross-references the verdict is `NOT-READY` and the graph layer says so instead of drawing a decorative hairball. Never invents links.
-- **No LLM required** for the structural layer: search, page bodies and graph traversal all work keyless. The optional semantic layer (entity/relation extraction for Q&A) plugs in cognee when `LLM_API_KEY` is set.
+- **No LLM required** for the structural layer: search, page bodies and graph traversal all work keyless. The optional `ask` Q&A layer runs on any OpenAI-compatible gateway (`SITE_KG_LLM_BASE` + `SITE_KG_LLM_KEY`).
 - **Wheels, not rewrites**: MCP via the official `mcp` SDK; optional JS-heavy crawling via Crawl4AI; optional semantic layer via cognee. Only the glue (manifest → corpus → graph → MCP) is ours.
 
 ## Quickstart
@@ -121,8 +121,8 @@ Local-first. A sudo-free systemd user unit:
 ```ini
 # ~/.config/systemd/user/site-kg.service
 [Service]
-WorkingDirectory=%h/.qwenpaw/workspaces/default/site-kg
-ExecStart=%h/.qwenpaw/workspaces/default/site-kg/.venv/bin/python -m site_kg.cli serve --transport http --port 8766
+WorkingDirectory=%h/develop/site-kg
+ExecStart=%h/develop/site-kg/.venv/bin/python -m site_kg.cli serve --transport http --port 8766
 Restart=on-failure
 [Install]
 WantedBy=default.target
@@ -130,7 +130,7 @@ WantedBy=default.target
 
 ## Roadmap
 
-- Semantic enrichment (optional): cognee `cognify` over the crawled corpus when `LLM_API_KEY` is present — entity/relation edges alongside the structural ones.
+- Semantic enrichment (optional): cognee `cognify` over the crawled corpus when `SITE_KG_LLM_KEY` is present — entity/relation edges alongside the structural ones.
 - tree-sitter symbol/reference edges for local code ingest (aider-style tags), as an optional extra over the regex layer.
 - Crawl4AI deep-crawl for JS sites that defeat the Playwright shell-fallback (infinite scroll, heavy anti-bot), via the `.[crawl]` extra.
 - ~~Static graph visualization~~ done: `render_site` emits a self-contained 3D Three.js viewer per site (bundle embedded, works offline; seeded layout computed at render time).
