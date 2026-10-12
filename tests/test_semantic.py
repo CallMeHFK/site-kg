@@ -26,7 +26,7 @@ def _patch_llm(monkeypatch, calls: dict):
 
 
 def _docs(ids: list[str]) -> dict:
-    return {i: {"title": f"TITLE-{i}", "body": f"body-{i} " * 100,
+    return {i: {"title": f"TITLE-{i}", "body": f"body-{i} " * 300,
                 "url": f"http://x/{i}"} for i in ids}
 
 
@@ -62,3 +62,5 @@ def test_answer_union_keeps_emb_and_graph_channels(monkeypatch):
     assert any("body-emb0" in d for d in reranked)  # union, not kw-only fallback
     assert any("body-g0" in d for d in reranked)  # graph channel not truncated away
     assert any("body-g1" in d for d in reranked)
+    # bge-reranker-large 400s past its 512-token context; docs must be capped
+    assert all(len(d) <= 1200 for d in reranked)

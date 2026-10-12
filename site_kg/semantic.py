@@ -136,7 +136,9 @@ def answer(site: dict, docs: dict, query: str, graph_ctx: list[str], top_k: int 
     if models["embed"] and models["rerank"]:
         ranked = [cand[i] for i in _rank_by_cosine(qv, [bodies[c] for c in cand],
                                                  models["embed"])]
-        order = rerank(query, [bodies[c] for c in ranked], models["rerank"],
+        # bge-reranker-large caps at 512 tokens/doc and 400s past ~1200 chars;
+        # relevance needs the head, not the whole excerpt
+        order = rerank(query, [bodies[c][:1200] for c in ranked], models["rerank"],
                        min(top_k, len(ranked)))
         chosen = [ranked[i] for i in order]
     else:  # endpoint without embed/rerank: keyword ranking only
