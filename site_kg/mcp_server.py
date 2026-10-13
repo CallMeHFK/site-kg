@@ -146,12 +146,11 @@ def search(site_id: str, query: str, limit: int = 10) -> dict:
 def get_page(site_id: str, page_id: str) -> dict:
     """Full markdown body of one page, with title and source URL."""
     try:
-        docs = store.load(site_id, "docs")
+        d = store.get_doc(site_id, page_id)
     except KeyError as e:
         return {"ok": False, "error": str(e)}
-    d = docs.get(page_id)
     if not d:
-        return {"ok": False, "error": f"unknown page '{page_id}'", "known": len(docs)}
+        return {"ok": False, "error": f"unknown page '{page_id}'"}
     return {"ok": True, "id": page_id, "title": d["title"], "url": d["url"], "body": d["body"]}
 
 
@@ -210,11 +209,11 @@ def ask(site_id: str, question: str, top_k: int = 4) -> dict:
     try:
         from . import semantic
         search = store.load(site_id, "search")
-        docs = store.load(site_id, "docs")
     except KeyError as e:
         return {"ok": False, "error": str(e)}
     except RuntimeError as e:
         return {"ok": False, "error": str(e)}
+    docs = dict(store.iter_docs(site_id))  # streamed from shards, not one json.loads
     from .graph import search_index
     graph_ctx: list[str] = []
     for pid in [h["id"] for h in search_index(search, question, limit=3)]:

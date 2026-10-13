@@ -2,15 +2,26 @@
 
 Docs (md/mdx/txt/wiki/rst/adoc) keep their body; code files become docs whose
 body is a prose header (path, language, defined symbols) plus the raw source,
-so the inverted index tokenizes identifiers. Edges come from markdown links,
-wikilinks ([[Page]], Obsidian/MediaWiki style), README/index hub membership
-and import/include statements -- emitted as a typed _edges.json sidecar
-({"s","t","k"} triples). Unresolvable references are dropped, never invented.
+so the inverted index tokenizes identifiers. The code whitelist covers the
+usual application languages plus the kernel/build ecosystem (yaml, asm, perl,
+awk, linker scripts, makefile fragments, devicetree) and well-known
+extension-less build files (Makefile/Kconfig/Kbuild/COPYING/README).
+Edges come from markdown links, wikilinks ([[Page]], Obsidian/MediaWiki
+style), README/index hub membership and import/include statements -- emitted
+as a typed _edges.json sidecar ({"s","t","k"} triples). Unresolvable
+references are dropped, never invented.
+
+Env knobs (read per call, not at import: a long-lived MCP server picks up
+changes without a restart):
+  SITE_KG_NOISE_EXEMPT  comma-separated posix relpath prefixes whose dirs
+                        escape NOISE_DIRS pruning (e.g. drivers/target)
+  SITE_KG_MAX_BYTES     per-file size cap in bytes (default 512 KiB)
 """
 from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 from pathlib import Path
 
@@ -27,6 +38,22 @@ CODE_EXTS = {
     ".hpp": "c++", ".hh": "c++", ".java": "java", ".kt": "kotlin", ".rb": "ruby",
     ".php": "php", ".sh": "bash", ".lua": "lua", ".swift": "swift", ".cs": "csharp",
     ".scala": "scala", ".m": "objc", ".zig": "zig",
+    # kernel/build/hardware-text ecosystems: missing these lost ~24k files on a
+    # DriveOS SDK source tree (DT bindings, asm, kbuild, linker, devicetree)
+    ".yaml": "yaml", ".yml": "yaml", ".mk": "makefile", ".s": "asm",
+    ".pl": "perl", ".awk": "awk", ".ld": "linker-script", ".lds": "linker-script",
+    ".dts": "devicetree", ".dtsi": "devicetree",
+}
+# well-known extension-less files: language by basename, not by suffix
+PLAIN_FILES = {
+    "makefile": "makefile", "gnumakefile": "makefile", "kbuild": "makefile",
+    "build": "makefile",
+    "kconfig": "kconfig",
+    "configure": "shell",
+    "copying": "license", "copyright": "license", "license": "license",
+    "readme": "text", "maintainers": "text", "credits": "text", "authors": "text",
+    "changelog": "text", "install": "text", "todo": "text", "notes": "text",
+    "news": "text",
 }
 NOISE_DIRS = {
     ".git", ".hg", ".svn", "node_modules", "__pycache__", ".venv", "venv", "env",
@@ -41,6 +68,7 @@ NOISE_FILES = re.compile(
 MAX_BYTES = 512 * 1024
 MAX_SYMBOLS = 40
 MAX_PKG_EDGE_TARGETS = 20
+_PRUNE_SAMPLE_MAX = 20
 
 MD_LINK = re.compile(r"(?<!!)\[[^\]]*\]\(([^)\s#]+)(#[^)\s]*)?\)")
 WIKI_LINK = re.compile(r"\[\[([^\]|#]+)(?:#[^\]|]*)?(?:\|[^\]]*)?\]\]")
@@ -96,6 +124,31 @@ def _is_binary(raw: bytes) -> bool:
     return b"\0" in raw[:8192]
 
 
+def _lang_for(p: Path) -> str | None:
+    """Language of a walkable file by suffix, else by well-known extension-less
+    basename. None => not a code candidate (doc exts are checked separately).
+    Dotfiles are excluded from the basename table: pathlib gives .env an empty
+    suffix, so without the guard .notes/.license would suddenly be ingested."""
+    lang = CODE_EXTS.get(p.suffix.lower())
+    if lang:
+        return lang
+    if not p.suffix and not p.name.startswith("."):
+        return PLAIN_FILES.get(p.name.lower())
+    return None
+
+
+def _max_bytes() -> int:
+    """Per-call SITE_KG_MAX_BYTES read: a long-lived MCP server must pick up
+    limit changes without a restart. Unset/invalid falls back to MAX_BYTES."""
+    raw = os.environ.get("SITE_KG_MAX_BYTES", "").strip()
+    if not raw:
+        return MAX_BYTES
+    try:
+        return max(1024, int(raw))
+    except ValueError:
+        return MAX_BYTES
+
+
 def _load_gitignore(root: Path, respect: bool):
     if not (respect and pathspec):
         return None
@@ -106,20 +159,46 @@ def _load_gitignore(root: Path, respect: bool):
     return pathspec.PathSpec.from_lines("gitignore", lines) if lines else None
 
 
+def _noise_exempt(rel: str, prefixes: tuple[str, ...]) -> bool:
+    """rel (posix path of a dir, relative to root) equals an exempt prefix or
+    sits under one."""
+    return any(rel == p or rel.startswith(p + "/") for p in prefixes)
+
+
 def _walk(root: Path, max_files: int, respect_gitignore: bool) -> tuple[list[Path], dict]:
     """os.walk with followlinks=False: pathlib.rglob on Python <=3.12 follows
     directory symlinks with no cycle protection, and file symlinks would pull
     content from outside root into the corpus. Symlinks are skipped entirely."""
-    import os
-
+    # SITE_KG_NOISE_EXEMPT: comma-separated posix relpath prefixes whose dirs escape
+    # NOISE_DIRS pruning (real source trees like drivers/target collide with noise
+    # names). Read per call, not at import, so a long-lived MCP server picks up changes.
+    exempt = tuple(e.strip().strip("/")
+                   for e in os.environ.get("SITE_KG_NOISE_EXEMPT", "").split(",")
+                   if e.strip().strip("/"))
     spec = _load_gitignore(root, respect_gitignore)
     files, stats = [], {"skipped_ignored": 0, "skipped_binary": 0, "skipped_size": 0,
-                        "skipped_kind": 0, "skipped_symlink": 0}
+                        "skipped_kind": 0, "skipped_symlink": 0,
+                        "skipped_noise_file": 0, "skipped_ext": 0, "skipped_oserror": 0,
+                        "pruned_noise_dirs": 0}
+    # audit trail for the pruning policies: a coverage report that cannot
+    # account for every skip is a wrong report, so what NOISE_DIRS cut is
+    # counted (and sampled) rather than silently disappeared
+    pruned_sample: list[str] = []
     truncated = False
+    max_bytes = _max_bytes()
     for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
-        dirnames[:] = sorted(d for d in dirnames
-                             if d not in NOISE_DIRS
-                             and not (Path(dirpath) / d).is_symlink())
+        keep = []
+        for d in dirnames:
+            rel = (Path(dirpath) / d).relative_to(root).as_posix()
+            if (Path(dirpath) / d).is_symlink():
+                continue  # dir symlink: cycle bait, never descended
+            if d in NOISE_DIRS and not _noise_exempt(rel, exempt):
+                stats["pruned_noise_dirs"] += 1
+                if len(pruned_sample) < _PRUNE_SAMPLE_MAX:
+                    pruned_sample.append(rel)
+                continue
+            keep.append(d)
+        dirnames[:] = sorted(keep)
         for fn in sorted(filenames):
             if len(files) >= max_files:
                 stats["truncated_at"] = max_files
@@ -133,23 +212,33 @@ def _walk(root: Path, max_files: int, respect_gitignore: bool) -> tuple[list[Pat
             if spec and spec.match_file(rel.as_posix()):
                 stats["skipped_ignored"] += 1
                 continue
-            if NOISE_FILES.search(fn) or (p.suffix.lower() not in DOC_EXTS
-                                          and p.suffix.lower() not in CODE_EXTS):
-                stats["skipped_kind"] += 1
+            if NOISE_FILES.search(fn):
+                # lockfiles/minified bundles: counted apart from "unsupported
+                # extension" so a coverage audit can attribute each skip
+                stats["skipped_noise_file"] += 1
+                continue
+            if not (p.suffix.lower() in DOC_EXTS or _lang_for(p)):
+                stats["skipped_ext"] += 1
                 continue
             try:
-                if p.stat().st_size > MAX_BYTES:
+                if p.stat().st_size > max_bytes:
                     stats["skipped_size"] += 1
                     continue
                 if _is_binary(p.read_bytes()):
                     stats["skipped_binary"] += 1
                     continue
             except OSError:
-                stats["skipped_kind"] += 1
+                stats["skipped_oserror"] += 1
                 continue
             files.append(p)
         if truncated:
             break
+    stats["pruned_noise_dirs_sample"] = pruned_sample
+    # kept for back-compat: the pre-granularity lump of noise-file + unsupported
+    # extension + unreadable-file skips
+    stats["skipped_kind"] = (stats["skipped_noise_file"]
+                             + stats["skipped_ext"]
+                             + stats["skipped_oserror"])
     return files, stats
 
 
@@ -160,7 +249,8 @@ def _ids_for(files: list[Path], root: Path) -> dict[str, str]:
     used: set[str] = set()
     for p in files:
         rel = p.relative_to(root).as_posix()
-        stem = rel if p.suffix.lower() in CODE_EXTS else rel[: -len(p.suffix)]
+        # extension-less files keep the full relname: rel[:-len("")] would be ""
+        stem = rel if p.suffix.lower() in CODE_EXTS or not p.suffix else rel[: -len(p.suffix)]
         pid = re.sub(r"[^A-Za-z0-9_.-]+", "_", stem.replace("/", "_")) or "index"
         if pid in used:
             pid = f"{pid}-{hashlib.sha256(rel.encode()).hexdigest()[:6]}"
@@ -346,10 +436,10 @@ def build_local_corpus(root: Path, out_dir: Path, max_files: int = 2000,
         try:
             text = p.read_text(encoding="utf-8", errors="replace")
         except OSError:  # became unreadable between walk and read
+            stats["skipped_oserror"] += 1
             stats["skipped_kind"] += 1
             continue
-        ext = p.suffix.lower()
-        if ext in DOC_EXTS:
+        if (lang := _lang_for(p)) is None:
             stats["docs"] += 1
             put(rel, _doc_title(text, Path(rel).stem.replace("_", " ")), text)
             from_dir = str(Path(rel).parent)
@@ -379,7 +469,6 @@ def build_local_corpus(root: Path, out_dir: Path, max_files: int = 2000,
                     stats["dropped_refs"] += 1
         else:
             stats["code"] += 1
-            lang = CODE_EXTS[ext]
             syms = _symbols(lang, text)
             header = (f"path: {rel}\nlanguage: {lang}\n"
                       f"symbols: {', '.join(syms) if syms else '(none detected)'}\n\n")

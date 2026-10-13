@@ -71,14 +71,24 @@ Resource: `site://<site_id>/graph` — the full graph JSON.
 `ingest_local` walks a directory into the same corpus format the crawler produces, so every downstream tool (search/get_page/neighbors/ask/render) works unchanged.
 
 - **Docs** (`.md/.markdown/.mdx/.txt/.wiki/.rst/.adoc`) keep their body. Edges come from relative markdown links (extension-less and root-absolute forms included) and `[[wikilinks]]` (Obsidian/MediaWiki style, case/underscore-insensitive basename match). Unresolvable references are counted in `dropped_refs`, never turned into edges.
-- **Code** (27 extensions: py, js/ts, go, rust, c/c++, java/kotlin, ruby, …) becomes searchable docs whose body starts with a prose header (path, language, detected top-level symbols) so identifiers hit the inverted index. Edges come from real dependency statements: Python `import`/`from…import` (including relative and parenthesized forms), JS/TS `import`/`require`, C/C++ quoted `#include`, Go `import` (go.mod-aware), Rust `mod`/`use crate::`, JVM `import`, Ruby `require_relative`.
+- **Code** (37 extensions: py, js/ts, go, rust, c/c++, java/kotlin, ruby, … plus the kernel/build ecosystem — yaml, asm `.S/.s`, perl, awk, linker scripts, makefile fragments, devicetree `.dts/.dtsi`) becomes searchable docs whose body starts with a prose header (path, language, detected top-level symbols) so identifiers hit the inverted index. Well-known extension-less build files (`Makefile`, `Kconfig`, `Kbuild`, `COPYING`, `LICENSE`, `README`, `MAINTAINERS`, …) are ingested by basename with the same treatment. Edges come from real dependency statements: Python `import`/`from…import` (including relative and parenthesized forms), JS/TS `import`/`require`, C/C++ quoted `#include`, Go `import` (go.mod-aware), Rust `mod`/`use crate::`, JVM `import`, Ruby `require_relative`.
 - **README/index files are hubs**: `contains` edges to their directory siblings, mirroring the site-side hub semantics.
-- **`.gitignore` is honored** (via `pathspec`) plus a builtin noise list (`node_modules`, `__pycache__, lockfiles, *.min.js`, …); >512 KB and binary files are skipped.
+- **`.gitignore` is honored** (via `pathspec`) plus a builtin noise list (`node_modules`, `__pycache__, lockfiles, *.min.js`, …); >512 KB and binary files are skipped. Every skip is attributed, not silent: `scan_stats` counts `skipped_noise_file` / `skipped_ext` / `skipped_oserror` separately (their sum stays in `skipped_kind`), and NOISE_DIRS pruning reports `pruned_noise_dirs` plus a sample of the pruned paths — a coverage claim you cannot audit is a wrong claim.
+- **Page bodies are sharded, not monolithic**: `data/sites/<site_id>/docs/<bucket>.json` holds 1–256 sha-keyed buckets (count scaled to corpus size, recorded as `docBuckets`), so `get_page` reads one small bucket whatever the corpus shape (measured on a 75k-doc kernel tree: reading the single 975 MB `docs.json` took 8.3 s, a sharded cold page read takes ~12 ms; a `drivers/` chapter with 31k files cannot recreate one giant shard). Sites built before sharding keep their `docs.json` and are still read transparently. Re-ingesting replaces the shards and drops the old single file in the same pass.
+
+Env knobs (read per call, so a long-lived MCP server picks up changes without a restart):
+
+| var | effect |
+|---|---|
+| `SITE_KG_MAX_BYTES` | per-file size cap in bytes (default 512 KiB) |
+| `SITE_KG_NOISE_EXEMPT` | comma-separated posix relpath prefixes whose dirs escape NOISE_DIRS pruning (e.g. `drivers/target` — real source trees collide with noise names) |
 - **PageRank** runs over the edge list (aider repo-map style) and lands on each node as `r`, so `site_stats`/the viewer can rank structurally central files.
 
 Design choices, after surveying the field (aider, Serena, CocoIndex, gitingest; GraphRAG, LightRAG, cognee, khoj; GraphCoder/CGM papers): the structural layer stays **LLM-free and honest** — every edge traces to an explicit link or import statement. LLM-extracted entity/relation edges (the GraphRAG/LightRAG approach) buy recall at the cost of hallucinated edges and build cost, so they stay in the optional cognee semantic layer. Compiler-grade precision (LSP/SCIP, Serena-style) and tree-sitter symbol graphs are roadmap items as optional extras, not hard dependencies.
 
 Measured (2026-10-09, dogfooding this repo): 22 files (7 docs + 15 code) → 30 `imports` + 2 `ref` + 2 `contains` edges, verdict `READY`; identifier search (`pagerank`, `gitignore`) lands on the right source file.
+
+Measured at corpus scale (2026-10-13, a 115,598-doc / 7-site DriveOS SDK source tree): re-ingest and report parity verified site-by-site; `get_page` on the largest site (75,415 docs) reads one ~3.8 MB shard in ~12 ms where the single-file format needed 8.3 s for the same page. Shard/meta caches are keyed by file mtime+size, so a re-ingest from any process (cli, crawl job, another agent) is served fresh with no invalidation hook; all writes are tmp-file + `os.replace`, and a 4-thread read hammer during repeated re-ingest saw zero torn reads.
 
 ## Verified
 

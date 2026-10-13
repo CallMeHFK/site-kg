@@ -208,3 +208,166 @@ def test_ingest_local_tool_guards_and_clamp(tmp_path: Path):
     f.write_text("x\n")
     r = asyncio.run(mcp_server.ingest_local(str(f)))
     assert r["ok"] is False and "parent directory" in r["error"]
+
+
+def make_noise_collision_tree(root: Path) -> None:
+    """Real-source dirs colliding with NOISE_DIRS names (kernel: drivers/target)."""
+    (root / "drivers" / "target").mkdir(parents=True)
+    (root / "drivers" / "target" / "a.c").write_text("int a(void) { return 0; }\n")
+    (root / "tools" / "target").mkdir(parents=True)
+    (root / "tools" / "target" / "b.c").write_text("int b(void) { return 0; }\n")
+    (root / "main.c").write_text("int main(void) { return 0; }\n")
+
+
+def _node_ids(corpus: Path) -> set:
+    return {n["i"] for n in graph.build_graph(corpus)["graph"]["nodes"]}
+
+
+def test_noise_dirs_pruned_by_default(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("SITE_KG_NOISE_EXEMPT", raising=False)
+    src = tmp_path / "src"
+    src.mkdir()
+    make_noise_collision_tree(src)
+    local.build_local_corpus(src, tmp_path / "corpus")
+    ids = _node_ids(tmp_path / "corpus")
+    assert "main.c" in ids
+    assert "drivers_target_a.c" not in ids  # "target" is a NOISE_DIRS name
+    assert "tools_target_b.c" not in ids
+
+
+def test_noise_exempt_env_prefix(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("SITE_KG_NOISE_EXEMPT", "drivers/target")
+    src = tmp_path / "src"
+    src.mkdir()
+    make_noise_collision_tree(src)
+    local.build_local_corpus(src, tmp_path / "corpus")
+    ids = _node_ids(tmp_path / "corpus")
+    assert "drivers_target_a.c" in ids
+    # the exemption is a path prefix, not a name-wide amnesty
+    assert "tools_target_b.c" not in ids
+
+
+def test_noise_exempt_read_per_call(tmp_path: Path, monkeypatch):
+    # env is read inside _walk at call time: same process, no module reload
+    src = tmp_path / "src"
+    src.mkdir()
+    make_noise_collision_tree(src)
+    monkeypatch.delenv("SITE_KG_NOISE_EXEMPT", raising=False)
+    local.build_local_corpus(src, tmp_path / "c1")
+    assert "drivers_target_a.c" not in _node_ids(tmp_path / "c1")
+    monkeypatch.setenv("SITE_KG_NOISE_EXEMPT", "drivers/target")
+    local.build_local_corpus(src, tmp_path / "c2")
+    assert "drivers_target_a.c" in _node_ids(tmp_path / "c2")
+
+
+def make_kernel_flavored_tree(root: Path) -> None:
+    """Files the code whitelist used to miss on a kernel/DT/build tree."""
+    (root / "boot").mkdir()
+    (root / "dt-bindings").mkdir()
+    (root / "scripts").mkdir()
+    (root / "boot" / "start.S").write_text(".global _start\n_start:\n")
+    (root / "boot" / "link.lds").write_text("SECTIONS { .text : { *(.text) } }\n")
+    (root / "dt-bindings" / "nvidia,tegra-soc.yaml").write_text(
+        "# SPDX-License-Identifier: GPL-2.0\ndescription: Tegra SoC binding\n")
+    (root / "dt-bindings" / "board.dts").write_text("/dts-v1/;\n/ {\n};\n")
+    (root / "scripts" / "insert.awk").write_text("BEGIN { print \"awk\" }\n")
+    (root / "scripts" / "config.pl").write_text("print \"perl\\n\";\n")
+    (root / "frag.mk").write_text("obj-y += driver.o\n")
+    (root / "Makefile").write_text("obj-y += boot/\n")
+    (root / "Kconfig").write_text("config FOO\n\tbool \"foo\"\n")
+    (root / "COPYING").write_text("GNU GENERAL PUBLIC LICENSE\n")
+    (root / "README").write_text("# readme\n")
+
+
+def test_kernel_build_ecosystem_extensions(tmp_path: Path):
+    src = tmp_path / "src"
+    src.mkdir()
+    make_kernel_flavored_tree(src)
+    corpus = tmp_path / "corpus"
+    stats = local.build_local_corpus(src, corpus)
+    docs = graph.build_graph(corpus)["docs"]  # id -> {title, url, body}
+    # asm .S (case), linker script, DT binding yaml, devicetree dts, perl/awk,
+    # makefile fragments and extension-less build files all become docs
+    for pid in ("boot_start.S", "boot_link.lds", "dt-bindings_nvidia_tegra-soc.yaml",
+                "dt-bindings_board.dts", "scripts_insert.awk", "scripts_config.pl",
+                "frag.mk", "Makefile", "Kconfig", "COPYING", "README"):
+        assert pid in docs, pid
+    # code branch: title is the relpath (not a body line) and the language tag
+    # is emitted, so lang "license" is not confused with a .md title heading
+    assert docs["COPYING"]["title"] == "COPYING"
+    assert docs["COPYING"]["body"].lstrip("\n").startswith(
+        "path: COPYING\nlanguage: license")
+    assert docs["Makefile"]["body"].lstrip("\n").startswith(
+        "path: Makefile\nlanguage: makefile")
+    assert "language: asm" in docs["boot_start.S"]["body"]
+    assert "language: devicetree" in docs["dt-bindings_board.dts"]["body"]
+    assert stats["code"] >= 11 and stats["docs"] == 0
+
+
+def test_extensionless_ids_do_not_collapse(tmp_path: Path):
+    # rel[:-len("")] is "": without the guard every extension-less file
+    # collapsed onto the fallback id "index"
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "Makefile").write_text("all:\n")
+    (src / "Kconfig").write_text("config X\n")
+    (src / "index.md").write_text("# real index\n")
+    local.build_local_corpus(src, tmp_path / "corpus")
+    ids = _node_ids(tmp_path / "corpus")
+    assert {"Makefile", "Kconfig", "index"} <= ids
+
+
+def test_extensionless_readme_is_still_a_hub(tmp_path: Path):
+    src = tmp_path / "src"
+    (src / "docs").mkdir(parents=True)
+    (src / "docs" / "README").write_text("# docs\n")
+    (src / "docs" / "a.rst").write_text("a\n")
+    r = build(src, tmp_path / "corpus")
+    pairs = {(e["s"], e["t"], e["k"]) for e in r["graph"]["edges"]}
+    assert ("docs_README", "docs_a", "contains") in pairs
+
+
+def test_scan_stats_attribute_every_skip(tmp_path: Path):
+    src = tmp_path / "src"
+    (src / "node_modules" / "pkg").mkdir(parents=True)
+    (src / "node_modules" / "pkg" / "dep.js").write_text("export const d = 1;\n")
+    (src / "package-lock.json").write_text("{\"lockfileVersion\": 3}\n")
+    (src / "blob.xyz").write_text("unknown extension\n")
+    (src / "keep.py").write_text("import os\n")
+    stats = local.build_local_corpus(src, tmp_path / "corpus")
+    assert stats["skipped_noise_file"] == 1  # lockfile, not "unsupported ext"
+    assert stats["skipped_ext"] == 1
+    assert stats["pruned_noise_dirs"] >= 1
+    assert "node_modules" in stats["pruned_noise_dirs_sample"]
+    # skipped_kind stays the documented lump so old consumers keep working
+    assert stats["skipped_kind"] == (stats["skipped_noise_file"]
+                                     + stats["skipped_ext"]
+                                     + stats.get("skipped_oserror", 0))
+
+
+def test_max_bytes_env_is_read_per_call(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("SITE_KG_MAX_BYTES", raising=False)
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "big.py").write_text("x = '" + "a" * (600 * 1024) + "'\n")
+    (src / "small.py").write_text("y = 1\n")
+    local.build_local_corpus(src, tmp_path / "c1")
+    assert "big.py" not in _node_ids(tmp_path / "c1")  # 600K > 512K default
+    monkeypatch.setenv("SITE_KG_MAX_BYTES", str(2 * 1024 * 1024))
+    local.build_local_corpus(src, tmp_path / "c2")
+    assert "big.py" in _node_ids(tmp_path / "c2")  # same process, no reload
+
+
+def test_dotfiles_never_match_plain_files(tmp_path: Path):
+    # pathlib gives .env an empty suffix: without the dotfile guard a .notes or
+    # .license file would suddenly be ingested by basename
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / ".notes").write_text("secret scratch\n")
+    (src / ".license").write_text("proprietary\n")
+    (src / "notes").write_text("real notes\n")
+    stats = local.build_local_corpus(src, tmp_path / "corpus")
+    ids = _node_ids(tmp_path / "corpus")
+    assert "notes" in ids
+    assert ".notes" not in ids and ".license" not in ids
+    assert stats["skipped_ext"] == 2

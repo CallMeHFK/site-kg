@@ -71,14 +71,24 @@ MCP 客户端配置（streamable HTTP）：
 `ingest_local` 把本地目录遍历成与爬虫完全同构的语料，下游所有工具（search/get_page/neighbors/ask/render）无需改动即可用。
 
 - **文档**（`.md/.markdown/.mdx/.txt/.wiki/.rst/.adoc`）正文原样保留。边来自相对 markdown 链接（含无扩展名与根绝对路径形式）和 `[[wikilink]]`（Obsidian/MediaWiki 风格，大小写/下划线不敏感按基名匹配）。解析不了的引用计入 `dropped_refs`，绝不成边。
-- **代码**（27 种扩展名：py、js/ts、go、rust、c/c++、java/kotlin、ruby……）生成可检索文档，正文开头是散文头（路径、语言、检测到的顶层符号），标识符因此能进倒排索引。边来自真实依赖语句：Python `import`/`from…import`（含相对导入与括号折行）、JS/TS `import`/`require`、C/C++ 引号 `#include`、Go `import`（识别 go.mod）、Rust `mod`/`use crate::`、JVM `import`、Ruby `require_relative`。
+- **代码**（37 种扩展名：py、js/ts、go、rust、c/c++、java/kotlin、ruby…… 外加内核/构建生态——yaml、汇编 `.S/.s`、perl、awk、链接脚本、makefile 片段、设备树 `.dts/.dtsi`）生成可检索文档，正文开头是散文头（路径、语言、检测到的顶层符号），标识符因此能进倒排索引。知名无扩展名构建文件（`Makefile`、`Kconfig`、`Kbuild`、`COPYING`、`LICENSE`、`README`、`MAINTAINERS` 等）按基名入图，同样带散文头。边来自真实依赖语句：Python `import`/`from…import`（含相对导入与括号折行）、JS/TS `import`/`require`、C/C++ 引号 `#include`、Go `import`（识别 go.mod）、Rust `mod`/`use crate::`、JVM `import`、Ruby `require_relative`。
 - **README/index 是 hub**：向同目录成员发 `contains` 边，与站点侧 hub 语义一致。
-- **遵循 `.gitignore`**（经 `pathspec`），并内置噪音清单（`node_modules`、`__pycache__`、lockfile、`*.min.js` 等）；>512 KB 与二进制文件跳过。
+- **遵循 `.gitignore`**（经 `pathspec`），并内置噪音清单（`node_modules`、`__pycache__`、lockfile、`*.min.js` 等）；>512 KB 与二进制文件跳过。每项跳过都有归因而非静默：`scan_stats` 分别计数 `skipped_noise_file` / `skipped_ext` / `skipped_oserror`（三者之和仍记在 `skipped_kind`，老消费者不变），NOISE_DIRS 剪枝额外报告 `pruned_noise_dirs` 与被剪路径样本——无法对账的覆盖率声明就是错声明。
+- **正文分桶存储，不搞单文件**：`data/sites/<site_id>/docs/<bucket>.json` 为 1–256 个 sha 分桶（数量随语料规模分层，记入 `meta.json` 的 `docBuckets`），无论语料形状如何 `get_page` 只读一个小分桶（实测 7.5 万文档的内核树：整份 975MB `docs.json` 读取 8.3 秒 → 分桶后冷读约 12ms；`drivers/` 这类 3 万文件的章也不会再造出巨大分片）。分桶前的旧站仍带 `docs.json`，读取侧透明兼容。重新摄入时同一遍替换全部分桶并删除旧单文件。
+
+环境变量（调用时读取，常驻 MCP 服务无需重启即可生效）：
+
+| 变量 | 效果 |
+|---|---|
+| `SITE_KG_MAX_BYTES` | 单文件大小上限，单位字节（默认 512 KiB） |
+| `SITE_KG_NOISE_EXEMPT` | 逗号分隔的 posix 相对路径前缀，其目录豁免 NOISE_DIRS 剪枝（如 `drivers/target`——真实源码目录会撞上噪音名） |
 - **PageRank** 跑在边表上（aider repo-map 式），落到每个节点的 `r` 字段，`site_stats`/查看器可据此排出结构中心文件。
 
 设计取舍（调研 aider、Serena、CocoIndex、gitingest、GraphRAG、LightRAG、cognee、khoj 及 GraphCoder/CGM 论文后）：结构层坚持**零 LLM、诚实边**——每条边都能回溯到显式链接或 import 语句。LLM 抽取实体/关系边（GraphRAG/LightRAG 路线）换来召回但引入幻觉边与构建成本，因此只放在可选 cognee 语义层。编译器级精度（LSP/SCIP、Serena 路线）与 tree-sitter 符号图列入路线图，作为可选 extra 而非硬依赖。
 
 实测（2026-10-09，自举本仓库）：22 个文件（7 文档 + 15 代码）→ 30 条 `imports` + 2 条 `ref` + 2 条 `contains`，判定 `READY`；按标识符检索（`pagerank`、`gitignore`）命中正确源文件。
+
+实测（2026-10-13，语料规模级：DriveOS SDK 源码树 115,598 文档 / 7 站）：逐站重摄入，报告数字与摄入前完全一致；最大站（75,415 文档）`get_page` 冷读约 12ms（单文件格式同一页面需 8.3s）。分片/meta 缓存以文件 mtime+size 为键，任何进程（cli、爬虫任务、另一个 agent）重摄入后下一次读到的就是新数据，无需失效钩子；所有写入走临时文件 + `os.replace`，重摄入期间 4 线程并发读零撕裂。
 
 ## 实测
 
