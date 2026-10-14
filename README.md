@@ -54,8 +54,8 @@ MCP client config (streamable HTTP):
 
 | tool | purpose |
 |---|---|
-| `ingest_url(url, max_pages, max_depth)` | crawl + build graph; returns `site_id` and `verdict` |
-| `ingest_local(path, max_files, respect_gitignore)` | local directory (docs + code) → graph; same outputs |
+| `ingest_url(url, max_pages, max_depth, relations)` | crawl + build graph; returns `site_id` and `verdict` |
+| `ingest_local(path, max_files, respect_gitignore, relations)` | local directory (docs + code) → graph; same outputs |
 | `list_sites()` | ingested sites with verdicts |
 | `site_stats(site_id)` | doc/edge counts, edge types, top hubs |
 | `search(site_id, query)` | idf-weighted full-text search |
@@ -82,6 +82,10 @@ Env knobs (read per call, so a long-lived MCP server picks up changes without a 
 |---|---|
 | `SITE_KG_MAX_BYTES` | per-file size cap in bytes (default 512 KiB) |
 | `SITE_KG_NOISE_EXEMPT` | comma-separated posix relpath prefixes whose dirs escape NOISE_DIRS pruning (e.g. `drivers/target` — real source trees collide with noise names) |
+| `SITE_KG_RELATIONS` | derived relation dimensions, selected per node: `auto` (default) / `llm` / `all` / `off` / comma list — see [Relation dimensions](#relation-dimensions) |
+| `SITE_KG_RELATION_ENTITY_PAGES` | LLM entity-extraction budget per ingest (default 120) |
+| `SITE_KG_RELATION_EMBED_PAGES` | embedding-similarity budget per ingest (default 300) |
+| `SITE_KG_RELATION_ROUTE_PAGES` | LLM router budget per ingest (default 120) |
 - **PageRank** runs over the edge list (aider repo-map style) and lands on each node as `r`, so `site_stats`/the viewer can rank structurally central files.
 
 Design choices, after surveying the field (aider, Serena, CocoIndex, gitingest; GraphRAG, LightRAG, cognee, khoj; GraphCoder/CGM papers): the structural layer stays **LLM-free and honest** — every edge traces to an explicit link or import statement. LLM-extracted entity/relation edges (the GraphRAG/LightRAG approach) buy recall at the cost of hallucinated edges and build cost, so they stay in the optional cognee semantic layer. Compiler-grade precision (LSP/SCIP, Serena-style) and tree-sitter symbol graphs are roadmap items as optional extras, not hard dependencies.
@@ -89,6 +93,42 @@ Design choices, after surveying the field (aider, Serena, CocoIndex, gitingest; 
 Measured (2026-10-09, dogfooding this repo): 22 files (7 docs + 15 code) → 30 `imports` + 2 `ref` + 2 `contains` edges, verdict `READY`; identifier search (`pagerank`, `gitignore`) lands on the right source file.
 
 Measured at corpus scale (2026-10-13, a 115,598-doc / 7-site DriveOS SDK source tree): re-ingest and report parity verified site-by-site; `get_page` on the largest site (75,415 docs) reads one ~3.8 MB shard in ~12 ms where the single-file format needed 8.3 s for the same page. Shard/meta caches are keyed by file mtime+size, so a re-ingest from any process (cli, crawl job, another agent) is served fresh with no invalidation hook; all writes are tmp-file + `os.replace`, and a 4-thread read hammer during repeated re-ingest saw zero torn reads.
+
+## Relation dimensions
+
+Link and import edges are honest but sparse: most pages in most corpora are
+unconnected because nobody linked them. `--relations` (CLI), `relations=`
+(MCP) or `SITE_KG_RELATIONS` (env) adds **derived** dimensions, chosen **per
+node** from that node's own content — not one fixed extractor over everything:
+
+| kind | needs | meaning |
+|---|---|---|
+| `mentions_symbol` | code | this file mentions an identifier defined in another file |
+| `similar_to` | prose ≥ 220 chars | sparse tf-idf cosine: same topic, no explicit link |
+| `sibling_of` | 1–12 dir mates | same source directory / URL folder cohort |
+| `supersedes` | version in id/URL | 2.0 supersedes 1.4 of the same page family |
+| `shares_entity` | chat model | pages share ≥ 2 LLM-extracted named entities |
+| `semantic_similar` | embed model | embedding cosine over title + body head |
+
+A stub gets no lexical neighbours, a prose page gets no symbol edges, a release
+note gets version lineage, a source file gets symbol references. Modes: `auto`
+(keyless, default), `llm` (auto + an LLM router that may only *narrow* each
+node's set, plus the two model-backed dimensions), `all`, `off`, or an explicit
+comma list.
+
+Two invariants keep this from becoming a hairball generator: a pair the corpus
+already links is never re-labelled with a derived kind, and derived dimensions
+run **only** when the corpus already has `ref`/`imports` edges — a corpus with
+zero cross-references still reports `NOT-READY` with zero edges. No LLM or
+embedding model is required; without one those dimensions are skipped with a
+note.
+
+Design and the literature it rests on (AutoSchemaKG arXiv:2505.23628, KGGen
+arXiv:2502.09956, EDC arXiv:2404.03868, Adaptive-RAG arXiv:2403.14403):
+[docs/RELATIONS.md](docs/RELATIONS.md).
+
+Measured on a 2,000-file DriveOS SDK slice: 132 evidence edges → +142
+`mentions_symbol`, +3,560 `similar_to`, +427 `sibling_of`, 4.1 s end-to-end.
 
 ## Verified
 
@@ -141,7 +181,7 @@ WantedBy=default.target
 ## Roadmap
 
 - Semantic enrichment (optional): cognee `cognify` over the crawled corpus when `SITE_KG_LLM_KEY` is present — entity/relation edges alongside the structural ones.
-- tree-sitter symbol/reference edges for local code ingest (aider-style tags), as an optional extra over the regex layer.
+- ~~Cross-file symbol edges~~ done: `mentions_symbol` (regex layer, keyless). tree-sitter symbol/reference edges (aider-style tags) remain an optional extra for precision.
 - Crawl4AI deep-crawl for JS sites that defeat the Playwright shell-fallback (infinite scroll, heavy anti-bot), via the `.[crawl]` extra.
 - ~~Static graph visualization~~ done: `render_site` emits a self-contained 3D Three.js viewer per site (bundle embedded, works offline; seeded layout computed at render time).
 

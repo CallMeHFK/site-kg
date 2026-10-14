@@ -54,8 +54,8 @@ MCP 客户端配置（streamable HTTP）：
 
 | 工具 | 用途 |
 |---|---|
-| `ingest_url(url, max_pages, max_depth)` | 爬取+建图；返回 `site_id` 与 `verdict` |
-| `ingest_local(path, max_files, respect_gitignore)` | 本地目录（文档+代码）→ 图；产出同上 |
+| `ingest_url(url, max_pages, max_depth, relations)` | 爬取+建图；返回 `site_id` 与 `verdict` |
+| `ingest_local(path, max_files, respect_gitignore, relations)` | 本地目录（文档+代码）→ 图；产出同上 |
 | `list_sites()` | 列出已摄入站点及判定 |
 | `site_stats(site_id)` | 文档/边计数、边类型、top hub |
 | `search(site_id, query)` | idf 加权全文检索 |
@@ -82,6 +82,7 @@ MCP 客户端配置（streamable HTTP）：
 |---|---|
 | `SITE_KG_MAX_BYTES` | 单文件大小上限，单位字节（默认 512 KiB） |
 | `SITE_KG_NOISE_EXEMPT` | 逗号分隔的 posix 相对路径前缀，其目录豁免 NOISE_DIRS 剪枝（如 `drivers/target`——真实源码目录会撞上噪音名） |
+| `SITE_KG_RELATIONS` | 衍生关系维度（逐节点动态选择）：`auto`（默认）/ `llm` / `all` / `off` / 逗号列表，见 [关系维度](#关系维度) |
 - **PageRank** 跑在边表上（aider repo-map 式），落到每个节点的 `r` 字段，`site_stats`/查看器可据此排出结构中心文件。
 
 设计取舍（调研 aider、Serena、CocoIndex、gitingest、GraphRAG、LightRAG、cognee、khoj 及 GraphCoder/CGM 论文后）：结构层坚持**零 LLM、诚实边**——每条边都能回溯到显式链接或 import 语句。LLM 抽取实体/关系边（GraphRAG/LightRAG 路线）换来召回但引入幻觉边与构建成本，因此只放在可选 cognee 语义层。编译器级精度（LSP/SCIP、Serena 路线）与 tree-sitter 符号图列入路线图，作为可选 extra 而非硬依赖。
@@ -89,6 +90,25 @@ MCP 客户端配置（streamable HTTP）：
 实测（2026-10-09，自举本仓库）：22 个文件（7 文档 + 15 代码）→ 30 条 `imports` + 2 条 `ref` + 2 条 `contains`，判定 `READY`；按标识符检索（`pagerank`、`gitignore`）命中正确源文件。
 
 实测（2026-10-13，语料规模级：DriveOS SDK 源码树 115,598 文档 / 7 站）：逐站重摄入，报告数字与摄入前完全一致；最大站（75,415 文档）`get_page` 冷读约 12ms（单文件格式同一页面需 8.3s）。分片/meta 缓存以文件 mtime+size 为键，任何进程（cli、爬虫任务、另一个 agent）重摄入后下一次读到的就是新数据，无需失效钩子；所有写入走临时文件 + `os.replace`，重摄入期间 4 线程并发读零撕裂。
+
+## 关系维度
+
+链接边与 import 边诚实但稀疏：绝大多数页面无人链接，因而在图上是孤立的。`--relations`（CLI）、`relations=`（MCP）或 `SITE_KG_RELATIONS`（环境变量）加入**衍生**维度，并按**每个节点自身的内容**选择适用维度，而非对全语料跑同一套抽取：
+
+| 维度 | 条件 | 含义 |
+|---|---|---|
+| `mentions_symbol` | 代码 | 本文件引用了另一个文件定义的标识符 |
+| `similar_to` | 正文 ≥ 220 字符 | 稀疏 tf-idf 余弦：同主题但无显式链接 |
+| `sibling_of` | 同目录 1–12 个同伴 | 同一源码目录 / URL 目录的同伴 |
+| `supersedes` | id/URL 含版本号 | 2.0 取代 1.4（同一页面族） |
+| `shares_entity` | 需 chat 模型 | 两页共享 ≥ 2 个 LLM 抽取的命名实体 |
+| `semantic_similar` | 需 embed 模型 | 标题 + 正文头部的嵌入余弦 |
+
+存根页不参与词汇相似，正文页不参与符号引用，发布说明得到版本沿革，源码文件得到符号引用。模式：`auto`（无 LLM，默认）、`llm`（`auto` + LLM 路由只可*收窄*每节点维度集，并启用两个模型维度）、`all`、`off`，或显式逗号列表。
+
+两条不变量防止它变成"毛线球制造机"：已被语料链接的节点对绝不会被改写为衍生类型；衍生维度**仅在**语料已有 `ref`/`imports` 边时才运行——零交叉引用的语料仍然报告 `NOT-READY` 且边数为 0。无需 LLM 或嵌入模型；缺失时这些维度跳过并在 `relationNotes` 里留一行说明。
+
+设计依据与文献（AutoSchemaKG arXiv:2505.23628、KGGen arXiv:2502.09956、EDC arXiv:2404.03868、Adaptive-RAG arXiv:2403.14403）：[docs/RELATIONS.md](docs/RELATIONS.md)。
 
 ## 实测
 

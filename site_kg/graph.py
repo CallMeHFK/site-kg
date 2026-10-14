@@ -1,6 +1,12 @@
 """Corpus -> graph.json + search.json. Edges are hub/ref/contains/imports links
 resolved against the crawled corpus only; zero cross-references (ref/imports)
-=> NOT-READY, never invent links."""
+=> NOT-READY, never invent links.
+
+On top of those evidence edges, `relations` (see relations.py) may add derived
+dimensions -- symbol references, lexical similarity, directory cohorts, version
+lineage, optional LLM/embedding similarity -- selected per node. Derived edges
+only run when the corpus already has structural evidence, so a corpus with no
+cross-references still reports zero edges instead of gaining a hairball."""
 from __future__ import annotations
 
 import json
@@ -71,7 +77,7 @@ def _prose(body: str) -> str:
     return URL_RE.sub(" ", body)
 
 
-def build_graph(corpus_dir: Path) -> dict:
+def build_graph(corpus_dir: Path, relations: str | None = None) -> dict:
     docs = []
     for md in sorted(corpus_dir.rglob("*.md")):
         p = _parse(md)
@@ -131,6 +137,18 @@ def build_graph(corpus_dir: Path) -> dict:
                 etype = ("hub" if d["id"] == "index" else "contains") if is_hub else "ref"
                 edges.setdefault((d["id"], t), etype)
 
+    # Derived dimensions enrich -- never substitute for -- structural evidence:
+    # a corpus with no resolvable cross-references gets no derived edges at all,
+    # so NOT-READY still means "this is a pile of files", not "look, a hairball".
+    structural = sum(1 for k in edges.values() if k in ("ref", "imports"))
+    relation_report: dict = {"relationMode": "off", "dimensions": {}, "relationNotes": []}
+    if structural:
+        from . import relations as relmod
+        derived, relation_report = relmod.build_relations(docs, mode=relations,
+                                                          have=set(edges))
+        for e in derived:
+            edges.setdefault((e["s"], e["t"]), e["k"])
+
     # inverted index over prose
     df: Counter = Counter()
     postings: dict[str, dict[str, int]] = {}
@@ -166,7 +184,6 @@ def build_graph(corpus_dir: Path) -> dict:
 
     # hub/contains fan-out is a table of contents, not a graph; only real
     # cross-references (ref from prose links, imports from code) make it READY
-    structural = edge_counts["ref"] + edge_counts["imports"]
     verdict = "READY" if structural > 0 else "NOT-READY"
     report = {
         "docs": len(docs),
@@ -174,6 +191,7 @@ def build_graph(corpus_dir: Path) -> dict:
         "edgeTypes": dict(edge_counts),
         "terms": len(terms),
         "verdict": verdict,
+        **relation_report,
         "verdictNote": "link structure present" if structural else
             "zero resolvable cross-references: this corpus is a pile of files, not a graph. "
             "Serve search+outline, or enable the semantic layer (LLM extraction).",
