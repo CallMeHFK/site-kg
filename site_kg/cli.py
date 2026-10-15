@@ -14,10 +14,16 @@ def main() -> None:
     p.add_argument("--max-pages", type=int, default=200)
     p.add_argument("--max-depth", type=int, default=4)
     p.add_argument("--no-robots", action="store_true")
+    p.add_argument("--relations", default=None,
+                   help="derived relation dimensions, selected per node: auto | llm | all "
+                        "| off | comma list (default: $SITE_KG_RELATIONS or auto)")
     lp = sub.add_parser("ingest-local")
     lp.add_argument("path")
     lp.add_argument("--max-files", type=int, default=2000)
     lp.add_argument("--no-gitignore", action="store_true")
+    lp.add_argument("--relations", default=None,
+                    help="derived relation dimensions, selected per node: auto | llm | all "
+                         "| off | comma list (default: $SITE_KG_RELATIONS or auto)")
     s = sub.add_parser("serve")
     s.add_argument("--transport", choices=["stdio", "http"], default="stdio")
     s.add_argument("--host", default="127.0.0.1")
@@ -32,12 +38,14 @@ def main() -> None:
         from .mcp_server import ingest_url
         print(json.dumps(asyncio.run(ingest_url(
             args.url, max_pages=args.max_pages, max_depth=args.max_depth,
-            respect_robots=not args.no_robots)), indent=1, ensure_ascii=False))
+            respect_robots=not args.no_robots, relations=args.relations)),
+            indent=1, ensure_ascii=False))
     elif args.cmd == "ingest-local":
         from .mcp_server import ingest_local
         print(json.dumps(asyncio.run(ingest_local(
             args.path, max_files=args.max_files,
-            respect_gitignore=not args.no_gitignore)), indent=1, ensure_ascii=False))
+            respect_gitignore=not args.no_gitignore, relations=args.relations)),
+            indent=1, ensure_ascii=False))
     elif args.cmd == "serve":
         from .mcp_server import serve
         serve(args.transport, args.host, args.port)
