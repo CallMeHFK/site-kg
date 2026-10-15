@@ -23,7 +23,7 @@ mcp = FastMCP("site-kg", instructions=(
 
 @mcp.tool()
 async def ingest_local(path: str, max_files: int = 2000, respect_gitignore: bool = True,
-                       relations: str = "auto") -> dict:
+                       relations: str | None = None) -> dict:
     """Build a knowledge graph from a local directory of docs and/or code files.
 
     Docs (md/markdown/mdx/txt/wiki/rst/adoc) are indexed as-is with edges from markdown
@@ -34,7 +34,8 @@ async def ingest_local(path: str, max_files: int = 2000, respect_gitignore: bool
     `relations` selects the derived relation dimensions, chosen per node:
     "auto" (keyless: mentions_symbol/similar_to/sibling_of/supersedes), "llm"
     (auto + an LLM router plus entity/embedding similarity), "all", "off", or an
-    explicit comma list. Derived edges only enrich a corpus that already has
+    explicit comma list. Omit it to use $SITE_KG_RELATIONS, or "auto" when that
+    is unset. Derived edges only enrich a corpus that already has
     cross-references.
     """
     import anyio
@@ -69,7 +70,7 @@ async def ingest_local(path: str, max_files: int = 2000, respect_gitignore: bool
 @mcp.tool()
 async def ingest_url(url: str, max_pages: int = 200, max_depth: int = 4,
                      concurrency: int = 4, respect_robots: bool = True,
-                     relations: str = "auto") -> dict:
+                     relations: str | None = None) -> dict:
     """Crawl a website, build its knowledge graph, and register it as a queryable site.
 
     Returns site_id for later tools plus a graph-quality verdict:
@@ -77,7 +78,8 @@ async def ingest_url(url: str, max_pages: int = 200, max_depth: int = 4,
 
     `relations` selects the derived relation dimensions, chosen per node: "auto"
     (keyless dimensions), "llm" (LLM router + entity/embedding similarity),
-    "all", "off", or an explicit comma list.
+    "all", "off", or an explicit comma list. Omit it to use $SITE_KG_RELATIONS,
+    or "auto" when that is unset.
     """
     urls, source, inv_stats = await manifest.page_inventory(url, max_pages=max_pages,
                                                             max_depth=max_depth)

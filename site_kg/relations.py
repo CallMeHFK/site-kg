@@ -101,7 +101,9 @@ def _env_int(name: str, default: int, lo: int, hi: int) -> int:
 
 
 def resolve_mode(mode: str | None) -> tuple[str, set[str], bool]:
-    """(mode, enabled derived kinds, use_llm_router). Unknown names fall back to auto."""
+    """(mode, enabled derived kinds, use_llm_router). Anything outside
+    auto/llm/all/off parses as a comma list of dimension names; names that
+    match nothing leave every derived dimension disabled."""
     m = (mode or os.environ.get("SITE_KG_RELATIONS", "auto") or "auto").strip().lower()
     if m in OFF_MODES:
         return "off", set(), False
@@ -528,7 +530,10 @@ def build_relations(docs: list[dict], mode: str | None = None,
         picks = route_with_llm(profiles, enabled, notes)
     chosen: dict[str, list[str]] = {}
     for p in profiles:
-        dims = picks.get(p["id"]) or select_dimensions(p, enabled=enabled, heavy_ok=heavy_ok)
+        if p["id"] in picks:
+            dims = picks[p["id"]]  # the router's narrowing stands, even to zero
+        else:
+            dims = select_dimensions(p, enabled=enabled, heavy_ok=heavy_ok)
         # the router may pick a dimension the content cannot support; re-gate it
         chosen[p["id"]] = [d for d in dims
                            if d in select_dimensions(p, enabled=enabled, heavy_ok=heavy_ok)]

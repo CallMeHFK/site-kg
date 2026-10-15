@@ -14,16 +14,16 @@ def main() -> None:
     p.add_argument("--max-pages", type=int, default=200)
     p.add_argument("--max-depth", type=int, default=4)
     p.add_argument("--no-robots", action="store_true")
-    p.add_argument("--relations", default="auto",
+    p.add_argument("--relations", default=None,
                    help="derived relation dimensions, selected per node: auto | llm | all "
-                        "| off | comma list (default: auto)")
+                        "| off | comma list (default: $SITE_KG_RELATIONS or auto)")
     lp = sub.add_parser("ingest-local")
     lp.add_argument("path")
     lp.add_argument("--max-files", type=int, default=2000)
     lp.add_argument("--no-gitignore", action="store_true")
-    lp.add_argument("--relations", default="auto",
+    lp.add_argument("--relations", default=None,
                     help="derived relation dimensions, selected per node: auto | llm | all "
-                         "| off | comma list (default: auto)")
+                         "| off | comma list (default: $SITE_KG_RELATIONS or auto)")
     s = sub.add_parser("serve")
     s.add_argument("--transport", choices=["stdio", "http"], default="stdio")
     s.add_argument("--host", default="127.0.0.1")

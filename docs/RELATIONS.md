@@ -71,12 +71,14 @@ Modes (`--relations` on the CLI, `relations=` on `ingest_url`/`ingest_local`,
 | `off` | no derived dimensions — the pre-feature behaviour |
 | `auto` | keyless dimensions, per-node heuristic selection (default) |
 | `llm` | `auto` + an LLM router that *narrows* each node's set, + entity/embedding dimensions |
-| `all` | every derived dimension on every node (ablation / debugging) |
+| `all` | every derived dimension enabled; per-node content gating still applies (ablation / debugging) |
 | `similar_to,supersedes` | explicit subset |
 
 In `llm` mode the router can only remove: its picks are intersected with the
 heuristic set, so a hallucinated "this stub is lexically similar" cannot
-manufacture an edge the content cannot support.
+manufacture an edge the content cannot support. Narrowing a node to zero
+dimensions is honored. An edge is admitted when *either* endpoint selected
+the dimension, so removing a dimension from a pair means narrowing both nodes.
 
 ## Invariants
 
@@ -90,12 +92,14 @@ manufacture an edge the content cannot support.
 3. **Fail open.** No LLM key, no embedding model, or a gateway error ⇒ the
    dimension is skipped with a line in `report.relationNotes`; the keyless
    dimensions still run.
-4. **Bounded fan-out.** `similar_to` ≤ 5 per node above cosine 0.20 over a
-   15-term signature (terms with df outside 2–25 are ignored); `sibling_of`
+4. **Bounded fan-out.** `similar_to`: each node nominates at most 5 neighbours
+   above cosine 0.20 over a 15-term signature (terms with df outside 2–25 are
+   ignored); `sibling_of`
    only for directories of 2–13 files; `mentions_symbol` ≤ 5 per file.
 5. **Bounded cost.** Above 8,000 docs the quadratic passes (`similar_to`,
    `mentions_symbol`) are skipped with a note; the LLM entity budget defaults
-   to 120 pages (`SITE_KG_RELATION_ENTITY_PAGES`) and the embedding budget to
+   to 120 pages (`SITE_KG_RELATION_ENTITY_PAGES`), the router pages budget to
+   120 (`SITE_KG_RELATION_ROUTE_PAGES`), and the embedding budget to
    300 (`SITE_KG_RELATION_EMBED_PAGES`).
 
 ## Measured

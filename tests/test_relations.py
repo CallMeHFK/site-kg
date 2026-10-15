@@ -1,4 +1,6 @@
 """Multi-dimensional relation construction. Offline: no network, no LLM."""
+import inspect
+import sys
 from pathlib import Path
 
 import pytest
@@ -182,3 +184,59 @@ def test_resolve_mode(mode, expected):
     assert use_llm is (mode == "llm")
     if mode in ("off", "bogus,nonsense"):
         assert enabled == set()
+
+
+# ---- the three mode channels: --relations / relations= / SITE_KG_RELATIONS -
+def test_env_var_selects_mode_when_mode_is_absent(monkeypatch):
+    monkeypatch.setenv("SITE_KG_RELATIONS", "off")
+    resolved, enabled, _ = relations.resolve_mode(None)
+    assert resolved == "off"
+    assert enabled == set()
+    # an explicit mode beats the environment
+    resolved, enabled, _ = relations.resolve_mode("auto")
+    assert resolved == "auto"
+    assert enabled == set(relations.KEYLESS_KINDS)
+
+
+def test_cli_relations_default_defers_to_env(monkeypatch):
+    from site_kg import cli, mcp_server
+    captured = {}
+
+    async def fake_ingest_local(path, **kw):
+        captured.update(kw)
+        return {}
+
+    monkeypatch.setattr(mcp_server, "ingest_local", fake_ingest_local)
+    monkeypatch.setattr(sys, "argv", ["site-kg", "ingest-local", "/tmp"])
+    cli.main()
+    # a concrete default here would shadow SITE_KG_RELATIONS before resolve_mode
+    assert captured["relations"] is None
+
+
+def test_mcp_tools_relations_default_defers_to_env():
+    from site_kg import mcp_server
+    for tool in (mcp_server.ingest_url, mcp_server.ingest_local):
+        assert inspect.signature(tool).parameters["relations"].default is None
+
+
+# ---- llm router semantics ---------------------------------------------------
+def _stub_router(monkeypatch, picks):
+    monkeypatch.setattr("site_kg.semantic.discover_models",
+                        lambda: {"chat": None, "embed": None}, raising=False)
+    monkeypatch.setattr(relations, "route_with_llm",
+                        lambda profiles, enabled, notes: picks)
+
+
+def test_llm_router_may_narrow_a_node_to_zero_dimensions(monkeypatch):
+    _stub_router(monkeypatch, {"a": [], "b": []})
+    docs = [_doc("a", PROSE), _doc("b", PROSE.replace("driver", "driver"))]
+    edges, _ = relations.build_relations(docs, mode="llm", have={("a", "z")})
+    assert edges == []
+
+
+def test_llm_router_falls_back_only_for_nodes_it_did_not_pick(monkeypatch):
+    _stub_router(monkeypatch, {"a": []})  # b not picked -> heuristic set
+    docs = [_doc("a", PROSE), _doc("b", PROSE.replace("driver", "driver"))]
+    edges, _ = relations.build_relations(docs, mode="llm", have={("a", "z")})
+    # b kept similar_to, and one endpoint admitting a dimension admits the edge
+    assert any(e["k"] == "similar_to" for e in edges)
