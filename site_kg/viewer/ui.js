@@ -452,9 +452,11 @@
     input.id = "launch-url";
     input.type = "url";
     input.placeholder = "https://docs.example.com";
-    input.value = this.cfg.liveUrl || "";
+    var prefill = this.cfg.title || "";
+    if (prefill === "site-kg graph" || prefill === "site-kg live") prefill = "";
+    input.value = prefill;
     input.addEventListener("keydown", function (e) {
-      if (e.key === "Enter") self.startLive(input.value.trim(), self._scene);
+      if (e.key === "Enter") self.launchLive(input.value.trim(), self._scene);
     });
     row.appendChild(input);
     card.appendChild(row);
@@ -478,7 +480,7 @@
     go.id = "launch-go";
     go.type = "button";
     go.addEventListener("click", function () {
-      self.startLive(input.value.trim(), self._scene);
+      self.launchLive(input.value.trim(), self._scene);
     });
     card.appendChild(go);
     var err = el("p", "muted", "");
@@ -494,54 +496,45 @@
     if (this.launcherEl) this.launcherEl.classList.remove("on");
   };
 
-  UI.prototype.startLive = function (url, scene) {
-    if (!url) {
+  UI.prototype.connectLive = function (base, scene) {
+    if (scene) this.activateScene(scene);
+    this.hideLauncher();
+    this.director.connectEvents("", 0, {base: base || ""});
+  };
+
+  UI.prototype.launchLive = function (target, scene) {
+    var self = this;
+    if (!target) {
       var err = byId("launch-err");
       if (err) err.textContent = "A site address is required.";
       return null;
     }
     if (scene) this.activateScene(scene);
-    this.hideLauncher();
-    this.director.start("live", null);
-    var base = url.replace(/\/+$/, "");
-    this.statusEl.textContent = "connecting to " + base + " \u2026";
-    var src = new EventSource(base + "/events");
-    this.es = src;
-    var self = this;
-    var handler = function (e) {
-      var data;
-      try {
-        data = JSON.parse(e.data);
-      } catch (err2) {
-        return;
-      }
-      self._onSse(data);
-    };
-    ["snapshot", "batch", "layout_patch", "ingest_done", "settled",
-     "node_added", "node_updated", "edge_added"].forEach(function (name) {
-      src.addEventListener(name, handler);
+    this.statusEl.textContent = "starting live ingest \u2026";
+    var request = typeof fetch === "function"
+      ? fetch("/api/start", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({target: target, scene: scene})
+        })
+      : Promise.reject(new Error("fetch is not available"));
+    return request.then(function (res) {
+      return res.json().catch(function () { return {}; }).then(function (body) {
+        if (!res.ok || !body.ok) {
+          throw new Error(body.error || ("start failed: " + res.status));
+        }
+        self.hideLauncher();
+        self.director.start("live", null);
+        self.director.connectEvents(body.run_id || "", body.last_seq || 0, {base: ""});
+        return body;
+      });
+    }).catch(function (err) {
+      self.statusEl.textContent = "live start failed";
+      self.showLauncher();
+      var box = byId("launch-err");
+      if (box) box.textContent = (err && err.message) ? err.message : String(err);
+      return null;
     });
-    src.onmessage = handler;
-    src.onerror = function () {
-      self.statusEl.textContent = "live connection lost \u00b7 retrying\u2026";
-    };
-    return src;
-  };
-
-  UI.prototype._onSse = function (ev) {
-    if (!ev) return;
-    if (ev.t === "snapshot" || ev.snapshot) {
-      var snap = ev.snapshot || ev;
-      this.live.loadSnapshot(snap);
-      for (var i = 0; i < this.live.n; i++) this.live.revealed[i] = 1;
-      for (var e = 0; e < this.live.m; e++) this.live.eRevealed[e] = 1;
-      this.director._visKey = "";
-      this.director.camera.fitLive({robust: true, duration: 600});
-      this._buildLegend();
-      return;
-    }
-    this.director.onEvents(ev);
-    if (ev.t === "ingest_done" || ev.t === "settled") this._buildLegend();
   };
 
   UI.prototype.fatal = function (err) {
@@ -606,7 +599,7 @@
         });
       } else {
         director.start("live", null);
-        if (cfg.liveUrl) ui.startLive(cfg.liveUrl, cfg.scene);
+        if (cfg.liveUrl) ui.connectLive(cfg.liveUrl, cfg.scene);
         else ui.showLauncher();
       }
 
