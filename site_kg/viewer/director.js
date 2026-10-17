@@ -9,7 +9,7 @@
     this.labels = labels;
     this.ui = null;
     this.mode = "archive";
-    this.state = "live";
+    this.state = "ingesting";
     this.query = "";
     this.chapter = null;
     this.focusIndex = -1;
@@ -28,6 +28,13 @@
     this.batcher = null;
     this.transport = null;
     this.error = null;
+    this.hiddenKinds = SK.defaultHiddenKinds();
+    this.selection = null;
+    this._selectionSet = null;
+    this.archive = null;
+    this._lodVersion = -1;
+    this.reducedMotion = !!(window.matchMedia &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches);
   }
 
   Director.prototype.attach = function (ui) {
@@ -37,8 +44,13 @@
 
   Director.prototype.start = function (mode, payload) {
     this.mode = mode;
-    this.state = "live";
+    this.state = "ingesting";
+    this.finaleDone = false;
+    this._lodVersion = -1;
+    if (this.renderer && this.renderer.resetFinale) this.renderer.resetFinale();
+    if (this.ui && this.ui.hideFinale) this.ui.hideFinale();
     if (mode === "archive" && payload) {
+      this.archive = payload;
       this.live.loadGraph(payload.graph, payload.layout);
       var patches = (payload.layout && payload.layout.patches) || [];
       for (var p = 0; p < patches.length; p++) {
@@ -53,7 +65,7 @@
       this.replay = {
         batches: batches, nodes: nodes, edges: edges,
         nodeAt: 0, edgeAt: 0, idx: 0, elapsed: 0,
-        scale: totalMs > 0 ? Math.min(1, 2200 / totalMs) : 1
+        scale: totalMs > 2200 ? totalMs / 2200 : 1
       };
       this.ingestDone = true;
       this.layoutSettled = false;
@@ -66,7 +78,7 @@
     } else {
       this.ingestDone = false;
       this.layoutSettled = false;
-      this.state = "live";
+      this.state = "ingesting";
       this._fitNext = true;
     }
     return this;
@@ -187,7 +199,52 @@
     this.renderer.setScene(name);
     this.renderer.sync(this.live);
     this.camera.setAutoRotate(!this.camera.userInteracting);
+    this.finaleDone = false;
+    this._lodVersion = -1;
+    if (this.renderer.resetFinale) this.renderer.resetFinale();
+    if (this.ui && this.ui.hideFinale) this.ui.hideFinale();
+    this._visKey = "";
     if (this.ui) this.ui.setSceneActive(name);
+  };
+
+  Director.prototype.toggleKind = function (kind) {
+    kind = String(kind || "");
+    if (!kind) return true;
+    this.hiddenKinds[kind] = !this.hiddenKinds[kind];
+    this._visKey = "";
+    if (this.renderer) this.renderer.lastVersion = -1;
+    return !!this.hiddenKinds[kind];
+  };
+
+  Director.prototype.skipToFinale = function () {
+    this.ingestDone = true;
+    this.layoutSettled = true;
+    this.replay = null;
+    this._revealAll();
+    this.state = "complete";
+    if (this.camera && this.camera.settleNow) this.camera.settleNow();
+    this._startFinale();
+    return this;
+  };
+
+  Director.prototype.replayArchive = function () {
+    if (this.mode !== "archive" || !this.archive) return false;
+    this.start("archive", this.archive);
+    return true;
+  };
+
+  Director.prototype._startFinale = function () {
+    if (this.finaleDone) return;
+    this.finaleDone = true;
+    if (this.renderer && this.renderer.startFinale) {
+      this.renderer.startFinale(this.reducedMotion);
+    }
+    if (this.camera && this.camera.pushIn && !this.reducedMotion) {
+      this.camera.pushIn(0.9);
+    }
+    if (this.ui && this.ui.showFinale) {
+      this.ui.showFinale(this.renderer.name, this.status());
+    }
   };
 
   Director.prototype.connectEvents = function (runId, lastSeq, opts) {
@@ -226,7 +283,7 @@
       self.ingestDone = false;
       self.layoutSettled = false;
       self.finaleDone = false;
-      self.state = "live";
+      self.state = "ingesting";
       self.error = null;
       self._fittedOnce = false;
       self._fitNext = true;
@@ -388,6 +445,17 @@
     var vis = this._vis || (this._vis = new Uint8Array(live.cap));
     if (vis.length < live.n) vis = this._vis = new Uint8Array(live.cap);
     var focus = this.focusIndex;
+    var scene = (SK.scenes && SK.scenes[this.renderer.name]) || {};
+    if (scene.ego && scene.select) {
+      this.selection = scene.select(live, focus);
+      this._selectionSet = new Set(this.selection);
+    } else {
+      this.selection = null;
+      this._selectionSet = null;
+    }
+    this.renderer.selection = this.selection;
+    this.renderer.hiddenKinds = this.hiddenKinds;
+    var selected = this._selectionSet;
     var nbr = null, focusEdges = null;
     if (focus >= 0 && focus < live.n) {
       nbr = new Set();
@@ -402,6 +470,7 @@
     var q = this.query, ch = this.chapter;
     for (var i = 0; i < live.n; i++) {
       var on = !!live.revealed[i];
+      if (on && selected && !selected.has(i)) on = false;
       if (on && q && (live.titles[i] || "").toLowerCase().indexOf(q) < 0) on = false;
       if (on && ch != null && live.clusters[live._nodeCluster[i]] !== ch) on = false;
       vis[i] = on ? 1 : 0;
@@ -410,13 +479,14 @@
     var kinds = live.kinds;
     for (var e = 0; e < live.m; e++) {
       var a = live.eSrc[e], b = live.eDst[e];
-      var edgeOn = live.eRevealed[e] && vis[a] && vis[b];
+      var kind = kinds[live.eKind[e]];
+      var edgeOn = live.eRevealed[e] && vis[a] && vis[b] && !this.hiddenKinds[kind];
       if (nbr) {
         live.eDim[e] = edgeOn && focusEdges.has(e) ? 1.7 : 0.035;
       } else {
         live.eDim[e] = edgeOn ? 1 : 0;
       }
-      if (edgeOn && kinds[live.eKind[e]] === "hub") live.eDim[e] *= 0.6;
+      if (edgeOn && kind === "hub") live.eDim[e] *= 0.6;
     }
     live.dimVersion++;
   };
@@ -429,20 +499,18 @@
     }
     return {nodes: live.n, edges: live.m, revealed: revealed, visible: visible,
             pending: live.pendingCount, state: this.state,
-            scene: this.renderer.name, mode: this.mode,
+            scene: this.renderer.name, mode: this.mode, finale: this.finaleDone,
+            ego: this.selection ? this.selection.length : 0,
             fps: Math.round(this.fps)};
   };
 
   Director.prototype._updateState = function () {
-    if (this.state === "live" && this.ingestDone) this.state = "settling";
+    if (this.state === "ingesting" && this.ingestDone) this.state = "settling";
     if (this.state === "settling" && this.ingestDone && this.layoutSettled &&
         this.camera.settled) {
       this.state = "complete";
-      if (!this.finaleDone) {
-        this.finaleDone = true;
-        if (this.mode === "archive") this.camera.pushIn(0.86);
-      }
     }
+    if (this.state === "complete" && !this.finaleDone) this._startFinale();
   };
 
   Director.prototype.tick = function (dt) {
@@ -467,6 +535,12 @@
     }
     this.camera.update(dt);
     this.renderer.sync(this.live);
+    if (this.layoutSettled && this.renderer.prepareEdgeLod &&
+        this._lodVersion !== this.live.version) {
+      this.renderer.prepareEdgeLod();
+      this._lodVersion = this.live.version;
+    }
+    if (this.renderer.advanceFinale) this.renderer.advanceFinale(dt);
     this.renderer.render();
     if (this.time - this.labelTime > 0.18) {
       this.labelTime = this.time;

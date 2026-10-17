@@ -12,6 +12,17 @@
     nodeScale: 0.9,
     haloScale: 3.8,
     edgeOpacity: 1.25,
-    spin: 0.75
+    spin: 0.75,
+    nodeMode: "points",
+    ego: false,
+    edgeLod: true,
+    labelBudget: 36,
+    labelBudgetMobile: 10,
+    finale: "Synapse sweep",
+    select: function (live) {
+      var out = new Array(live.n);
+      for (var i = 0; i < live.n; i++) out[i] = i;
+      return out;
+    }
   };
 })(window.SK = window.SK || {});

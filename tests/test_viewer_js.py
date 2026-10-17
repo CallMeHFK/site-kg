@@ -11,6 +11,9 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 CORE = ROOT / "site_kg" / "viewer" / "core.js"
 DIRECTOR = ROOT / "site_kg" / "viewer" / "director.js"
+PLANETS = ROOT / "site_kg" / "viewer" / "scenes" / "planets.js"
+PEOPLE = ROOT / "site_kg" / "viewer" / "scenes" / "people.js"
+NEURAL = ROOT / "site_kg" / "viewer" / "scenes" / "neural.js"
 
 pytestmark = pytest.mark.skipif(shutil.which("node") is None,
                                 reason="node is not installed")
@@ -172,6 +175,56 @@ assert.equal(g.pendingCount, 1);
 assert.equal(g.runId, "run-a");
 assert.equal(g.lastSeq, 12);
 assert.equal(g.dangling, 1);
+""")
+
+
+def test_scene_selection_and_derived_edge_visibility():
+    _run(_prelude(CORE, DIRECTOR, PLANETS, PEOPLE, NEURAL) + """
+const g = new SK.LiveGraph(256);
+for (let i = 0; i < 160; i++) {
+  g.nodeAdded("n" + i, {t: "N" + i, c: i % 4, g: i === 0 ? 150 : 1,
+                        r: (160 - i) / 160});
+}
+for (let i = 1; i <= 150; i++) g.edgeAdded("n0", "n" + i, "ref");
+assert.equal(SK.scenes.planets.select(g, -1).length, 160);
+assert.equal(SK.scenes.neural.select(g, 5).length, 160);
+const focused = SK.scenes.people.select(g, 5);
+assert.equal(focused.length, 120);
+assert.equal(focused[0], 5);
+assert.ok(focused.indexOf(0) >= 0);
+const hub = SK.scenes.people.select(g, -1);
+assert.equal(hub.length, 120);
+assert.equal(hub[0], 0);
+assert.deepEqual(SK.scenes.people.select(g, 5), focused);
+
+g.edgeAdded("n1", "n2", "mentions_symbol");
+const derivedEdge = g.m - 1;
+assert.equal(SK.isDerived("mentions_symbol"), true);
+assert.equal(SK.isDerived("ref"), false);
+const hidden = SK.defaultHiddenKinds();
+assert.equal(hidden.mentions_symbol, true);
+const legend = SK.kindLegend(["ref", "imports", "mentions_symbol"], hidden);
+const byKind = {};
+legend.forEach(function (row) { byKind[row.kind] = row; });
+assert.ok(byKind.ref);
+assert.ok(byKind.imports);
+assert.equal(byKind.ref.on, true);
+assert.equal(byKind.imports.on, true);
+assert.ok(byKind.mentions_symbol);
+assert.equal(byKind.mentions_symbol.on, false);
+assert.equal(byKind.mentions_symbol.derived, true);
+
+g.revealed.fill(1);
+g.eRevealed.fill(1);
+const director = new SK.Director(g, {name: "planets", SCALE: 50,
+                                     samplePoints: function () { return new Float32Array(0); }},
+                                 {settled: true}, null);
+director._recomputeDims();
+assert.equal(g.eDim[derivedEdge], 0);
+assert.ok(g.eDim[0] > 0);
+director.toggleKind("mentions_symbol");
+director._recomputeDims();
+assert.ok(g.eDim[derivedEdge] > 0);
 """)
 
 

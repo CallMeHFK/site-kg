@@ -10,12 +10,14 @@
     this.tween = null;
     this.settled = true;
     this.userInteracting = false;
+    this.reduced = !!(window.matchMedia &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches);
     this.controls = new T3.OrbitControls(this.camera, renderer.canvas);
     this.controls.enableDamping = true;
     this.controls.dampingFactor = 0.08;
     this.controls.rotateSpeed = 0.7;
     this.controls.zoomSpeed = 0.9;
-    this.controls.autoRotate = true;
+    this.controls.autoRotate = !this.reduced;
     this.controls.autoRotateSpeed = (renderer.cfg && renderer.cfg.spin) || 0.6;
     this.controls.target.set(0, 0, 0);
     var self = this;
@@ -37,7 +39,7 @@
   };
 
   Camera.prototype.setAutoRotate = function (on) {
-    this.controls.autoRotate = !!on && !this.userInteracting;
+    this.controls.autoRotate = !!on && !this.userInteracting && !this.reduced;
   };
 
   Camera.prototype.fit = function (points, opts) {
@@ -83,9 +85,8 @@
     var live = this.live;
     if (!live || index < 0 || index >= live.n) return;
     var THREE = T3.THREE;
-    var target = new THREE.Vector3(live.x[index] * this.renderer.SCALE,
-                                   live.y[index] * this.renderer.SCALE,
-                                   live.z[index] * this.renderer.SCALE);
+    var target = new THREE.Vector3();
+    this.renderer.nodeWorld(index, target);
     var dir = this._tmp.copy(this.camera.position).sub(this.controls.target);
     if (dir.lengthSq() < 1e-6) dir.set(0, 0, 1);
     dir.normalize();
@@ -103,6 +104,14 @@
   };
 
   Camera.prototype._to = function (pos, target, duration) {
+    if (this.reduced) {
+      this.camera.position.copy(pos);
+      this.controls.target.copy(target);
+      this.tween = null;
+      this.settled = true;
+      this.controls.autoRotate = false;
+      return;
+    }
     this.tween = {
       p0: this.camera.position.clone(), p1: pos,
       t0: this.controls.target.clone(), t1: target,
@@ -110,6 +119,16 @@
     };
     this.settled = false;
     this.controls.autoRotate = false;
+  };
+
+  Camera.prototype.settleNow = function () {
+    var tw = this.tween;
+    if (tw) {
+      this.camera.position.copy(tw.p1);
+      this.controls.target.copy(tw.t1);
+      this.tween = null;
+    }
+    this.settled = true;
   };
 
   Camera.prototype.setUserInteracting = function (flag) {
@@ -132,7 +151,7 @@
       if (k >= 1) {
         this.tween = null;
         this.settled = true;
-        if (!this.userInteracting) {
+        if (!this.userInteracting && !this.reduced) {
           this.controls.autoRotateSpeed = (this.renderer.cfg && this.renderer.cfg.spin) || 0.6;
           this.controls.autoRotate = true;
         }

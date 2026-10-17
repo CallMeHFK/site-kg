@@ -10,6 +10,37 @@
   SK.PALETTE = PALETTE;
   SK.DERIVED = DERIVED;
 
+  function isDerived(kind) {
+    return !!DERIVED[String(kind == null ? "" : kind)];
+  }
+
+  function defaultHiddenKinds() {
+    var hidden = {};
+    for (var kind in DERIVED) {
+      if (Object.prototype.hasOwnProperty.call(DERIVED, kind)) hidden[kind] = true;
+    }
+    return hidden;
+  }
+
+  function kindLegend(kinds, hidden) {
+    hidden = hidden || {};
+    var seen = {}, rows = [];
+    function add(kind) {
+      kind = String(kind == null ? "" : kind);
+      if (!kind || seen[kind]) return;
+      seen[kind] = 1;
+      rows.push({kind: kind, on: !hidden[kind], derived: isDerived(kind)});
+    }
+    add("ref");
+    add("imports");
+    (kinds || []).forEach(add);
+    return rows;
+  }
+
+  SK.isDerived = isDerived;
+  SK.defaultHiddenKinds = defaultHiddenKinds;
+  SK.kindLegend = kindLegend;
+
   function LiveGraph(capacity) {
     this.palette = PALETTE.slice();
     this.reset(capacity || 1024);

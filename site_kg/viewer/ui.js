@@ -37,9 +37,20 @@
     this._buildLegend();
     this._wirePointer();
     this._wireKeys();
+    this._buildFinale();
     this.setSceneActive(this._scene);
     this._updateCount();
     return this;
+  };
+
+  UI.prototype._buildFinale = function () {
+    var box = el("div", "panel");
+    box.id = "finale";
+    box.style.cssText = "position:fixed;left:50%;bottom:34px;transform:translateX(-50%);"
+      + "padding:10px 16px;z-index:7;display:none;pointer-events:none;"
+      + "text-align:center;max-width:80vw";
+    document.body.appendChild(box);
+    this.finaleEl = box;
   };
 
   UI.prototype._buildBar = function () {
@@ -97,7 +108,8 @@
     bar.appendChild(cnt);
     this.cntEl = cnt;
     var hint = el("span", "muted",
-                  "drag rotate \u00b7 wheel zoom \u00b7 click node = focus \u00b7 1\u20133 scenes \u00b7 F fit \u00b7 esc clear");
+                  "drag rotate \u00b7 wheel zoom \u00b7 click node = focus \u00b7 1\u20133 scenes \u00b7 "
+                  + "F finale \u00b7 shift+F fit \u00b7 space replay");
     hint.id = "hint";
     bar.appendChild(hint);
 
@@ -171,28 +183,56 @@
     }
     order.sort(function (a, b) { return counts[b] - counts[a]; });
     legend.appendChild(el("h4", null, "chapters"));
-    if (!order.length) {
-      legend.appendChild(el("div", "muted", "no chapters yet"));
-      return;
-    }
     var palette = (this.renderer.cfg && this.renderer.cfg.palette) || SK.PALETTE;
     var self = this;
-    order.slice(0, 60).forEach(function (name) {
+    if (!order.length) {
+      legend.appendChild(el("div", "muted", "no chapters yet"));
+    } else {
+      order.slice(0, 60).forEach(function (name) {
+        var row = el("div", "ch");
+        row.setAttribute("data-ch", name);
+        if (self.director.chapter === name) row.classList.add("on");
+        var dot = el("span", "dot");
+        var cid = live.clusterIndex[name] === undefined ? 0 : live.clusterIndex[name];
+        dot.style.background = "#" + ("000000" + palette[cid % palette.length].toString(16)).slice(-6);
+        row.appendChild(dot);
+        row.appendChild(el("span", null, name));
+        row.appendChild(el("span", "n", String(counts[name])));
+        row.addEventListener("click", function () {
+          var active = self.director.setChapter(name);
+          var rows = legend.querySelectorAll(".ch[data-ch]");
+          for (var k = 0; k < rows.length; k++) {
+            rows[k].classList.toggle("on", rows[k].getAttribute("data-ch") === active);
+          }
+          self._updateCount();
+        });
+        legend.appendChild(row);
+      });
+    }
+
+    var kindCounts = {}, kindOrder = [];
+    for (var e = 0; e < live.m; e++) {
+      var kind = live.kinds[live.eKind[e]] || "ref";
+      if (kindCounts[kind] === undefined) {
+        kindCounts[kind] = 0;
+        kindOrder.push(kind);
+      }
+      kindCounts[kind]++;
+    }
+    legend.appendChild(el("h4", null, "edge kinds"));
+    SK.kindLegend(kindOrder, this.director.hiddenKinds).forEach(function (entry) {
       var row = el("div", "ch");
-      row.setAttribute("data-ch", name);
-      if (self.director.chapter === name) row.classList.add("on");
+      row.setAttribute("data-kind", entry.kind);
+      row.title = entry.derived ? "derived relation" : "structural link";
       var dot = el("span", "dot");
-      var cid = live.clusterIndex[name] === undefined ? 0 : live.clusterIndex[name];
-      dot.style.background = "#" + ("000000" + palette[cid % palette.length].toString(16)).slice(-6);
+      dot.style.background = entry.derived ? "#8b949e" : "#58a6ff";
       row.appendChild(dot);
-      row.appendChild(el("span", null, name));
-      row.appendChild(el("span", "n", String(counts[name])));
+      row.appendChild(el("span", null, entry.kind));
+      row.appendChild(el("span", "n", String(kindCounts[entry.kind] || 0)));
+      row.style.opacity = entry.on ? "1" : "0.4";
       row.addEventListener("click", function () {
-        var active = self.director.setChapter(name);
-        var rows = legend.querySelectorAll(".ch");
-        for (var k = 0; k < rows.length; k++) {
-          rows[k].classList.toggle("on", rows[k].getAttribute("data-ch") === active);
-        }
+        var hidden = self.director.toggleKind(entry.kind);
+        row.style.opacity = hidden ? "0.4" : "1";
         self._updateCount();
       });
       legend.appendChild(row);
@@ -203,7 +243,10 @@
     if (!this.cntEl) return;
     var live = this.live, visible = 0;
     for (var i = 0; i < live.n; i++) if (live.dim[i] > 0.5) visible++;
-    this.cntEl.textContent = visible + "/" + live.n;
+    var text = visible + "/" + live.n;
+    var selection = this.director && this.director.selection;
+    if (selection && selection.length) text += " \u00b7 ego " + selection.length;
+    this.cntEl.textContent = text;
   };
 
   UI.prototype.updateStatus = function (s) {
@@ -211,9 +254,28 @@
     var parts = [s.nodes + " nodes", s.edges + " edges"];
     if (s.revealed < s.nodes) parts.push("revealed " + s.revealed);
     if (s.pending) parts.push("pending " + s.pending);
+    if (s.ego) parts.push("ego " + s.ego);
     parts.push(s.scene, s.state, s.fps + " fps");
     this.statusEl.textContent = parts.join(" \u00b7 ");
     this._updateCount();
+  };
+
+  UI.prototype.showFinale = function (sceneName, status) {
+    var box = this.finaleEl;
+    if (!box) return;
+    var scene = (SK.scenes && SK.scenes[sceneName]) || {};
+    var parts = [];
+    if (this.cfg && this.cfg.stats) parts.push(this.cfg.stats);
+    if (status && status.ego) parts.push("ego " + status.ego);
+    else if (status && status.visible) parts.push(status.visible + " visible");
+    box.innerHTML = "";
+    box.appendChild(el("b", null, scene.finale || "Finale"));
+    if (parts.length) box.appendChild(el("div", "muted", parts.join(" \u00b7 ")));
+    box.style.display = "block";
+  };
+
+  UI.prototype.hideFinale = function () {
+    if (this.finaleEl) this.finaleEl.style.display = "none";
   };
 
   UI.prototype.setSceneActive = function (name) {
@@ -351,12 +413,15 @@
         return;
       }
       if (e.key === "f" || e.key === "F") {
-        self.director.fit();
+        if (e.shiftKey) self.director.fit();
+        else if (self.director.skipToFinale) self.director.skipToFinale();
         return;
       }
       if (e.key === " ") {
         e.preventDefault();
-        self.camera.setAutoRotate(!self.camera.controls.autoRotate);
+        if (!self.director.replayArchive()) {
+          self.camera.setAutoRotate(!self.camera.controls.autoRotate);
+        }
         return;
       }
       if (e.key >= "1" && e.key <= "3") {

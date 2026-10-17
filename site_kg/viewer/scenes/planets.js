@@ -11,7 +11,21 @@
               0xffa657, 0xff7b72, 0x7ee787, 0xe3b341, 0x79c0ff, 0x56d4bc],
     nodeScale: 1.0,
     haloScale: 3.1,
-    edgeOpacity: 1.0,
-    spin: 0.6
+    edgeOpacity: 0.45,
+    spin: 0.6,
+    nodeMode: "points",
+    ego: false,
+    shells: true,
+    labelBudget: 40,
+    labelBudgetMobile: 12,
+    finale: "Orbital alignment",
+    shellRadius: function (shell) {
+      return 14 + Math.min(shell, 15) * 2.4;
+    },
+    select: function (live) {
+      var out = new Array(live.n);
+      for (var i = 0; i < live.n; i++) out[i] = i;
+      return out;
+    }
   };
 })(window.SK = window.SK || {});

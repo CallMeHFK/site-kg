@@ -31,8 +31,12 @@
     opts = opts || {};
     ctx.clearRect(0, 0, this.width, this.height);
     var camera = this.renderer.camera;
+    var cfg = this.renderer.cfg || {};
+    var budget = this.width < 720
+      ? (cfg.labelBudgetMobile || 12)
+      : (cfg.labelBudget || this.budget);
     var focus = opts.focus == null ? -1 : opts.focus;
-    var budget = focus >= 0 ? this.focusBudget : this.budget;
+    if (focus >= 0) budget = Math.min(budget, this.focusBudget);
     var candidates = [];
     var v = this._v;
     for (var i = 0; i < live.n; i++) {
@@ -51,8 +55,7 @@
     ctx.textBaseline = "middle";
     for (var k = 0; k < candidates.length; k++) {
       var idx = candidates[k][1];
-      v.set(live.x[idx] * this.renderer.SCALE, live.y[idx] * this.renderer.SCALE,
-            live.z[idx] * this.renderer.SCALE);
+      this.renderer.nodeWorld(idx, v);
       v.project(camera);
       if (v.z < -1 || v.z > 1) continue;
       var sx = (v.x * 0.5 + 0.5) * this.width;
