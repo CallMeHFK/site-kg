@@ -32,6 +32,8 @@ def main() -> None:
     t.add_argument("site_id", nargs="?")
     v = sub.add_parser("render")
     v.add_argument("site_id")
+    vb = sub.add_parser("render-build")
+    vb.add_argument("site_id")
     args = ap.parse_args()
 
     if args.cmd == "ingest":
@@ -54,6 +56,18 @@ def main() -> None:
         from .viewer import render_viewer
         out = store.site_dir(args.site_id) / "viewer.html"
         render_viewer(store.load(args.site_id, "graph"), store.load(args.site_id, "meta"), out)
+        print(out)
+    elif args.cmd == "render-build":
+        from . import store
+        from .buildview import render_build_viewer
+        out = store.site_dir(args.site_id) / "build.html"
+        try:
+            render_build_viewer(store.load(args.site_id, "graph"),
+                                store.load(args.site_id, "meta"), out)
+        except (KeyError, ValueError) as e:
+            # same failure contract as the MCP render_build tool: clean error,
+            # no traceback (empty graph or unknown site)
+            raise SystemExit(f"render-build failed: {e}")
         print(out)
     else:
         from . import store

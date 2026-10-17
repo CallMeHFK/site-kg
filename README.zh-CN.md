@@ -63,6 +63,7 @@ MCP 客户端配置（streamable HTTP）：
 | `neighbors(site_id, page_id, depth)` | 子图扩展（多跳上下文） |
 | `ask(site_id, question)` | LLM 带引用问答（需配置 LLM） |
 | `render_site(site_id)` | 自包含 **3D** Three.js 图谱查看器（人工巡检） |
+| `render_build(site_id)` | 自包含 **WebGPU** 构建回放查看器：图谱现场"生长"——节点按语料顺序降生到章环上，随后证据边（ref/imports/contains），再按每个派生关系维度各飞来一波；每条边从源节点射出并绑定到目标节点（带脉冲），HUD 实时计数节点/边/各维度边。倍速 0.25×–16×、重播/暂停/跳过。需支持 WebGPU 的浏览器 |
 
 资源：`site://<site_id>/graph` —— 完整图 JSON。
 
@@ -160,7 +161,7 @@ WantedBy=default.target
 - 语义增强（可选）：配置 `SITE_KG_LLM_KEY` 后用 cognee `cognify` 在结构边之上叠加实体/关系边。
 - 本地代码摄入的 tree-sitter 符号/引用边（aider 式 tags），作为正则层之上的可选 extra。
 - 壳页兜底失效的 JS 站点（无限滚动、重反爬）走 Crawl4AI 深爬，经 `.[crawl]` extra 启用。
-- 可视化已完成：`render_site` 产出自包含 3D Three.js 查看器（bundle 内嵌可离线，布局在渲染期用固定种子计算）。
+- 可视化已完成：`render_site` 产出自包含 3D Three.js 查看器（bundle 内嵌可离线，布局在渲染期用固定种子计算）；`render_build` 再用 WebGPU 回放构建过程本身——节点与各维度边波次动态落上章环，HUD 实时计数。
 
 ## 许可
 

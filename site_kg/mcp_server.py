@@ -2,7 +2,7 @@
 
 Transports: stdio (default, for IDE/agent hosts) or streamable-http (for network clients).
 Tools: ingest_url, ingest_local, list_sites, site_stats, search, get_page, neighbors,
-ask, render_site.
+ask, render_site, render_build.
 """
 from __future__ import annotations
 
@@ -213,6 +213,29 @@ def render_site(site_id: str) -> dict:
     from .viewer import render_viewer
     out = store.site_dir(site_id) / "viewer.html"
     render_viewer(g, meta, out)
+    return {"ok": True, "path": str(out), "pages": len(g["nodes"]), "edges": len(g["edges"])}
+
+
+@mcp.tool()
+def render_build(site_id: str) -> dict:
+    """Render the graph construction process as a self-contained WebGPU viewer
+    (human inspection path). Replays the build: nodes are born in corpus order
+    onto chapter rings, then evidence edges (ref/imports/contains), then one
+    flying wave per derived relation dimension -- every edge grows from its
+    source node and binds to its target with a pulse, while a HUD counts nodes,
+    edges and per-dimension edges as they land. Returns the file path; AI-facing
+    queries stay on search/neighbors/ask. Needs a WebGPU-capable browser."""
+    try:
+        g = store.load(site_id, "graph")
+        meta = store.load(site_id, "meta")
+    except KeyError as e:
+        return {"ok": False, "error": str(e)}
+    from .buildview import render_build_viewer
+    out = store.site_dir(site_id) / "build.html"
+    try:
+        render_build_viewer(g, meta, out)
+    except ValueError as e:
+        return {"ok": False, "error": str(e)}
     return {"ok": True, "path": str(out), "pages": len(g["nodes"]), "edges": len(g["edges"])}
 
 

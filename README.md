@@ -63,6 +63,7 @@ MCP client config (streamable HTTP):
 | `neighbors(site_id, page_id, depth)` | subgraph expansion (multi-hop context) |
 | `ask(site_id, question)` | LLM Q&A with citations (needs LLM config) |
 | `render_site(site_id)` | self-contained **3D** Three.js graph viewer (human inspection): degree-sized glowing nodes, hover tooltip, click-to-focus neighbourhood, chapters aggregate view (click a sphere to isolate), instant search with focus, live status bar (nodes/edges/view%/FPS) |
+| `render_build(site_id)` | self-contained **WebGPU** build-replay viewer: the graph constructs itself live — nodes born in corpus order onto chapter rings, then evidence edges (ref/imports/contains), then one flying wave per derived relation dimension; every edge shoots out of its source node and binds to the target with a pulse while a HUD counts nodes/edges/per-dimension edges. Speed controls 0.25×–16×, replay/pause/skip. Needs a WebGPU-capable browser |
 
 Resource: `site://<site_id>/graph` — the full graph JSON.
 
@@ -183,7 +184,7 @@ WantedBy=default.target
 - Semantic enrichment (optional): cognee `cognify` over the crawled corpus when `SITE_KG_LLM_KEY` is present — entity/relation edges alongside the structural ones.
 - ~~Cross-file symbol edges~~ done: `mentions_symbol` (regex layer, keyless). tree-sitter symbol/reference edges (aider-style tags) remain an optional extra for precision.
 - Crawl4AI deep-crawl for JS sites that defeat the Playwright shell-fallback (infinite scroll, heavy anti-bot), via the `.[crawl]` extra.
-- ~~Static graph visualization~~ done: `render_site` emits a self-contained 3D Three.js viewer per site (bundle embedded, works offline; seeded layout computed at render time).
+- ~~Static graph visualization~~ done: `render_site` emits a self-contained 3D Three.js viewer per site (bundle embedded, works offline; seeded layout computed at render time). `render_build` adds a WebGPU replay of the construction itself — nodes and per-dimension edge waves animating onto the rings with a live HUD.
 
 ## License
 
