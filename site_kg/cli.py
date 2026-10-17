@@ -6,7 +6,7 @@ import asyncio
 import json
 import time
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import urlencode, urlsplit
 
 from .viewer import SCENES
 
@@ -131,7 +131,10 @@ def main(argv: list[str] | None = None) -> None:
                                 source=target, **opts)
         else:
             handle = serve_live(target, replay=True, **opts)
-        print(handle.url, flush=True)
+        url = handle.url
+        if args.token:
+            url = f"{url}?{urlencode({'token': args.token})}"
+        print(url, flush=True)
         _wait_live(handle)
     elif args.cmd == "render":
         from . import store

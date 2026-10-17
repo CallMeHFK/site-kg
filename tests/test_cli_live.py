@@ -103,6 +103,15 @@ def test_live_local_directory(monkeypatch, tmp_path):
     assert calls["scene"] == "people"
 
 
+def test_live_token_is_printed_in_the_url(monkeypatch, capsys, tmp_path):
+    calls, _ = _fake_serve(monkeypatch)
+    root = tmp_path / "docs"
+    root.mkdir()
+    cli.main(["live", str(root), "--local", "--token", "s3 cret"])
+    assert capsys.readouterr().out.strip() == "http://127.0.0.1:4321?token=s3+cret"
+    assert calls["token"] == "s3 cret"
+
+
 def test_live_site_id_replays(monkeypatch, site):
     calls, _ = _fake_serve(monkeypatch)
     cli.main(["live", site, "--replay", "--scene", "neural"])
