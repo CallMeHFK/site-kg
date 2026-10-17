@@ -201,18 +201,41 @@ def neighbors(site_id: str, page_id: str, depth: int = 1) -> dict:
             "nodes": [{"id": i, "title": t} for i, t in titles.items()]}
 
 
+_LIVE_HANDLES: dict[str, object] = {}
+
+
 @mcp.tool()
-def render_site(site_id: str) -> dict:
+def render_site(site_id: str, scene: str = "planets", max_nodes: int | None = None,
+                mode: str = "archive") -> dict:
     """Render the graph as a self-contained HTML viewer (human inspection path).
-    Returns the file path; AI-facing queries stay on search/ask/neighbors."""
+    Archive mode returns the file path; mode="live" replays the stored graph over
+    a loopback SSE server and returns {live_url, run_id, last_seq}. AI-facing
+    queries stay on search/ask/neighbors."""
+    from .viewer import SCENES, render_viewer
+    if scene not in SCENES:
+        return {"ok": False,
+                "error": f"unknown scene {scene!r}; choose from {', '.join(SCENES)}"}
+    if mode not in ("archive", "live"):
+        return {"ok": False, "error": f"unknown mode {mode!r}; choose from archive, live"}
     try:
         g = store.load(site_id, "graph")
         meta = store.load(site_id, "meta")
     except KeyError as e:
         return {"ok": False, "error": str(e)}
-    from .viewer import render_viewer
+    if mode == "live":
+        from .live import serve_live
+        old = _LIVE_HANDLES.pop(site_id, None)
+        if old is not None:
+            old.close()
+        try:
+            handle = serve_live(site_id, scene=scene, max_nodes=max_nodes, replay=True)
+        except ValueError as e:
+            return {"ok": False, "error": str(e)}
+        _LIVE_HANDLES[site_id] = handle
+        return {"ok": True, "live_url": handle.url, "run_id": handle.run_id,
+                "last_seq": handle.last_seq}
     out = store.site_dir(site_id) / "viewer.html"
-    render_viewer(g, meta, out)
+    render_viewer(g, meta, out, scene=scene, max_nodes=max_nodes)
     return {"ok": True, "path": str(out), "pages": len(g["nodes"]), "edges": len(g["edges"])}
 
 

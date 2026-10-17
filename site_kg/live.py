@@ -613,18 +613,20 @@ def _unsafe_path(path: str) -> bool:
 
 
 def serve_hub(hub: LiveHub, *, port: int = 0, token: str | None = None,
-              scene: str | None = None, connect: bool = False) -> LiveServer:
-    return LiveServer(hub, port=port, token=token, scene=scene, connect=connect)
+              scene: str | None = None, connect: bool = False,
+              title: str = "") -> LiveServer:
+    return LiveServer(hub, port=port, token=token, scene=scene, connect=connect,
+                      title=title)
 
 
 def serve_live(site_id: str, *, source: str | None = None, scene: str = "planets",
                max_nodes: int | None = None, port: int = 0, replay: bool = False,
-               token: str | None = None) -> LiveHandle:
+               token: str | None = None, title: str | None = None) -> LiveHandle:
     if scene not in SCENES:
         raise ValueError(f"unknown scene {scene!r}; choose from {', '.join(SCENES)}")
     hub = LiveHub(site_id=site_id, scene=scene, max_nodes=max_nodes)
     server = serve_hub(hub, port=port, token=token, scene=scene,
-                       connect=bool(source or replay))
+                       connect=bool(source or replay), title=title or "")
     server.start()
     handle = LiveHandle(url=server.url, port=server.port, hub=hub, _server=server)
     try:

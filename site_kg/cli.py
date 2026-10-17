@@ -4,9 +4,57 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import time
+from pathlib import Path
+from urllib.parse import urlsplit
+
+from .viewer import SCENES
 
 
-def main() -> None:
+def _die(message: str) -> None:
+    raise SystemExit(f"live: {message}")
+
+
+def _resolve_live_target(target: str, *, local: bool, replay: bool) -> tuple[str, str]:
+    """Map one positional argument onto url | local | replay before any server
+    starts, so an ambiguous invocation fails loudly instead of guessing."""
+    target = (target or "").strip()
+    if not target:
+        _die("target is required")
+    if local and replay:
+        _die("--local and --replay are mutually exclusive")
+    if "://" in target:
+        if local:
+            _die("--local takes a directory path, not a URL")
+        if replay:
+            _die("--replay takes a site id, not a URL")
+        if urlsplit(target).scheme.lower() not in ("http", "https"):
+            _die("URL target must be http(s)")
+        return "url", target
+    if local:
+        root = Path(target).expanduser()
+        if not root.is_dir():
+            _die(f"not a directory: {target}")
+        return "local", str(root.resolve())
+    from . import store
+    if not (store.site_dir(target) / "meta.json").exists():
+        if Path(target).expanduser().is_dir():
+            _die(f"'{target}' is a local directory; pass --local")
+        _die(f"unknown site '{target}'; pass a URL or --local <path>")
+    return "replay", target
+
+
+def _wait_live(handle) -> None:
+    try:
+        while True:
+            time.sleep(3600)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        handle.close()
+
+
+def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(prog="site-kg")
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("ingest")
@@ -28,13 +76,26 @@ def main() -> None:
     s.add_argument("--transport", choices=["stdio", "http"], default="stdio")
     s.add_argument("--host", default="127.0.0.1")
     s.add_argument("--port", type=int, default=8766)
+    lv = sub.add_parser("live")
+    lv.add_argument("target", help="http(s) URL, local directory (--local) or site id")
+    lv.add_argument("--scene", choices=SCENES, default=None,
+                    help="scene for an immediate start; omit a URL to open the launcher")
+    lv.add_argument("--local", action="store_true", help="treat target as a directory")
+    lv.add_argument("--replay", action="store_true", help="replay a stored site id")
+    lv.add_argument("--max-nodes", type=int, default=None)
+    lv.add_argument("--port", type=int, default=0)
+    lv.add_argument("--token", default=None)
     t = sub.add_parser("stats")
     t.add_argument("site_id", nargs="?")
     v = sub.add_parser("render")
     v.add_argument("site_id")
+    v.add_argument("--scene", choices=SCENES, default="planets")
+    v.add_argument("--max-nodes", type=int, default=None)
+    v.add_argument("--external-data", action="store_true",
+                   help="write sk-*.bin beside viewer.html instead of inlining")
     vb = sub.add_parser("render-build")
     vb.add_argument("site_id")
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
 
     if args.cmd == "ingest":
         from .mcp_server import ingest_url
@@ -51,11 +112,34 @@ def main() -> None:
     elif args.cmd == "serve":
         from .mcp_server import serve
         serve(args.transport, args.host, args.port)
+    elif args.cmd == "live":
+        from . import store
+        from .live import serve_live
+        kind, target = _resolve_live_target(args.target, local=args.local,
+                                            replay=args.replay)
+        opts = {"scene": args.scene or "planets", "max_nodes": args.max_nodes,
+                "port": args.port, "token": args.token}
+        if kind == "url":
+            site_id = store.site_id_for(target)
+            if args.scene:
+                handle = serve_live(site_id, source=target, **opts)
+            else:
+                # no scene: open the launcher, address prefilled, scene chooser
+                handle = serve_live(site_id, title=target, **opts)
+        elif kind == "local":
+            handle = serve_live(store.site_id_for(f"file://{target}"),
+                                source=target, **opts)
+        else:
+            handle = serve_live(target, replay=True, **opts)
+        print(handle.url, flush=True)
+        _wait_live(handle)
     elif args.cmd == "render":
         from . import store
         from .viewer import render_viewer
         out = store.site_dir(args.site_id) / "viewer.html"
-        render_viewer(store.load(args.site_id, "graph"), store.load(args.site_id, "meta"), out)
+        render_viewer(store.load(args.site_id, "graph"), store.load(args.site_id, "meta"),
+                      out, scene=args.scene, max_nodes=args.max_nodes,
+                      external_data=args.external_data)
         print(out)
     elif args.cmd == "render-build":
         from . import store
