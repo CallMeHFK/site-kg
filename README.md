@@ -95,6 +95,35 @@ Measured (2026-10-09, dogfooding this repo): 22 files (7 docs + 15 code) → 30 
 
 Measured at corpus scale (2026-10-13, a 115,598-doc / 7-site DriveOS SDK source tree): re-ingest and report parity verified site-by-site; `get_page` on the largest site (75,415 docs) reads one ~3.8 MB shard in ~12 ms where the single-file format needed 8.3 s for the same page. Shard/meta caches are keyed by file mtime+size, so a re-ingest from any process (cli, crawl job, another agent) is served fresh with no invalidation hook; all writes are tmp-file + `os.replace`, and a 4-thread read hammer during repeated re-ingest saw zero torn reads.
 
+## Live viewer
+
+`site-kg live` starts a local, address-first live session: give it the address first; the browser then asks which scene to build in.
+
+```bash
+# URL: prints a loopback URL; the launcher is prefilled with the address
+python -m site_kg.cli live https://docs.example.com
+
+# skip the launcher with a scene: crawl -> stream -> settle in one view
+python -m site_kg.cli live https://docs.example.com --scene people
+
+# local docs/code directory
+python -m site_kg.cli live --local ./docs --scene planets
+
+# replay an ingested site from its stored graph
+python -m site_kg.cli live my-site --replay
+```
+
+The page streams the build over SSE while the server crawls and lays the graph out incrementally: nodes arrive in corpus order, edges bind as pages are parsed, and derived relation dimensions stay hidden by default and never participate in layout springs, so they cannot distort the picture. Scenes: **Planets** (1) chapters as orbital rings, **People** (2) an ego neighbourhood around the focus node, **Neural** (3) a dense field view. `#scene=`, the last-picked scene in localStorage, and the MCP `scene=` argument are presets once a scene has been chosen — they never replace the address-first start.
+
+Limits and fallbacks:
+
+- The scale floor is the measured 75,415-node / 61,615-edge corpus; layout runs on the server (no browser-side force layout at that size). `--max-nodes` trims the preview only.
+- Labels are budgeted at most 40 chapter / 12 tick labels, and the scene is merged point/line batches — no per-node objects or DOM labels.
+- Without WebGL2 the page falls back to a canvas-2D view capped at 5,000 nodes and points at the offline archive for the full graph. WebGL context loss is restored in place.
+- The archive viewer (`site-kg render <site_id>`) is a single offline HTML file (binary payloads embedded by default; `--external-data` writes `sk-*.bin` beside it) and replays the same scenes.
+
+Security: the server binds `127.0.0.1` only, sends no CORS headers, rejects non-loopback `Host` values, refuses path traversal, serves no corpus files, and offers an optional shared token (`--token`). With a token, the printed URL carries `?token=…` and the page forwards it on snapshot, SSE and start calls. The Three.js r186 bundle is committed and pinned; normal development and offline use need no npm — see `tools/build_viewer_bundle.mjs` for the deliberate upgrade path.
+
 ## Relation dimensions
 
 Link and import edges are honest but sparse: most pages in most corpora are
