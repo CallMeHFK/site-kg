@@ -51,6 +51,8 @@
     this.dimVersion = 0;
     this.graphHash = 0;
     this.timeline = null;
+    this.runId = "";
+    this.lastSeq = 0;
   };
 
   LiveGraph.prototype._growNodes = function () {
@@ -145,8 +147,9 @@
       list = [];
       this.pending.set(miss, list);
     }
-    list.push(e);
+    list.push({s: e.s, d: e.d, kind: e.kind, late: e.late || 0});
     this.pendingCount++;
+    this.dangling = this.pendingCount;
   };
 
   LiveGraph.prototype._appendEdge = function (si, di, kind) {
@@ -164,14 +167,14 @@
     return ei;
   };
 
-  LiveGraph.prototype.edgeAdded = function (s, d, kind) {
+  LiveGraph.prototype.edgeAdded = function (s, d, kind, late) {
     s = String(s);
     d = String(d);
     kind = String(kind || "ref");
     var si = this.indexById.get(s);
     var di = this.indexById.get(d);
     if (si === undefined || di === undefined) {
-      this._bufferEdge({s: s, d: d, kind: kind});
+      this._bufferEdge({s: s, d: d, kind: kind, late: late || 0});
       return -1;
     }
     return this._appendEdge(si, di, kind);
@@ -189,6 +192,7 @@
       if (si === undefined || di === undefined) this._bufferEdge(e);
       else this._appendEdge(si, di, e.kind);
     }
+    this.dangling = this.pendingCount;
   };
 
   LiveGraph.prototype.applyBatch = function (events) {
@@ -199,7 +203,9 @@
       if (ev.t === "node_added" || ev.t === "node_updated") {
         this.nodeAdded(ev.id, ev);
       } else if (ev.t === "edge_added") {
-        this.edgeAdded(ev.s, ev.d, ev.kind);
+        this.edgeAdded(ev.s, ev.d, ev.kind, ev.late);
+      } else if (ev.t === "ingest_done") {
+        this.dangling = this.pendingCount;
       }
     }
     return this;
@@ -229,9 +235,29 @@
   };
 
   LiveGraph.prototype.loadSnapshot = function (snap) {
-    this.reset(Math.max(64, (snap.nodes || []).length + 8));
-    this.applyBatch(snap.nodes || []);
-    this.applyBatch(snap.edges || []);
+    var nodes = snap.nodes || [];
+    this.reset(Math.max(64, nodes.length + 8));
+    var rows = (snap.layout && snap.layout.nodes) || [];
+    var byIndex = {};
+    for (var r = 0; r < rows.length; r++) byIndex[rows[r].i] = rows[r];
+    for (var i = 0; i < nodes.length; i++) {
+      var nd = nodes[i];
+      var index = this.nodeAdded(nd.i, nd);
+      var pos = byIndex[index];
+      if (pos) {
+        this.x[index] = +pos.x || 0;
+        this.y[index] = +pos.y || 0;
+        this.z[index] = +pos.z || 0;
+        this.depth[index] = pos.d == null ? 0 : pos.d & 255;
+      }
+    }
+    var edges = snap.edges || [];
+    for (var e = 0; e < edges.length; e++) {
+      this.edgeAdded(edges[e].s, edges[e].t, edges[e].k, edges[e].late);
+    }
+    this.runId = String(snap.run_id || "");
+    this.lastSeq = snap.last_seq || 0;
+    this.dangling = snap.dangling == null ? this.pendingCount : snap.dangling;
     this.version++;
     return this;
   };
@@ -269,6 +295,165 @@
   };
 
   SK.LiveGraph = LiveGraph;
+
+  function Batcher(live, opts) {
+    opts = opts || {};
+    this.live = live;
+    this.windowMs = opts.windowMs == null ? 300 : opts.windowMs;
+    this.maxNodes = opts.maxNodes == null ? 100 : opts.maxNodes;
+    this.onFlush = opts.onFlush || null;
+    this._now = opts.now || function () { return Date.now(); };
+    this._timerOff = opts.timer === false;
+    this.queue = [];
+    this._seqs = new Set();
+    this.nodeCount = 0;
+    this.skipped = 0;
+    this.lastSeq = opts.lastSeq || 0;
+    this.lastFlushAt = this._now();
+    this.dirtyNodes = [live.n, live.n];
+    this.dirtyEdges = [live.m, live.m];
+    this.timer = null;
+  }
+
+  Batcher.prototype.reset = function (lastSeq) {
+    if (this.timer != null) {
+      clearTimeout(this.timer);
+      this.timer = null;
+    }
+    this.queue = [];
+    this._seqs.clear();
+    this.nodeCount = 0;
+    this.lastSeq = lastSeq || 0;
+    this.lastFlushAt = this._now();
+    this.dirtyNodes = [this.live.n, this.live.n];
+    this.dirtyEdges = [this.live.m, this.live.m];
+  };
+
+  Batcher.prototype.close = function () {
+    this.reset(this.lastSeq);
+    this.onFlush = null;
+  };
+
+  Batcher.prototype._arm = function () {
+    if (this._timerOff || this.timer != null || !this.queue.length) return;
+    if (typeof setTimeout !== "function") return;
+    var self = this;
+    var delay = Math.max(0, this.windowMs - (this._now() - this.lastFlushAt));
+    this.timer = setTimeout(function () {
+      self.timer = null;
+      self.flush();
+    }, delay);
+    if (this.timer && typeof this.timer.unref === "function") this.timer.unref();
+  };
+
+  Batcher.prototype.push = function (ev, now) {
+    if (!ev) return false;
+    if (ev.t === "batch" && Array.isArray(ev.events)) {
+      var any = false;
+      for (var b = 0; b < ev.events.length; b++) {
+        if (this.push(ev.events[b], now)) any = true;
+      }
+      return any;
+    }
+    if (ev.seq != null) {
+      if (ev.seq <= this.lastSeq || this._seqs.has(ev.seq)) {
+        this.skipped++;
+        return false;
+      }
+      this._seqs.add(ev.seq);
+    }
+    this.queue.push(ev);
+    if (ev.t === "node_added" || ev.t === "node_updated") this.nodeCount++;
+    now = now == null ? this._now() : now;
+    if (this.nodeCount >= this.maxNodes ||
+        now - this.lastFlushAt >= this.windowMs) {
+      this.flush(now);
+      return true;
+    }
+    this._arm();
+    return false;
+  };
+
+  Batcher.prototype.flush = function (now, force) {
+    if (this.timer != null) {
+      clearTimeout(this.timer);
+      this.timer = null;
+    }
+    if (!this.queue.length) return null;
+    now = now == null ? this._now() : now;
+    if (!force && this.nodeCount < this.maxNodes &&
+        now - this.lastFlushAt < this.windowMs) {
+      this._arm();
+      return null;
+    }
+    var q = this.queue;
+    q.sort(function (a, b) {
+      var as = a.seq == null ? Number.MAX_SAFE_INTEGER : a.seq;
+      var bs = b.seq == null ? Number.MAX_SAFE_INTEGER : b.seq;
+      return as - bs;
+    });
+    var live = this.live;
+    var n0 = live.n, m0 = live.m;
+    var nodeLo = Infinity, nodeHi = -Infinity;
+    var edgeLo = Infinity, edgeHi = -Infinity;
+    var events = [];
+    for (var k = 0; k < q.length; k++) {
+      var ev = q[k], t = ev.t;
+      if (t === "node_added" || t === "node_updated") {
+        var idx = live.indexById.get(String(ev.id));
+        if (idx !== undefined) {
+          if (idx < nodeLo) nodeLo = idx;
+          if (idx + 1 > nodeHi) nodeHi = idx + 1;
+        }
+        live.applyBatch([ev]);
+      } else if (t === "edge_added") {
+        live.applyBatch([ev]);
+      } else if (t === "layout_patch") {
+        var rows = ev.rows || ev.patch || [];
+        live.applyLayout(rows);
+        for (var r = 0; r < rows.length; r++) {
+          var ri = rows[r].i;
+          if (ri >= 0 && ri < live.n) {
+            if (ri < nodeLo) nodeLo = ri;
+            if (ri + 1 > nodeHi) nodeHi = ri + 1;
+          }
+        }
+      } else if (t === "ingest_done") {
+        live.dangling = live.pendingCount;
+      }
+      if (ev.seq != null && ev.seq > this.lastSeq) this.lastSeq = ev.seq;
+      events.push(ev);
+    }
+    if (live.n > n0) {
+      if (n0 < nodeLo) nodeLo = n0;
+      if (live.n > nodeHi) nodeHi = live.n;
+    }
+    if (!isFinite(nodeLo)) nodeLo = nodeHi = live.n;
+    if (live.m > m0) {
+      edgeLo = m0;
+      edgeHi = live.m;
+    } else {
+      edgeLo = edgeHi = live.m;
+    }
+    this.queue = [];
+    this._seqs.clear();
+    this.nodeCount = 0;
+    this.lastFlushAt = now;
+    this.dirtyNodes = [nodeLo, nodeHi];
+    this.dirtyEdges = [edgeLo, edgeHi];
+    var rec = {
+      nodes: live.n, edges: live.m,
+      applied: events.length, skipped: this.skipped,
+      dirtyNodes: this.dirtyNodes, dirtyEdges: this.dirtyEdges,
+      nodeStart: n0, edgeStart: m0,
+      nodesChanged: live.n > n0, edgesChanged: live.m > m0,
+      lastSeq: this.lastSeq, events: events
+    };
+    if (this.onFlush) this.onFlush(rec);
+    return rec;
+  };
+
+  SK.Batcher = Batcher;
 
   function decodeGraph(input) {
     var u8 = input;

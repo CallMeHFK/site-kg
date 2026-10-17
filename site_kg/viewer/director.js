@@ -23,6 +23,11 @@
     this.statusTime = 0;
     this._visKey = "";
     this._fitNext = false;
+    this.runId = "";
+    this.lastSeq = 0;
+    this.batcher = null;
+    this.transport = null;
+    this.error = null;
   }
 
   Director.prototype.attach = function (ui) {
@@ -183,6 +188,199 @@
     this.renderer.sync(this.live);
     this.camera.setAutoRotate(!this.camera.userInteracting);
     if (this.ui) this.ui.setSceneActive(name);
+  };
+
+  Director.prototype.connectEvents = function (runId, lastSeq, opts) {
+    opts = opts || {};
+    var self = this;
+    var live = this.live;
+    var cfg = (this.ui && this.ui.cfg) || {};
+    var base = String(opts.base != null ? opts.base : (cfg.liveUrl || ""))
+      .replace(/\/+$/, "");
+    var ES = opts.EventSource ||
+             (typeof EventSource === "function" ? EventSource : null);
+    if (!ES) throw new Error("EventSource is not supported");
+    var fetchFn = opts.fetch || (typeof fetch === "function" ? fetch : null);
+
+    if (this.transport) this.transport.close();
+    this.runId = String(runId || "");
+    this.lastSeq = Number(lastSeq) || 0;
+    this.error = null;
+
+    var handle = {base: base, runId: this.runId, source: null, closed: false,
+                  refreshing: false, retryTimer: null};
+    var batcher = new SK.Batcher(live, {
+      windowMs: opts.windowMs, maxNodes: opts.maxNodes, timer: opts.timer,
+      lastSeq: this.lastSeq,
+      onFlush: function (rec) { self.lastSeq = rec.lastSeq; onFlush(rec); }
+    });
+    this.batcher = batcher;
+    handle.batcher = batcher;
+
+    function resetRun(newRunId) {
+      handle.runId = String(newRunId || "");
+      self.runId = handle.runId;
+      live.runId = handle.runId;
+      live.reset(1024);
+      batcher.reset(0);
+      self.ingestDone = false;
+      self.layoutSettled = false;
+      self.finaleDone = false;
+      self.state = "live";
+      self.error = null;
+      self._fittedOnce = false;
+      self._fitNext = true;
+      self._visKey = "";
+    }
+
+    function onFlush(rec) {
+      var events = rec.events || [];
+      for (var k = 0; k < events.length; k++) {
+        var ev = events[k];
+        if (ev.t === "layout_patch") {
+          var rows = ev.rows || ev.patch || [];
+          for (var r = 0; r < rows.length; r++) {
+            if (rows[r].i < live.n) live.revealed[rows[r].i] = 1;
+          }
+        } else if (ev.t === "ingest_done") {
+          self.ingestDone = true;
+          self.state = "settling";
+          if (self.camera && self.camera.fitLive) {
+            self.camera.fitLive({robust: true, duration: 700});
+          }
+        } else if (ev.t === "settled") {
+          self.layoutSettled = true;
+        } else if (ev.t === "error") {
+          self.error = String(ev.error || "live run failed");
+          self.state = "failed";
+        }
+      }
+      var d = rec.dirtyNodes || [0, 0];
+      for (var i = d[0]; i < d[1]; i++) live.revealed[i] = 1;
+      var de = rec.dirtyEdges || [0, 0];
+      for (var e = de[0]; e < de[1]; e++) live.eRevealed[e] = 1;
+      self._visKey = "";
+      if (rec.nodesChanged && self.ui && self.ui._buildLegend) {
+        self.ui._buildLegend();
+      }
+    }
+
+    function applySnapshot(snap, health) {
+      if (!snap) return;
+      if (snap.run_id && handle.runId && String(snap.run_id) !== handle.runId) {
+        resetRun(snap.run_id);
+      } else if (!handle.runId && snap.run_id) {
+        handle.runId = self.runId = String(snap.run_id);
+      }
+      live.loadSnapshot(snap);
+      batcher.reset(snap.last_seq || 0);
+      self.lastSeq = batcher.lastSeq;
+      for (var i = 0; i < live.n; i++) live.revealed[i] = 1;
+      for (var e = 0; e < live.m; e++) live.eRevealed[e] = 1;
+      self._visKey = "";
+      if (health && health.state === "complete") {
+        self.ingestDone = true;
+        self.layoutSettled = true;
+        self.state = "complete";
+      }
+      if (self.ui) {
+        if (self.ui._buildLegend) self.ui._buildLegend();
+        if (self.ui.setSceneActive) self.ui.setSceneActive(self.renderer.name);
+      }
+    }
+
+    function getJSON(path) {
+      if (!fetchFn) return Promise.reject(new Error("fetch is not available"));
+      return fetchFn(base + path, {cache: "no-store"}).then(function (res) {
+        if (!res.ok) throw new Error(path + " failed: " + res.status);
+        return res.json();
+      });
+    }
+
+    function refresh() {
+      return Promise.all([
+        getJSON("/snapshot"),
+        getJSON("/health").catch(function () { return null; })
+      ]).then(function (res) {
+        if (handle.closed) return;
+        applySnapshot(res[0], res[1]);
+        open(res[0].last_seq || batcher.lastSeq);
+      });
+    }
+
+    function scheduleRetry() {
+      if (handle.closed || handle.retryTimer != null) return;
+      handle.retryTimer = setTimeout(function () {
+        handle.retryTimer = null;
+        recover();
+      }, opts.retryMs == null ? 1500 : opts.retryMs);
+      if (handle.retryTimer && handle.retryTimer.unref) {
+        handle.retryTimer.unref();
+      }
+    }
+
+    function recover() {
+      if (handle.closed || handle.refreshing) return;
+      handle.refreshing = true;
+      if (handle.source) {
+        try { handle.source.close(); } catch (err) { /* already closed */ }
+        handle.source = null;
+      }
+      refresh().then(function () {
+        handle.refreshing = false;
+      }, function () {
+        handle.refreshing = false;
+        scheduleRetry();
+      });
+    }
+
+    function onMessage(raw) {
+      var ev;
+      try {
+        ev = JSON.parse(raw);
+      } catch (err) {
+        return;
+      }
+      if (!ev || !ev.t) return;
+      if (ev.run_id && handle.runId && String(ev.run_id) !== handle.runId) {
+        resetRun(ev.run_id);
+        return;
+      }
+      batcher.push(ev);
+    }
+
+    function open(since) {
+      if (handle.closed) return;
+      if (handle.source) {
+        try { handle.source.close(); } catch (err) { /* already closed */ }
+      }
+      var url = base + "/events?since=" + (since || 0);
+      if (opts.token) url += "&token=" + encodeURIComponent(opts.token);
+      var src = new ES(url);
+      handle.source = src;
+      src.onmessage = function (msg) { onMessage(msg && msg.data); };
+      src.onerror = function () { recover(); };
+    }
+
+    handle.reconnect = function () { recover(); };
+    handle.close = function () {
+      if (handle.closed) return;
+      handle.closed = true;
+      if (handle.retryTimer != null) {
+        clearTimeout(handle.retryTimer);
+        handle.retryTimer = null;
+      }
+      if (handle.source) {
+        try { handle.source.close(); } catch (err) { /* already closed */ }
+        handle.source = null;
+      }
+      batcher.close();
+      if (self.transport === handle) self.transport = null;
+    };
+
+    this.transport = handle;
+    open(this.lastSeq);
+    return handle;
   };
 
   Director.prototype._recomputeDims = function () {
