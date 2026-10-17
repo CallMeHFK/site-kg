@@ -42,6 +42,9 @@ _LAYOUT_FINAL = struct.Struct("<IIII")           # seq, ms, n_nodes, flags
 _TIMELINE_HEADER = struct.Struct("<4sHHIIIIQ")   # magic, ver, flags, n, e, batches, idlen
 _BATCH_ROW = struct.Struct("<IIIIHH")            # seq, ms, node_start, edge_start, n_node, n_edge
 
+ARCHIVE_MAGIC = b"SKGA"
+_ARCHIVE_HEADER = struct.Struct("<4sIII")        # magic, graph len, layout len, timeline len
+
 
 def _need(buf: bytes, pos: int, size: int) -> None:
     if pos + size > len(buf):
@@ -356,3 +359,27 @@ def pack_html_payload(data: bytes) -> str:
 
 def unpack_html_payload(s: str) -> bytes:
     return gzip.decompress(base64.b64decode(s.encode("ascii"), validate=True))
+
+
+def pack_archive_payload(graph: bytes, layout: bytes, timeline: bytes) -> str:
+    """One gzip+base64 blob holding the three sub-payloads, ready to inline."""
+    body = b"".join([_ARCHIVE_HEADER.pack(ARCHIVE_MAGIC, len(graph), len(layout), len(timeline)),
+                     graph, layout, timeline])
+    return pack_html_payload(body)
+
+
+def unpack_archive_payload(text: str) -> dict[str, bytes]:
+    raw = unpack_html_payload(text)
+    _need(raw, 0, _ARCHIVE_HEADER.size)
+    magic, graph_len, layout_len, timeline_len = _ARCHIVE_HEADER.unpack_from(raw, 0)
+    if magic != ARCHIVE_MAGIC:
+        raise ValueError(f"bad archive magic: expected {ARCHIVE_MAGIC!r}, got {magic!r}")
+    pos = _ARCHIVE_HEADER.size
+    _need(raw, pos, graph_len + layout_len + timeline_len)
+    out = {
+        "graph": raw[pos:pos + graph_len],
+        "layout": raw[pos + graph_len:pos + graph_len + layout_len],
+        "timeline": raw[pos + graph_len + layout_len:pos + graph_len + layout_len + timeline_len],
+    }
+    _finish(raw, pos + graph_len + layout_len + timeline_len)
+    return out

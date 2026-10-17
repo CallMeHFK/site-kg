@@ -1,5 +1,7 @@
 """JS-shell detection and Playwright fallback tests. The SPA fixture runs a
 loopback http.server -- no external network."""
+import math
+import re
 from pathlib import Path
 
 import pytest
@@ -135,18 +137,31 @@ def test_bfs_records_render_skip_when_renderer_missing(tmp_path: Path, monkeypat
 
 
 def test_viewer_file_is_self_contained(tmp_path: Path):
-    import json
-
+    from site_kg import payload
     from site_kg.viewer import render_viewer
+
     g = {"nodes": [{"i": "a", "c": "c1", "t": "A", "u": "http://x/a", "g": 1},
                    {"i": "b", "c": "c2", "t": "B", "u": "http://x/b", "g": 0}],
          "edges": [{"s": "a", "t": "b", "k": "ref"}]}
     out = render_viewer(g, {"url": "http://x/", "docs": 2, "verdict": "READY"},
-                        tmp_path / "viewer.html")
+                        tmp_path / "viewer.html", scene="neural")
     s = out.read_text(encoding="utf-8")
-    assert "T3" in s and "const G = " in s  # bundle + graph embedded
-    data = s.split("const G = ", 1)[1].split(";", 1)[0]
-    parsed = json.loads(data)
-    assert parsed["nodes"][0]["i"] == "a"
-    assert all("z" in n for n in parsed["nodes"])  # 3D layout computed
+    for marker in ("SK.LiveGraph", "SK.Renderer", "SK.Camera",
+                   "SK.Director", "SK.UI"):
+        assert marker in s  # modules assembled into the bundle
+    assert '"scene":"neural"' in s
+    assert "T3" in s  # vendor bundle embedded
     assert "<script src" not in s and "<link" not in s  # no external resources
+
+    m = re.search(r'<script[^>]*id="sk-payload"[^>]*>([^<]+)</script>', s)
+    assert m, "embedded payload missing"
+    parts = payload.unpack_archive_payload(m.group(1).strip())
+    graph = payload.decode_graph(parts["graph"])
+    layout = payload.decode_layout(parts["layout"])
+    timeline = payload.decode_timeline(parts["timeline"])
+    assert [n["i"] for n in graph["nodes"]] == ["a", "b"]
+    assert graph["nodes"][0]["t"] == "A"
+    assert len(layout["nodes"]) == 2 and len(timeline["nodes"]) == 2
+    assert all(math.isfinite(n[k]) for n in layout["nodes"] for k in ("x", "y", "z"))
+    assert max(abs(n[k]) for n in layout["nodes"] for k in ("x", "y", "z")) <= 1.0
+    assert timeline["run_id"]
