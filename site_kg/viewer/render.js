@@ -1,5 +1,6 @@
-/* Three.js renderer: one Points cloud, one additive halo, one LineSegments.
-   Node state lives in SK.LiveGraph typed arrays; this module only mirrors it. */
+/* Three.js renderer: one Points cloud, one additive halo, one edge LineSegments,
+   one merged chapter-ring mesh and one ego InstancedMesh. Node state lives in
+   SK.LiveGraph typed arrays; this module only mirrors it. */
 (function (SK) {
   "use strict";
 
@@ -26,8 +27,11 @@
     this.selectionSet = null;
     this.hiddenKinds = {};
     this.lastSelectionKey = "";
-    this.rings = [];
+    this.ringMesh = null;
     this.ringKey = "";
+    this.contextLost = false;
+    this._onContextLost = null;
+    this._onContextRestored = null;
     this.lodReady = false;
     this.lodVersion = -1;
     this.finaleActive = false;
@@ -47,6 +51,22 @@
     this.renderer = new THREE.WebGLRenderer({canvas: canvas, antialias: true,
                                              powerPreference: "high-performance"});
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    var self = this;
+    this._onContextLost = function (event) {
+      if (event && event.preventDefault) event.preventDefault();
+      self.contextLost = true;
+    };
+    this._onContextRestored = function () {
+      self.contextLost = false;
+      self.colorDirty = true;
+      self.lastVersion = -1;
+      self.lastDimVersion = -1;
+      self._clearEdgeIndex();
+      self.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+      self.resize();
+    };
+    canvas.addEventListener("webglcontextlost", this._onContextLost, false);
+    canvas.addEventListener("webglcontextrestored", this._onContextRestored, false);
     this.scene = new THREE.Scene();
     this.camera = new THREE.PerspectiveCamera(60, 1, 0.1, 1e6);
     this.scene.background = new THREE.Color(0x0d1117);
@@ -140,7 +160,7 @@
     this.resetFinale();
     this._clearEdgeIndex();
     var planet = !!cfg.shells;
-    for (var i = 0; i < this.rings.length; i++) this.rings[i].visible = planet;
+    if (this.ringMesh) this.ringMesh.visible = planet;
   };
 
   Renderer.prototype._syncVisibility = function () {
@@ -375,48 +395,66 @@
     if (key !== this.ringKey) {
       this._disposeRings();
       this.ringKey = key;
-      var THREE = T3.THREE;
-      var palette = (this.cfg && this.cfg.palette) || SK.PALETTE;
-      for (var s = 0; s < count; s++) {
-        var radius = this._shellRadius(s);
+      if (count) {
+        var THREE = T3.THREE;
+        var palette = (this.cfg && this.cfg.palette) || SK.PALETTE;
         var segs = 128;
-        var pts = new Float32Array(segs * 6 + 6);
-        for (var q = 0; q < segs; q++) {
-          var a0 = q / segs * Math.PI * 2;
-          var a1 = (q + 1) / segs * Math.PI * 2;
-          pts[q * 6] = Math.cos(a0) * radius;
-          pts[q * 6 + 1] = 0;
-          pts[q * 6 + 2] = Math.sin(a0) * radius;
-          pts[q * 6 + 3] = Math.cos(a1) * radius;
-          pts[q * 6 + 4] = 0;
-          pts[q * 6 + 5] = Math.sin(a1) * radius;
+        var verts = count * (segs * 2 + 2);
+        var pts = new Float32Array(verts * 3);
+        var col = new Float32Array(verts * 3);
+        var at = 0, c = new THREE.Color();
+        for (var s = 0; s < count; s++) {
+          var radius = this._shellRadius(s);
+          var phase = s * 0.37;
+          var cosP = Math.cos(phase), sinP = Math.sin(phase);
+          c.setHex(palette[s % palette.length]);
+          for (var q = 0; q < segs; q++) {
+            var a0 = q / segs * Math.PI * 2;
+            var a1 = (q + 1) / segs * Math.PI * 2;
+            var x0 = Math.cos(a0) * radius, z0 = Math.sin(a0) * radius;
+            var x1 = Math.cos(a1) * radius, z1 = Math.sin(a1) * radius;
+            pts[at * 3] = x0 * cosP - z0 * sinP;
+            pts[at * 3 + 1] = 0;
+            pts[at * 3 + 2] = x0 * sinP + z0 * cosP;
+            col[at * 3] = c.r; col[at * 3 + 1] = c.g; col[at * 3 + 2] = c.b;
+            at++;
+            pts[at * 3] = x1 * cosP - z1 * sinP;
+            pts[at * 3 + 1] = 0;
+            pts[at * 3 + 2] = x1 * sinP + z1 * cosP;
+            col[at * 3] = c.r; col[at * 3 + 1] = c.g; col[at * 3 + 2] = c.b;
+            at++;
+          }
+          var tick = radius + Math.max(1.2, radius * 0.05);
+          pts[at * 3] = radius * cosP;
+          pts[at * 3 + 1] = 0;
+          pts[at * 3 + 2] = radius * sinP;
+          col[at * 3] = c.r; col[at * 3 + 1] = c.g; col[at * 3 + 2] = c.b;
+          at++;
+          pts[at * 3] = tick * cosP;
+          pts[at * 3 + 1] = 0;
+          pts[at * 3 + 2] = tick * sinP;
+          col[at * 3] = c.r; col[at * 3 + 1] = c.g; col[at * 3 + 2] = c.b;
+          at++;
         }
-        pts[segs * 6] = radius;
-        pts[segs * 6 + 3] = radius + Math.max(1.2, radius * 0.05);
         var geo = new THREE.BufferGeometry();
         geo.setAttribute("position", new THREE.BufferAttribute(pts, 3));
-        var color = new THREE.Color(palette[s % palette.length]);
-        var mat = new THREE.LineBasicMaterial({color: color, transparent: true,
+        geo.setAttribute("color", new THREE.BufferAttribute(col, 3));
+        var mat = new THREE.LineBasicMaterial({vertexColors: true, transparent: true,
                                                 opacity: 0.16, depthWrite: false});
-        var ring = new THREE.LineSegments(geo, mat);
-        ring.frustumCulled = false;
-        ring.userData.phase = s * 0.37;
-        ring.rotation.y = ring.userData.phase;
-        this.scene.add(ring);
-        this.rings.push(ring);
+        this.ringMesh = new THREE.LineSegments(geo, mat);
+        this.ringMesh.frustumCulled = false;
+        this.scene.add(this.ringMesh);
       }
     }
-    for (var r = 0; r < this.rings.length; r++) this.rings[r].visible = planet;
+    if (this.ringMesh) this.ringMesh.visible = planet;
   };
 
   Renderer.prototype._disposeRings = function () {
-    for (var i = 0; i < this.rings.length; i++) {
-      var ring = this.rings[i];
-      if (this.scene) this.scene.remove(ring);
-      ring.geometry.dispose();
-      ring.material.dispose();
-    }
-    this.rings = [];
+    if (!this.ringMesh) return;
+    if (this.scene) this.scene.remove(this.ringMesh);
+    this.ringMesh.geometry.dispose();
+    this.ringMesh.material.dispose();
+    this.ringMesh = null;
   };
 
   Renderer.prototype.nodeWorld = function (i, out) {
@@ -452,9 +490,7 @@
       this.edgeUni.u_sweepAmp.value = 0;
       this.edgeUni.u_sweepX.value = 0;
     }
-    for (var i = 0; i < this.rings.length; i++) {
-      this.rings[i].rotation.y = this.rings[i].userData.phase || 0;
-    }
+    if (this.ringMesh) this.ringMesh.rotation.y = 0;
     if (this._egoItems) this._applyEgo(0);
   };
 
@@ -483,9 +519,7 @@
     var k = Math.min(1, this.finaleClock / Math.max(0.001, this.finaleDuration));
     var e = 1 - Math.pow(1 - k, 3);
     if (this.finaleMode === "planets") {
-      for (var i = 0; i < this.rings.length; i++) {
-        this.rings[i].rotation.y = (this.rings[i].userData.phase || 0) * (1 - e);
-      }
+      if (this.ringMesh) this.ringMesh.rotation.y = -0.6 * e;
     } else if (this.finaleMode === "people") {
       this._applyEgo(this.finaleClock);
     } else if (this.finaleMode === "neural") {
@@ -572,6 +606,7 @@
   };
 
   Renderer.prototype.render = function () {
+    if (this.contextLost) return;
     var cam = this.camera;
     var targetDist = this.camDistance || cam.position.length() || 1;
     this.edgeUni.u_cull.value = targetDist * 1.15 + this.sceneRadius * 0.95;
@@ -653,6 +688,14 @@
 
   Renderer.prototype.dispose = function () {
     if (!this.renderer) return;
+    if (this.canvas) {
+      if (this._onContextLost) {
+        this.canvas.removeEventListener("webglcontextlost", this._onContextLost, false);
+      }
+      if (this._onContextRestored) {
+        this.canvas.removeEventListener("webglcontextrestored", this._onContextRestored, false);
+      }
+    }
     this._disposeRings();
     this.pgeo.dispose();
     this.lgeo.dispose();

@@ -577,9 +577,23 @@
     }
     try {
       var live = new SK.LiveGraph(cfg.mode === "archive" ? 4096 : 1024);
-      var renderer = new SK.Renderer();
-      renderer.mount(byId("sk-canvas"), live);
-      renderer.setScene(cfg.scene || "planets");
+      var canvas = byId("sk-canvas");
+      var renderer;
+      if (SK.Fallback2D && SK.hasWebGL2 && !SK.hasWebGL2()) {
+        renderer = new SK.Fallback2D(canvas);
+        renderer.setScene(cfg.scene || "planets");
+      } else {
+        renderer = new SK.Renderer();
+        try {
+          renderer.mount(canvas, live);
+          renderer.setScene(cfg.scene || "planets");
+        } catch (mountErr) {
+          try { if (renderer.dispose) renderer.dispose(); } catch (ignored) {}
+          if (!SK.Fallback2D) throw mountErr;
+          renderer = new SK.Fallback2D(canvas);
+          renderer.setScene(cfg.scene || "planets");
+        }
+      }
       var camera = new SK.Camera(renderer);
       camera.attach(live);
       var labels = new SK.Labels(byId("sk-labels"), renderer);

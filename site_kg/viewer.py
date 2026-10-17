@@ -23,7 +23,7 @@ TEMPLATE = ROOT / "templates" / "viewer.html"
 VIEWER_DIR = ROOT / "viewer"
 SCENES = ("planets", "people", "neural")
 PRE_SCENE_MODULES = ("core.js", "render.js", "labels.js", "camera.js")
-POST_SCENE_MODULES = ("director.js", "ui.js")
+POST_SCENE_MODULES = ("director.js", "fallback2d.js", "ui.js")
 MODES = ("archive", "live")
 EXTERNAL_FILES = {"graph": "sk-graph.bin", "layout": "sk-layout.bin",
                   "timeline": "sk-timeline.bin"}

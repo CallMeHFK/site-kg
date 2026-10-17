@@ -28,6 +28,12 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["site_kg"]
 
+[tool.pytest.ini_options]
+addopts = "-m 'not slow'"
+markers = [
+    "slow: 75k-scale layout and browser perf gates; run with -m slow",
+]
+
 [tool.ruff]
 line-length = 100
 target-version = "py312"
