@@ -348,7 +348,9 @@
 
     function getJSON(path) {
       if (!fetchFn) return Promise.reject(new Error("fetch is not available"));
-      return fetchFn(base + path, {cache: "no-store"}).then(function (res) {
+      var init = {cache: "no-store"};
+      if (opts.token) init.headers = {"X-Site-KG-Token": String(opts.token)};
+      return fetchFn(base + path, init).then(function (res) {
         if (!res.ok) throw new Error(path + " failed: " + res.status);
         return res.json();
       });

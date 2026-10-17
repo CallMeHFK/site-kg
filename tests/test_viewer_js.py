@@ -286,3 +286,59 @@ def test_connect_events_resumes_and_resets_on_new_run():
   process.exit(1);
 });
 """)
+
+
+def test_connect_events_carries_token_to_snapshot_and_sse():
+    _run(_prelude(CORE, DIRECTOR) + """
+(async function () {
+  const live = new SK.LiveGraph(8);
+  const director = new SK.Director(live, null, null, null);
+  const sources = [];
+  function FakeSource(url) { this.url = url; this.closed = false; sources.push(this); }
+  FakeSource.prototype.close = function () { this.closed = true; };
+  const calls = [];
+  const snap = {run_id: "run-a", last_seq: 0, nodes: [], edges: [],
+                layout: {nodes: []}, dangling: 0};
+  function fakeFetch(url, init) {
+    calls.push({url: url, headers: (init && init.headers) || {}});
+    const body = url.indexOf("/health") >= 0
+      ? {ok: true, run_id: "run-a", state: "running", last_seq: 0}
+      : snap;
+    return Promise.resolve({ok: true, json: function () {
+      return Promise.resolve(body);
+    }});
+  }
+  const handle = director.connectEvents("run-a", 3, {
+    base: "http://live.test", token: "s3 cret&x", EventSource: FakeSource,
+    fetch: fakeFetch, timer: false
+  });
+  assert.equal(sources[0].url,
+               "http://live.test/events?since=3&token=s3%20cret%26x");
+  sources[0].onerror();
+  await new Promise(function (resolve) { setTimeout(resolve, 20); });
+  assert.equal(calls.length, 2);
+  const paths = calls.map(function (call) { return call.url; });
+  assert.ok(paths.some(function (u) { return u.indexOf("/snapshot") >= 0; }));
+  assert.ok(paths.some(function (u) { return u.indexOf("/health") >= 0; }));
+  calls.forEach(function (call) {
+    assert.equal(call.headers["X-Site-KG-Token"], "s3 cret&x");
+  });
+  assert.equal(sources.length, 2);
+  assert.equal(sources[1].url,
+               "http://live.test/events?since=0&token=s3%20cret%26x");
+  handle.close();
+})().catch(function (err) {
+  console.error(err && err.stack ? err.stack : err);
+  process.exit(1);
+});
+""")
+
+
+def test_ui_forwards_page_token_to_live_api_and_events():
+    src = (ROOT / "site_kg" / "viewer" / "ui.js").read_text()
+    assert 'new URLSearchParams(window.location.search).get("token")' in src
+    assert "ui.token = token;" in src
+    assert 'headers["X-Site-KG-Token"] = this.token;' in src
+    assert ('connectEvents("", 0, {base: base || "", token: this.token})'
+            in src)
+    assert ('{base: "", token: self.token}' in src)

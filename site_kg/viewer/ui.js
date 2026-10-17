@@ -17,6 +17,7 @@
     this._hoverRaf = 0;
     this._scene = "planets";
     this.es = null;
+    this.token = "";
   }
 
   UI.prototype.mount = function (root, ctx) {
@@ -499,7 +500,7 @@
   UI.prototype.connectLive = function (base, scene) {
     if (scene) this.activateScene(scene);
     this.hideLauncher();
-    this.director.connectEvents("", 0, {base: base || ""});
+    this.director.connectEvents("", 0, {base: base || "", token: this.token});
   };
 
   UI.prototype.launchLive = function (target, scene) {
@@ -511,10 +512,12 @@
     }
     if (scene) this.activateScene(scene);
     this.statusEl.textContent = "starting live ingest \u2026";
+    var headers = {"Content-Type": "application/json"};
+    if (this.token) headers["X-Site-KG-Token"] = this.token;
     var request = typeof fetch === "function"
       ? fetch("/api/start", {
           method: "POST",
-          headers: {"Content-Type": "application/json"},
+          headers: headers,
           body: JSON.stringify({target: target, scene: scene})
         })
       : Promise.reject(new Error("fetch is not available"));
@@ -525,7 +528,8 @@
         }
         self.hideLauncher();
         self.director.start("live", null);
-        self.director.connectEvents(body.run_id || "", body.last_seq || 0, {base: ""});
+        self.director.connectEvents(body.run_id || "", body.last_seq || 0,
+                                    {base: "", token: self.token});
         return body;
       });
     }).catch(function (err) {
@@ -565,6 +569,12 @@
 
   SK.boot = function () {
     var cfg = {};
+    var token = "";
+    try {
+      token = new URLSearchParams(window.location.search).get("token") || "";
+    } catch (queryErr) {
+      token = "";
+    }
     try {
       cfg = JSON.parse(byId("sk-config").textContent);
     } catch (err) {
@@ -599,6 +609,7 @@
       var labels = new SK.Labels(byId("sk-labels"), renderer);
       var director = new SK.Director(live, renderer, camera, labels);
       var ui = new SK.UI();
+      ui.token = token;
       ui.mount(byId("hud"), {cfg: cfg, live: live, renderer: renderer,
                              camera: camera, director: director});
       director.attach(ui);
