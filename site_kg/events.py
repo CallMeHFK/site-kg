@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import queue
 import threading
@@ -79,11 +80,8 @@ class EventLog:
             return q, backlog
 
     def unsubscribe(self, q: queue.Queue) -> None:
-        with self._lock:
-            try:
-                self._subscribers.remove(q)
-            except ValueError:
-                pass
+        with self._lock, contextlib.suppress(ValueError):
+            self._subscribers.remove(q)
 
     def close(self) -> None:
         with self._lock:

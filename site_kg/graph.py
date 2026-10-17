@@ -77,7 +77,8 @@ def _prose(body: str) -> str:
     return URL_RE.sub(" ", body)
 
 
-def build_graph(corpus_dir: Path, relations: str | None = None) -> dict:
+def build_graph(corpus_dir: Path, relations: str | None = None, events=None, *,
+                announced: set[str] | None = None) -> dict:
     docs = []
     for md in sorted(corpus_dir.rglob("*.md")):
         p = _parse(md)
@@ -142,12 +143,16 @@ def build_graph(corpus_dir: Path, relations: str | None = None) -> dict:
     # so NOT-READY still means "this is a pile of files", not "look, a hairball".
     structural = sum(1 for k in edges.values() if k in ("ref", "imports"))
     relation_report: dict = {"relationMode": "off", "dimensions": {}, "relationNotes": []}
+    derived_edges: list[dict] = []
     if structural:
         from . import relations as relmod
         derived, relation_report = relmod.build_relations(docs, mode=relations,
                                                           have=set(edges))
         for e in derived:
-            edges.setdefault((e["s"], e["t"]), e["k"])
+            key = (e["s"], e["t"])
+            if key not in edges:
+                edges[key] = e["k"]
+                derived_edges.append(e)
 
     # inverted index over prose
     df: Counter = Counter()
@@ -181,6 +186,24 @@ def build_graph(corpus_dir: Path, relations: str | None = None) -> dict:
     ]
     edge_list = [{"s": a, "t": b, "k": k} for (a, b), k in sorted(edges.items())]
     edge_counts = Counter(k for k in edges.values())
+
+    if events is not None:
+        for node in nodes:
+            events({"t": "node_updated", "id": node["i"],
+                    "g": node["g"], "r": node["r"]})
+        derived_keys = {(e["s"], e["t"]) for e in derived_edges}
+        for e in edge_list:
+            if (e["s"], e["t"]) in derived_keys:
+                continue
+            ev = {"t": "edge_added", "s": e["s"], "d": e["t"], "kind": e["k"]}
+            if announced is not None and e["t"] not in announced:
+                ev["late"] = 1
+            events(ev)
+        for e in derived_edges:
+            events({"t": "edge_added", "s": e["s"], "d": e["t"], "kind": e["k"],
+                    "late": 1, "why": "derived"})
+        events({"t": "progress", "nodes": len(nodes), "edges": len(edge_list)})
+        events({"t": "ingest_done", "nodes": len(nodes), "edges": len(edge_list)})
 
     # hub/contains fan-out is a table of contents, not a graph; only real
     # cross-references (ref from prose links, imports from code) make it READY

@@ -403,7 +403,7 @@ def _doc_title(body: str, fallback: str) -> str:
 
 
 def build_local_corpus(root: Path, out_dir: Path, max_files: int = 2000,
-                       respect_gitignore: bool = True) -> dict:
+                       respect_gitignore: bool = True, events=None) -> dict:
     """Walk `root`, write corpus docs + typed _edges.json into `out_dir`.
     Returns stats; edge/reference drops are counted, never silently invented."""
     root = root.resolve()
@@ -427,9 +427,13 @@ def build_local_corpus(root: Path, out_dir: Path, max_files: int = 2000,
         chapter = pid.split("_", 1)[0] if "_" in pid else "_root"
         (out_dir / chapter).mkdir(exist_ok=True)
         sha = hashlib.sha256(body.encode()).hexdigest()
+        source_url = f"file://{root}/{rel}"
         fm = (f"---\ntitle: {title.replace(chr(10), ' ')}\n"
-              f"source_url: file://{root}/{rel}\nsha256: {sha}\n---\n\n")
+              f"source_url: {source_url}\nsha256: {sha}\n---\n\n")
         (out_dir / chapter / f"{pid}.md").write_text(fm + body, encoding="utf-8")
+        if events is not None:
+            events({"t": "node_added", "id": pid, "title": title,
+                    "url": source_url, "c": chapter})
 
     for p in files:
         rel = p.relative_to(root).as_posix()

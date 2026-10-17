@@ -182,22 +182,21 @@ class LiveHub:
 
     def _run(self, target: str, scene: str, local: bool) -> None:
         try:
-            if local:
-                built, pages, nbytes = self._ingest_local(target)
-            else:
-                built, pages, nbytes = self._ingest_remote(target)
+            self.emit({"t": "run_start", "run_id": self.run.get("run_id"),
+                       "target": self.run.get("target"), "scene": self.run.get("scene")})
+            built = self._ingest_local(target) if local else self._ingest_remote(target)
             if self._closed:
                 return
-            graph = built["graph"]
-            if self.max_nodes:
-                graph = trim_graph(graph, self.max_nodes)
-            if self._stream_graph(graph, pages=pages, nbytes=nbytes):
+            # nodes streamed during ingest, so max_nodes only trims replay
+            if self._publish(built["graph"]):
                 self._finish("complete")
         except Exception as exc:  # surfaced to clients as an error event
             self._fail(exc)
 
     def _replay_run(self, graph: dict) -> None:
         try:
+            self.emit({"t": "run_start", "run_id": self.run.get("run_id"),
+                       "target": self.run.get("target"), "scene": self.run.get("scene")})
             if self.max_nodes:
                 graph = trim_graph(graph, self.max_nodes)
             if self._stream_graph(graph):
@@ -220,14 +219,29 @@ class LiveHub:
 
     # -- ingest ----------------------------------------------------------
 
-    def _ingest_remote(self, target: str) -> tuple[dict, int, int]:
+    def _ingest_remote(self, target: str) -> dict:
+        fetched = 0
+        nbytes = 0
+        announced: set[str] = set()
+        node_event = self._node_emitter(announced)
+
+        def on_page(url: str, page: str | None, reason: str | None) -> None:
+            nonlocal fetched, nbytes
+            if page is None:
+                self.emit({"t": "node_skipped", "url": url,
+                           "reason": reason or "skip"})
+                return
+            fetched += 1
+            nbytes += len(page.encode("utf-8", "ignore"))
+            self.emit({"t": "progress", "pages": fetched, "bytes": nbytes})
+
         async def crawl():
             urls, _source, _inv = await manifest.page_inventory(
                 target, max_pages=200, max_depth=4)
             if not urls:
                 raise RuntimeError("no pages discovered")
-            pages, stats = await ingestmod.fetch_pages(urls, target, concurrency=4)
-            return pages, stats
+            return await ingestmod.fetch_pages(urls, target, concurrency=4,
+                                               on_page=on_page)
 
         pages, stats = asyncio.run(crawl())
         if not pages:
@@ -237,33 +251,67 @@ class LiveHub:
         site_id = store.site_id_for(target)
         corpus = store.site_dir(site_id) / "corpus"
         store.reset_corpus(corpus)
-        ingestmod.write_corpus(pages, target, corpus)
-        built = graphmod.build_graph(corpus)
+        ingestmod.write_corpus(pages, target, corpus, events=node_event)
+        built = graphmod.build_graph(corpus, events=self.emit, announced=announced)
         store.save_site(site_id, target, built)
-        nbytes = sum(len(page.encode("utf-8", "ignore")) for page in pages.values())
-        return built, len(pages), nbytes
+        return built
 
-    def _ingest_local(self, target: str) -> tuple[dict, int, int]:
+    def _ingest_local(self, target: str) -> dict:
         root = Path(target)
         source = f"file://{root}"
         site_id = store.site_id_for(source)
         corpus = store.site_dir(site_id) / "corpus"
         store.reset_corpus(corpus)
-        stats = localmod.build_local_corpus(root, corpus, max_files=2000)
+        announced: set[str] = set()
+        stats = localmod.build_local_corpus(root, corpus, max_files=2000,
+                                            events=self._node_emitter(announced))
         if not stats.get("files"):
             raise RuntimeError("no usable doc/code files found")
-        built = graphmod.build_graph(corpus)
+        self.emit({"t": "progress", "pages": int(stats.get("files", 0))})
+        built = graphmod.build_graph(corpus, events=self.emit, announced=announced)
         store.save_site(site_id, source, built)
-        return built, int(stats.get("files", 0)), 0
+        return built
 
     # -- streaming -------------------------------------------------------
+
+    def _node_emitter(self, announced: set[str]):
+        """Emit node events during corpus materialization, batching the
+        server-authoritative positions so the scene fills in while ingesting."""
+        rows: list[dict] = []
+
+        def emit_node(ev: dict) -> None:
+            if self.emit(ev) is None:
+                return
+            if ev.get("t") != "node_added":
+                return
+            announced.add(str(ev.get("id")))
+            row = self._row(str(ev.get("id")))
+            if row is not None:
+                rows.append(row)
+                if len(rows) >= LAYOUT_BATCH:
+                    self.emit({"t": "layout_patch", "rows": list(rows)})
+                    rows.clear()
+
+        return emit_node
+
+    def _publish(self, graph: dict) -> bool:
+        self.layout.settle(graph)
+        with self._lock:
+            final = []
+            for nid, index in sorted(self.layout.index.items(), key=lambda kv: kv[1]):
+                pos = self.layout.positions.get(nid)
+                if pos is not None:
+                    final.append({"i": index, "x": pos[0], "y": pos[1], "z": pos[2]})
+        if final:
+            self.emit({"t": "layout_patch", "rows": final, "final": 1})
+        self.emit({"t": "settled", "nodes": len(graph["nodes"]),
+                   "edges": len(graph["edges"])})
+        return not self._closed
 
     def _stream_graph(self, graph: dict, *, pages: int | None = None,
                       nbytes: int = 0) -> bool:
         nodes, edges = graph["nodes"], graph["edges"]
         pages = pages if pages is not None else len(nodes)
-        self.emit({"t": "run_start", "run_id": self.run.get("run_id"),
-                   "target": self.run.get("target"), "scene": self.run.get("scene")})
         rows: list[dict] = []
         for node in nodes:
             if self._closed:
@@ -289,17 +337,7 @@ class LiveHub:
                    "edges": len(edges), "bytes": nbytes})
         self.emit({"t": "ingest_done", "nodes": len(nodes), "edges": len(edges),
                    "pages": pages})
-        self.layout.settle(graph)
-        with self._lock:
-            final = []
-            for nid, index in sorted(self.layout.index.items(), key=lambda kv: kv[1]):
-                pos = self.layout.positions.get(nid)
-                if pos is not None:
-                    final.append({"i": index, "x": pos[0], "y": pos[1], "z": pos[2]})
-        if final:
-            self.emit({"t": "layout_patch", "rows": final, "final": 1})
-        self.emit({"t": "settled", "nodes": len(nodes), "edges": len(edges)})
-        return True
+        return self._publish(graph)
 
     def close(self) -> None:
         with self._lock:
