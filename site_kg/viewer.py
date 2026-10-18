@@ -7,6 +7,7 @@ the server feeds the same decoders a snapshot on connect.
 """
 from __future__ import annotations
 
+import base64
 import hashlib
 import html
 import json
@@ -23,13 +24,18 @@ TEMPLATE = ROOT / "templates" / "viewer.html"
 VIEWER_DIR = ROOT / "viewer"
 SCENES = ("planets", "people", "neural")
 PRE_SCENE_MODULES = ("core.js", "render.js", "labels.js", "camera.js")
-POST_SCENE_MODULES = ("director.js", "fallback2d.js", "ui.js")
+POST_SCENE_MODULES = ("director.js", "launcher.js", "fallback2d.js", "ui.js")
 MODES = ("archive", "live")
 EXTERNAL_FILES = {"graph": "sk-graph.bin", "layout": "sk-layout.bin",
                   "timeline": "sk-timeline.bin"}
 
+# Real render captures shown on the launcher poster (live mode only; archive
+# viewers never show the launcher and stay lean).
+LAUNCH_ART_FILES = {"people": "asset-people.jpg", "neural": "asset-neural.jpg",
+                    "planets": "asset-planets.jpg", "hud": "asset-hud.jpg"}
+
 _PLACEHOLDER = re.compile(
-    r"__(TITLE_JSON|STATS_JSON|RUN_ID_JSON|LIVE_URL_JSON|TITLE|MODE|SCENE|EXTERNAL|PAYLOAD|BUNDLE)__")
+    r"__(TITLE_JSON|STATS_JSON|RUN_ID_JSON|LIVE_URL_JSON|TITLE|MODE|SCENE|EXTERNAL|PAYLOAD|BUNDLE|LAUNCH_ART)__")
 
 
 def assemble_bundle() -> str:
@@ -123,6 +129,18 @@ def _json_string(value: str) -> str:
     return json.dumps(str(value), ensure_ascii=False).replace("<", "\\u003c")
 
 
+def _launch_art() -> str:
+    """Inline the launcher art (real scene renders + HUD fragment) as data URIs."""
+    art = {}
+    for key, name in LAUNCH_ART_FILES.items():
+        path = VIEWER_DIR / "assets" / name
+        if not path.is_file():
+            continue
+        blob = base64.b64encode(path.read_bytes()).decode("ascii")
+        art[key] = "data:image/jpeg;base64," + blob
+    return json.dumps(art, ensure_ascii=False)
+
+
 def render_viewer(graph: dict, meta: dict, out_path: Path, *, scene: str = "planets",
                   max_nodes: int | None = None, mode: str = "archive",
                   external_data: bool = False) -> Path:
@@ -168,6 +186,7 @@ def render_viewer(graph: dict, meta: dict, out_path: Path, *, scene: str = "plan
         "EXTERNAL": "true" if external else "false",
         "PAYLOAD": payload_text,
         "BUNDLE": assemble_bundle(),
+        "LAUNCH_ART": _launch_art() if mode == "live" else "{}",
     }
     doc = _PLACEHOLDER.sub(lambda m: values[m.group(1)], template)
     out_path.write_text(doc, encoding="utf-8")

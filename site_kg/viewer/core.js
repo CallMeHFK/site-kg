@@ -78,6 +78,7 @@
     this.pending = new Map();
     this.pendingCount = 0;
     this.dangling = 0;
+    this.pages = 0;
     this.version = 0;
     this.dimVersion = 0;
     this.graphHash = 0;
@@ -238,6 +239,11 @@
         this.nodeAdded(ev.id, ev, true);
       } else if (ev.t === "edge_added") {
         this.edgeAdded(ev.s, ev.d, ev.kind, ev.late);
+      } else if (ev.t === "progress") {
+        if (ev.pages != null) {
+          var pages = ev.pages | 0;
+          if (pages > this.pages) this.pages = pages;
+        }
       } else if (ev.t === "ingest_done") {
         this.dangling = this.pendingCount;
       }
@@ -264,6 +270,7 @@
       this.edgeAdded(edges[j].s, edges[j].t, edges[j].k);
     }
     this.graphHash = graph.hash || 0;
+    this.pages = this.n;
     this.version++;
     return this;
   };
@@ -292,6 +299,7 @@
     this.runId = String(snap.run_id || "");
     this.lastSeq = snap.last_seq || 0;
     this.dangling = snap.dangling == null ? this.pendingCount : snap.dangling;
+    this.pages = this.n;
     this.version++;
     return this;
   };
@@ -454,6 +462,8 @@
         }
       } else if (t === "ingest_done") {
         live.dangling = live.pendingCount;
+      } else {
+        live.applyBatch([ev]);
       }
       if (ev.seq != null && ev.seq > this.lastSeq) this.lastSeq = ev.seq;
       events.push(ev);

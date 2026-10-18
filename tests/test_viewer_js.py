@@ -11,6 +11,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 CORE = ROOT / "site_kg" / "viewer" / "core.js"
 DIRECTOR = ROOT / "site_kg" / "viewer" / "director.js"
+LAUNCHER = ROOT / "site_kg" / "viewer" / "launcher.js"
 PLANETS = ROOT / "site_kg" / "viewer" / "scenes" / "planets.js"
 PEOPLE = ROOT / "site_kg" / "viewer" / "scenes" / "people.js"
 NEURAL = ROOT / "site_kg" / "viewer" / "scenes" / "neural.js"
@@ -359,3 +360,103 @@ def test_ui_forwards_page_token_to_live_api_and_events():
     assert ('connectEvents("", 0, {base: base || "", token: this.token})'
             in src)
     assert ('{base: "", token: self.token}' in src)
+
+
+def test_launcher_normalize_target_cases():
+    _run(_prelude(LAUNCHER) + """
+const L = SK.launcher;
+assert.deepEqual(L.normalizeTarget("docs.example.com"),
+                 {ok: true, url: "https://docs.example.com/"});
+assert.deepEqual(L.normalizeTarget("  http://127.0.0.1:18823/mkdocs-material/  "),
+                 {ok: true, url: "http://127.0.0.1:18823/mkdocs-material/"});
+assert.equal(L.normalizeTarget("localhost:8080").ok, true);
+assert.equal(L.normalizeTarget("").ok, false);
+assert.equal(L.normalizeTarget(null).ok, false);
+assert.equal(L.normalizeTarget("not a url").ok, false);
+assert.equal(L.normalizeTarget("ftp://example.com").ok, false);
+assert.equal(L.normalizeTarget("javascript:alert(1)").ok, false);
+assert.equal(L.normalizeTarget("nodots").ok, false);
+assert.equal(L.normalizeTarget("docs.example.com").url,
+             "https://docs.example.com/");
+""")
+
+
+def test_launcher_readout_host_and_phase_labels():
+    _run(_prelude(LAUNCHER) + """
+const L = SK.launcher;
+assert.equal(L.hostLabel("https://squidfunk.github.io/mkdocs-material/"),
+             "squidfunk.github.io");
+assert.equal(L.hostLabel("not a url"), "not a url");
+assert.equal(L.phaseLabel("settling"), "settling");
+assert.equal(L.phaseLabel("complete"), "complete");
+assert.equal(L.phaseLabel("bogus"), "ingesting");
+const r = L.readout({pages: 12, nodes: 9, edges: 21, state: "settling"});
+assert.equal(r.label, "12 pages · 9 nodes · 21 edges");
+assert.equal(r.pages, 12);
+assert.equal(r.building, true);
+assert.equal(r.phase, "settling");
+assert.equal(L.readout({state: "complete"}).building, false);
+assert.equal(L.readout(null).label, "0 pages · 0 nodes · 0 edges");
+""")
+
+
+def test_batcher_folds_progress_pages_into_live_state():
+    _run(_prelude(CORE, DIRECTOR) + """
+const g = new SK.LiveGraph(16);
+const b = new SK.Batcher(g, {windowMs: 300, maxNodes: 100, timer: false});
+b.push({t: "progress", pages: 3, bytes: 900, seq: 2});
+b.push({t: "node_added", id: "a", title: "A", seq: 3});
+b.flush(400, true);
+assert.equal(g.pages, 3);
+b.push({t: "progress", pages: 17, bytes: 4200, seq: 4});
+b.flush(800, true);
+assert.equal(g.pages, 17);
+b.push({t: "progress", pages: 2, seq: 5});
+b.flush(1200, true);
+assert.equal(g.pages, 17, "pages fold to the max and never regress");
+const director = new SK.Director(g, {name: "planets"}, null, null);
+director.state = "ingesting";
+assert.equal(director.status().pages, 17);
+assert.equal(director.status().state, "ingesting");
+""")
+
+
+def test_launcher_copy_deck_constraints():
+    src = (ROOT / "site_kg" / "viewer" / "launcher.js").read_text()
+    _run(_prelude(LAUNCHER) + """
+const copy = SK.launcher.copy;
+assert.equal(copy.line1, "ANY SITE IS A GRAPH.");
+assert.equal(copy.line2, "WATCH IT BUILD.");
+assert.equal(copy.steps.length, 3);
+assert.ok(copy.action && copy.placeholder);
+assert.ok(copy.ctaWord && copy.ctaNote);
+Object.keys(copy.scenes).forEach(function (key) {
+  assert.ok(copy.scenes[key].length > 10);
+});
+""")
+    # the dealt sheet caps em-dashes at four across the whole viewer shell
+    em = src.count("\u2014")
+    assert em <= 4, f"launcher.js carries {em} em-dashes"
+
+
+def test_launcher_load_art_reads_data_uri_map():
+    _run(_prelude(LAUNCHER) + """
+global.document = {
+  getElementById: function (id) {
+    if (id !== "sk-launch-art") return null;
+    return {textContent: JSON.stringify({
+      people: "data:image/jpeg;base64,AAAA",
+      hud: "data:image/jpeg;base64,BBBB"
+    })};
+  }
+};
+const art = SK.launcher.loadArt();
+assert.equal(art.people, "data:image/jpeg;base64,AAAA");
+assert.equal(art.hud, "data:image/jpeg;base64,BBBB");
+global.document = {getElementById: function () { return null; }};
+assert.deepEqual(SK.launcher.loadArt(), {});
+global.document = {getElementById: function () {
+  return {textContent: "not json"};
+}};
+assert.deepEqual(SK.launcher.loadArt(), {});
+""")

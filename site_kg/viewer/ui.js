@@ -1,4 +1,4 @@
-/* HUD, search, chapters, launcher, pointer/keyboard wiring. */
+/* HUD, search, chapters, launcher poster, pointer/keyboard wiring. */
 (function (SK) {
   "use strict";
 
@@ -10,6 +10,8 @@
     if (text != null) node.textContent = text;
     return node;
   }
+
+  var SVG_NS = "http://www.w3.org/2000/svg";
 
   function UI() {
     this.ctx = null;
@@ -34,11 +36,15 @@
     this.tipEl = byId("tip");
     this.legendEl = byId("legend");
     this.launcherEl = byId("launcher");
+    if (SK.launcher) SK.launcher.art = SK.launcher.loadArt();
+    if (document.documentElement) document.documentElement.classList.add("sk-anim");
     this._buildBar();
     this._buildLegend();
     this._wirePointer();
     this._wireKeys();
     this._buildFinale();
+    this._wireBarResize();
+    this._wireReveals();
     this.setSceneActive(this._scene);
     this._updateCount();
     return this;
@@ -54,21 +60,76 @@
     this.finaleEl = box;
   };
 
+  /* The bar wraps at narrow widths; the canvas is offset by --bar, so keep the
+     custom property in sync with the bar's real height. */
+  UI.prototype._wireBarResize = function () {
+    var bar = byId("bar");
+    if (!bar) return;
+    var sync = function () {
+      var h = Math.ceil(bar.getBoundingClientRect().height);
+      if (h > 0) document.documentElement.style.setProperty("--bar", h + "px");
+    };
+    this._barSync = sync;
+    if (typeof ResizeObserver !== "undefined") {
+      if (this._barRO) { try { this._barRO.disconnect(); } catch (ignored) {} }
+      this._barRO = new ResizeObserver(sync);
+      this._barRO.observe(bar);
+    }
+    window.addEventListener("resize", sync);
+    sync();
+  };
+
+  /* Scroll reveals: hidden only once JS is alive (the sk-anim class), always
+     ending visible, with a no-IntersectionObserver fallback. */
+  UI.prototype._wireReveals = function () {
+    var nodes = document.querySelectorAll(".reveal");
+    if (!nodes.length) return;
+    var i;
+    if (typeof IntersectionObserver === "undefined") {
+      for (i = 0; i < nodes.length; i++) nodes[i].classList.add("in");
+      return;
+    }
+    if (!this._io) {
+      var self = this;
+      this._io = new IntersectionObserver(function (entries) {
+        for (var k = 0; k < entries.length; k++) {
+          if (!entries[k].isIntersecting) continue;
+          entries[k].target.classList.add("in");
+          self._io.unobserve(entries[k].target);
+        }
+      }, {rootMargin: "0px 0px -6% 0%", threshold: 0.05});
+    }
+    for (i = 0; i < nodes.length; i++) {
+      if (!nodes[i].classList.contains("in")) this._io.observe(nodes[i]);
+    }
+  };
+
   UI.prototype._buildBar = function () {
     var bar = this.root.querySelector ? this.root.querySelector("#bar") : null;
     if (!bar) bar = this.root;
     bar.innerHTML = "";
+    var self = this;
+
     var title = el("b", null, this.cfg.title || "site-kg graph");
     title.id = "title";
-    var stats = el("span", "muted", this.cfg.stats || "");
-    stats.id = "stats";
     bar.appendChild(title);
-    bar.appendChild(stats);
 
-    var scenes = el("span");
-    scenes.style.display = "flex";
-    scenes.style.gap = "6px";
-    var self = this;
+    var target = el("span");
+    target.id = "live-target";
+    bar.appendChild(target);
+    this.targetEl = target;
+
+    var readout = el("span", null, "");
+    readout.id = "readout";
+    bar.appendChild(readout);
+    this.readoutEl = readout;
+
+    var phase = el("span", null, "ingesting");
+    phase.id = "phase";
+    bar.appendChild(phase);
+    this.phaseEl = phase;
+
+    var scenes = el("span", "t-scenes");
     (SK.sceneOrder || ["planets"]).forEach(function (name) {
       var b = el("button", "mb", (SK.scenes[name] && SK.scenes[name].label) || name);
       b.type = "button";
@@ -104,15 +165,10 @@
     });
     bar.appendChild(chap);
 
-    var cnt = el("span", "muted", "");
+    var cnt = el("span", null, "");
     cnt.id = "cnt";
     bar.appendChild(cnt);
     this.cntEl = cnt;
-    var hint = el("span", "muted",
-                  "drag rotate \u00b7 wheel zoom \u00b7 click node = focus \u00b7 1\u20133 scenes \u00b7 "
-                  + "F finale \u00b7 shift+F fit \u00b7 space replay");
-    hint.id = "hint";
-    bar.appendChild(hint);
 
     input.addEventListener("input", function () {
       self.director.setQuery(input.value);
@@ -238,27 +294,53 @@
       });
       legend.appendChild(row);
     });
+
+    var keys = el("div", "keys",
+                  "drag rotate \u00b7 wheel zoom \u00b7 click a node to focus \u00b7 "
+                  + "1\u20133 scenes \u00b7 F finale \u00b7 shift+F fit \u00b7 "
+                  + "space replay \u00b7 / search");
+    legend.appendChild(keys);
   };
 
   UI.prototype._updateCount = function () {
     if (!this.cntEl) return;
-    var live = this.live, visible = 0;
-    for (var i = 0; i < live.n; i++) if (live.dim[i] > 0.5) visible++;
+    var live = this.live, visible = 0, i;
+    for (i = 0; i < live.n; i++) if (live.dim[i] > 0.5) visible++;
+    var d = this.director;
+    var filtered = !!(d && ((d.query && String(d.query).trim()) || d.chapter
+                            || (d.selection && d.selection.length)));
+    this.cntEl.classList.toggle("on", filtered);
+    if (!filtered) {
+      this.cntEl.textContent = "";
+      return;
+    }
     var text = visible + "/" + live.n;
-    var selection = this.director && this.director.selection;
+    var selection = d && d.selection;
     if (selection && selection.length) text += " \u00b7 ego " + selection.length;
     this.cntEl.textContent = text;
   };
 
+  /* Live build readings: pages/nodes/edges prominent while ingesting, calm at
+     rest; the phase chip carries the ingest state machine. */
   UI.prototype.updateStatus = function (s) {
-    if (!this.statusEl) return;
-    var parts = [s.nodes + " nodes", s.edges + " edges"];
-    if (s.revealed < s.nodes) parts.push("revealed " + s.revealed);
-    if (s.pending) parts.push("pending " + s.pending);
-    if (s.ego) parts.push("ego " + s.ego);
-    parts.push(s.scene, s.state, s.fps + " fps");
-    this.statusEl.textContent = parts.join(" \u00b7 ");
+    var L = SK.launcher;
+    if (this.readoutEl && L) {
+      var r = L.readout(s);
+      this.readoutEl.textContent = r.label;
+      this.readoutEl.classList.toggle("calm", !r.building);
+    }
+    if (this.phaseEl && L) {
+      this.phaseEl.textContent = L.phaseLabel(s.state);
+      this.phaseEl.classList.toggle("done", s.state === "complete");
+    }
     this._updateCount();
+  };
+
+  UI.prototype.setLiveTarget = function (url) {
+    if (!this.targetEl) return;
+    var host = SK.launcher ? SK.launcher.hostLabel(url) : String(url || "");
+    this.targetEl.textContent = host;
+    this.targetEl.title = host;
   };
 
   UI.prototype.showFinale = function (sceneName, status) {
@@ -282,10 +364,11 @@
   UI.prototype.setSceneActive = function (name) {
     this._scene = name;
     var bar = this.root.querySelector ? this.root.querySelector("#bar") : null;
-    if (!bar) return;
-    var buttons = bar.querySelectorAll("[data-scene]");
-    for (var i = 0; i < buttons.length; i++) {
-      buttons[i].classList.toggle("on", buttons[i].getAttribute("data-scene") === name);
+    if (bar) {
+      var buttons = bar.querySelectorAll("[data-scene]");
+      for (var i = 0; i < buttons.length; i++) {
+        buttons[i].classList.toggle("on", buttons[i].getAttribute("data-scene") === name);
+      }
     }
     var launch = this.launcherEl ? this.launcherEl.querySelectorAll(".scene") : [];
     for (var k = 0; k < launch.length; k++) {
@@ -388,6 +471,8 @@
   UI.prototype._wireKeys = function () {
     var self = this;
     document.addEventListener("keydown", function (e) {
+      /* While the poster is up it owns the keyboard. */
+      if (self.launcherEl && self.launcherEl.classList.contains("on")) return;
       var tag = (e.target && e.target.tagName) || "";
       if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") {
         if (e.key === "Escape" && e.target === self.input) {
@@ -433,60 +518,189 @@
     });
   };
 
+  /* ---- launcher poster ------------------------------------------------- */
+
   UI.prototype.showLauncher = function () {
     if (!this.launcherEl) return;
     var card = this.launcherEl.querySelector("#launch-card");
     if (!card) return;
-    if (!card.firstChild) this._buildLauncher(card);
+    this.launcherEl.classList.remove("leave");
     this.launcherEl.classList.add("on");
+    if (!card.firstChild) this._buildLauncher(card);
   };
 
   UI.prototype._buildLauncher = function (card) {
     var self = this;
+    var L = SK.launcher;
+    var copy = (L && L.copy) || {};
+    var art = (L && L.art) || {};
+    var steps = copy.steps || [];
+    var sceneNotes = copy.scenes || {};
     card.innerHTML = "";
-    card.appendChild(el("h1", null, "site-kg live"));
-    card.appendChild(el("p", null,
-      "Enter a site address, pick a scene, then watch the graph grow as pages arrive."));
-    var row = el("div");
-    row.id = "launch-row";
-    var input = el("input");
-    input.id = "launch-url";
-    input.type = "url";
-    input.placeholder = "https://docs.example.com";
-    var prefill = this.cfg.title || "";
-    if (prefill === "site-kg graph" || prefill === "site-kg live") prefill = "";
+
+    /* hero: the waterline statement, with the address as its live element */
+    var hero = el("section", "p-hero");
+    hero.appendChild(el("div", "p-field"));
+    hero.appendChild(el("header", "p-wordmark", "site-kg live"));
+    var statement = el("div", "p-statement");
+    var mask1 = el("div", "p-mask p-mask1");
+    mask1.appendChild(el("span", "p-line", copy.line1 || "ANY SITE IS A GRAPH."));
+    var mask2 = el("div", "p-mask p-mask2");
+    var line2 = el("span", "p-line p-line2");
+    var line2Text = copy.line2 || "WATCH IT BUILD.";
+    /* the lower half of the seam is painted by ::before from --line2, so the
+       words exist once in the document text and once on screen */
+    line2.style.setProperty("--line2",
+        "'" + line2Text.replace(/\\/g, "\\\\").replace(/'/g, "\\'") + "'");
+    line2.appendChild(el("span", "p-copy p-copy-a", line2Text));
+    mask2.appendChild(line2);
+    statement.appendChild(mask1);
+    statement.appendChild(mask2);
+    hero.appendChild(statement);
+
+    var launch = el("div", "p-launch");
+    var support = el("p", "p-support reveal", copy.support || "");
+    support.style.setProperty("--d", "240ms");
+    launch.appendChild(support);
+    var right = el("div", "p-launch-right");
+    var form = el("form", "p-form reveal");
+    form.style.setProperty("--d", "300ms");
+    form.noValidate = true;
+    var input = el("input", "p-url");
+    input.type = "text";
+    input.placeholder = copy.placeholder || "docs.example.com";
+    input.autocomplete = "url";
+    input.spellcheck = false;
+    input.setAttribute("inputmode", "url");
+    input.setAttribute("aria-label", "site address");
+    var prefill = "";
+    if (/^https?:\/\//i.test(this.cfg.title || "")) prefill = this.cfg.title;
     input.value = prefill;
-    input.addEventListener("keydown", function (e) {
-      if (e.key === "Enter") self.launchLive(input.value.trim(), self._scene);
-    });
-    row.appendChild(input);
-    card.appendChild(row);
-    var grid = el("div", "scenes");
-    (SK.sceneOrder || []).forEach(function (name) {
-      var scene = SK.scenes[name];
-      var b = el("button", "scene");
-      b.type = "button";
-      b.setAttribute("data-scene", name);
-      b.appendChild(el("b", null, scene.label));
-      b.appendChild(el("span", null, scene.hint));
-      if (name === self._scene) b.classList.add("on");
-      b.addEventListener("click", function () {
-        self.activateScene(name);
-        self.setSceneActive(name);
-      });
-      grid.appendChild(b);
-    });
-    card.appendChild(grid);
-    var go = el("button", null, "Start live ingest");
-    go.id = "launch-go";
-    go.type = "button";
-    go.addEventListener("click", function () {
-      self.launchLive(input.value.trim(), self._scene);
-    });
-    card.appendChild(go);
-    var err = el("p", "muted", "");
+    var go = el("button", "p-go off", copy.action || "Build the graph");
+    go.type = "submit";
+    var err = el("p", "p-err");
     err.id = "launch-err";
-    card.appendChild(err);
+    form.appendChild(input);
+    form.appendChild(go);
+    right.appendChild(form);
+    right.appendChild(err);
+    launch.appendChild(right);
+    hero.appendChild(launch);
+    card.appendChild(hero);
+
+    /* live validation lights the action button and feeds back inline */
+    function refresh() {
+      var res = L.normalizeTarget(input.value);
+      if (!res.ok) {
+        go.className = "p-go off";
+        err.classList.remove("ok");
+        err.textContent = input.value.trim() ? res.error : "";
+      } else {
+        go.className = "p-go on";
+        err.classList.add("ok");
+        err.textContent = L.hostLabel(res.url);
+      }
+    }
+    input.addEventListener("input", refresh);
+    form.addEventListener("submit", function (e) {
+      e.preventDefault();
+      var res = L.normalizeTarget(input.value);
+      if (!res.ok) {
+        refresh();
+        input.focus();
+        return;
+      }
+      self.launchLive(res.url, self._scene);
+    });
+    this.urlInput = input;
+    this.goEl = go;
+    this.errEl = err;
+    refresh();
+
+    /* how it works: lines that step across */
+    var stepsSec = el("section", "p-steps");
+    var list = el("ol", "p-step-list");
+    steps.forEach(function (step, i) {
+      var li = el("li", "p-step reveal");
+      li.style.setProperty("--i", String(i));
+      li.style.setProperty("--d", (i * 70) + "ms");
+      li.appendChild(el("p", "p-step-line", step[0]));
+      li.appendChild(el("p", "p-step-note", step[1]));
+      list.appendChild(li);
+    });
+    stepsSec.appendChild(list);
+    var frag = el("figure", "p-fragment reveal");
+    frag.style.setProperty("--d", "280ms");
+    if (art.hud) {
+      var fimg = document.createElement("img");
+      fimg.src = art.hud;
+      fimg.alt = "The viewer heads-up display counting pages, nodes and edges "
+        + "while a graph builds";
+      fimg.setAttribute("data-ui", "hud-readout");
+      frag.appendChild(fimg);
+    }
+    frag.appendChild(el("figcaption", null,
+      "The heads-up display counts pages, nodes and edges while the graph builds."));
+    stepsSec.appendChild(frag);
+    card.appendChild(stepsSec);
+
+    /* three scene fields, each a real render in the scene's own palette */
+    var scenesSec = el("section", "p-scenes");
+    var grid = el("div", "p-scene-grid");
+    (SK.sceneOrder || []).forEach(function (name, i) {
+      var scene = SK.scenes[name] || {};
+      var tile = el("button", "scene reveal");
+      tile.type = "button";
+      tile.setAttribute("data-scene", name);
+      tile.style.setProperty("--d", (i * 70) + "ms");
+      var shot = el("span", "p-shot");
+      var url = art[name];
+      if (url) {
+        var img = document.createElement("img");
+        img.src = url;
+        img.alt = scene.label + " scene: a real render of the " + name + " view";
+        shot.appendChild(img);
+      }
+      tile.appendChild(shot);
+      tile.appendChild(el("span", "p-sname", scene.label || name));
+      tile.appendChild(el("span", "p-sdesc", sceneNotes[name] || scene.hint || ""));
+      if (name === self._scene) tile.classList.add("on");
+      tile.addEventListener("click", function () { self.activateScene(name); });
+      grid.appendChild(tile);
+    });
+    scenesSec.appendChild(grid);
+    card.appendChild(scenesSec);
+
+    /* closing band: one word is the button */
+    var cta = el("button", "p-cta reveal");
+    cta.type = "button";
+    cta.style.setProperty("--d", "0ms");
+    cta.appendChild(el("span", "p-cta-note", copy.ctaNote || ""));
+    var arrow = document.createElementNS(SVG_NS, "svg");
+    arrow.setAttribute("class", "p-cta-arrow");
+    arrow.setAttribute("viewBox", "0 0 48 48");
+    arrow.setAttribute("aria-hidden", "true");
+    var shaft = document.createElementNS(SVG_NS, "path");
+    shaft.setAttribute("d", "M6 24h30M24 10l14 14-14 14");
+    shaft.setAttribute("fill", "none");
+    shaft.setAttribute("stroke", "currentColor");
+    shaft.setAttribute("stroke-width", "4");
+    arrow.appendChild(shaft);
+    cta.appendChild(arrow);
+    cta.appendChild(el("span", "p-cta-word", copy.ctaWord || "Build"));
+    cta.addEventListener("click", function () {
+      window.scrollTo({top: 0, behavior: "smooth"});
+      input.focus();
+    });
+    card.appendChild(cta);
+
+    var foot = el("footer", "p-foot reveal");
+    foot.style.setProperty("--d", "0ms");
+    foot.appendChild(el("p", null,
+      "site-kg live. The scene renders above are real captures of this viewer."));
+    card.appendChild(foot);
+
+    this._wireReveals();
   };
 
   UI.prototype.showScenes = function () {
@@ -494,22 +708,46 @@
   };
 
   UI.prototype.hideLauncher = function () {
-    if (this.launcherEl) this.launcherEl.classList.remove("on");
+    var launcher = this.launcherEl;
+    if (!launcher || !launcher.classList.contains("on")) return;
+    var reduce = window.matchMedia
+      && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    var finished = false;
+    var done = function () {
+      if (finished) return;
+      finished = true;
+      launcher.classList.remove("on", "leave");
+      launcher.removeEventListener("animationend", done);
+    };
+    if (reduce) {
+      done();
+      return;
+    }
+    launcher.addEventListener("animationend", done);
+    setTimeout(done, 800); /* failure-safe: never leave the poster up */
+    launcher.classList.add("leave");
   };
 
   UI.prototype.connectLive = function (base, scene) {
     if (scene) this.activateScene(scene);
     this.hideLauncher();
+    if (this.cfg.liveUrl) this.setLiveTarget(this.cfg.liveUrl);
     this.director.connectEvents("", 0, {base: base || "", token: this.token});
   };
 
   UI.prototype.launchLive = function (target, scene) {
     var self = this;
-    if (!target) {
-      var err = byId("launch-err");
-      if (err) err.textContent = "A site address is required.";
+    var res = SK.launcher.normalizeTarget(target);
+    if (!res.ok) {
+      var box = byId("launch-err");
+      if (box) {
+        box.textContent = res.error;
+        box.classList.remove("ok");
+      }
+      if (this.urlInput) this.urlInput.focus();
       return null;
     }
+    var url = res.url;
     if (scene) this.activateScene(scene);
     this.statusEl.textContent = "starting live ingest \u2026";
     var headers = {"Content-Type": "application/json"};
@@ -518,14 +756,16 @@
       ? fetch("/api/start", {
           method: "POST",
           headers: headers,
-          body: JSON.stringify({target: target, scene: scene})
+          body: JSON.stringify({target: url, scene: scene})
         })
       : Promise.reject(new Error("fetch is not available"));
-    return request.then(function (res) {
-      return res.json().catch(function () { return {}; }).then(function (body) {
-        if (!res.ok || !body.ok) {
-          throw new Error(body.error || ("start failed: " + res.status));
+    return request.then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (body) {
+        if (!r.ok || !body.ok) {
+          throw new Error(body.error || ("start failed: " + r.status));
         }
+        self.statusEl.textContent = "";
+        self.setLiveTarget(url);
         self.hideLauncher();
         self.director.start("live", null);
         self.director.connectEvents(body.run_id || "", body.last_seq || 0,
@@ -535,8 +775,11 @@
     }).catch(function (err) {
       self.statusEl.textContent = "live start failed";
       self.showLauncher();
-      var box = byId("launch-err");
-      if (box) box.textContent = (err && err.message) ? err.message : String(err);
+      var ebox = byId("launch-err");
+      if (ebox) {
+        ebox.textContent = (err && err.message) ? err.message : String(err);
+        ebox.classList.remove("ok");
+      }
       return null;
     });
   };

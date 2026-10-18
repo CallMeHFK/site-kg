@@ -499,8 +499,8 @@
       if (live.revealed[i]) revealed++;
       if (live.dim[i] > 0.5) visible++;
     }
-    return {nodes: live.n, edges: live.m, revealed: revealed, visible: visible,
-            pending: live.pendingCount, state: this.state,
+    return {nodes: live.n, edges: live.m, pages: live.pages, revealed: revealed,
+            visible: visible, pending: live.pendingCount, state: this.state,
             scene: this.renderer.name, mode: this.mode, finale: this.finaleDone,
             ego: this.selection ? this.selection.length : 0,
             fps: Math.round(this.fps)};
