@@ -165,3 +165,16 @@ def test_viewer_file_is_self_contained(tmp_path: Path):
     assert all(math.isfinite(n[k]) for n in layout["nodes"] for k in ("x", "y", "z"))
     assert max(abs(n[k]) for n in layout["nodes"] for k in ("x", "y", "z")) <= 1.0
     assert timeline["run_id"]
+
+
+def test_live_viewer_carries_no_baked_stats(tmp_path: Path):
+    """Live graphs are empty at page load, so cfg.stats would bake
+    '0 pages · 0 edges · verdict ?' into the finale forever. The live
+    shell must ship no stats string; the finale reads director status."""
+    from site_kg.viewer import render_viewer
+
+    out = render_viewer({"nodes": [], "edges": []}, {"url": "http://x/"},
+                        tmp_path / "live.html", scene="neural", mode="live")
+    s = out.read_text(encoding="utf-8")
+    assert '"stats":""' in s
+    assert "0 pages" not in s and "verdict ?" not in s

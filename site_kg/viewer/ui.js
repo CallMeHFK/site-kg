@@ -343,14 +343,23 @@
     this.targetEl.title = host;
   };
 
+  UI.finaleParts = function (cfg, status) {
+    var parts = [];
+    if (cfg && cfg.mode === "live" && status) {
+      parts.push((status.pages || 0) + " pages \u00b7 " + (status.edges || 0) + " edges");
+    } else if (cfg && cfg.stats) {
+      parts.push(cfg.stats);
+    }
+    if (status && status.ego) parts.push("ego " + status.ego);
+    else if (status && status.visible) parts.push(status.visible + " visible");
+    return parts;
+  };
+
   UI.prototype.showFinale = function (sceneName, status) {
     var box = this.finaleEl;
     if (!box) return;
     var scene = (SK.scenes && SK.scenes[sceneName]) || {};
-    var parts = [];
-    if (this.cfg && this.cfg.stats) parts.push(this.cfg.stats);
-    if (status && status.ego) parts.push("ego " + status.ego);
-    else if (status && status.visible) parts.push(status.visible + " visible");
+    var parts = UI.finaleParts(this.cfg, status);
     box.innerHTML = "";
     box.appendChild(el("b", null, scene.finale || "Finale"));
     if (parts.length) box.appendChild(el("div", "muted", parts.join(" \u00b7 ")));

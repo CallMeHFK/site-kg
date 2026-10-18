@@ -151,9 +151,14 @@ def render_viewer(graph: dict, meta: dict, out_path: Path, *, scene: str = "plan
 
     g = trim_graph(graph, max_nodes)
     title = str(meta.get("url") or "site-kg graph")
-    stats = (f'{meta.get("docs", len(g["nodes"]))} pages'
-             f' \u00b7 {len(g["edges"])} edges'
-             f' \u00b7 verdict {meta.get("verdict", "?")}')
+    if mode == "live":
+        # Live graphs are empty at page load; the finale must show the real
+        # counts collected by the director, not zeros baked in here.
+        stats = ""
+    else:
+        stats = (f'{meta.get("docs", len(g["nodes"]))} pages'
+                 f' \u00b7 {len(g["edges"])} edges'
+                 f' \u00b7 verdict {meta.get("verdict", "?")}')
     external = bool(external_data) and mode == "archive"
     payload_text = ""
     run_id = ""

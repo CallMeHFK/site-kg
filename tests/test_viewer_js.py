@@ -15,6 +15,7 @@ LAUNCHER = ROOT / "site_kg" / "viewer" / "launcher.js"
 PLANETS = ROOT / "site_kg" / "viewer" / "scenes" / "planets.js"
 PEOPLE = ROOT / "site_kg" / "viewer" / "scenes" / "people.js"
 NEURAL = ROOT / "site_kg" / "viewer" / "scenes" / "neural.js"
+UI = ROOT / "site_kg" / "viewer" / "ui.js"
 
 pytestmark = pytest.mark.skipif(shutil.which("node") is None,
                                 reason="node is not installed")
@@ -419,6 +420,28 @@ director.state = "ingesting";
 assert.equal(director.status().pages, 17);
 assert.equal(director.status().state, "ingesting");
 """)
+
+
+def test_finale_parts_show_live_counts_not_baked_stats():
+    _run(_prelude(UI) + r"""
+const P = SK.UI.finaleParts;
+// live: real counts from director status, never the baked zeros
+assert.deepEqual(P({mode: "live"}, {pages: 55, edges: 213}),
+                 ["55 pages \u00b7 213 edges"]);
+assert.deepEqual(P({mode: "live", stats: "0 pages \u00b7 0 edges \u00b7 verdict ?"},
+                   {pages: 3, edges: 4}),
+                 ["3 pages \u00b7 4 edges"]);
+assert.deepEqual(P({mode: "live"}, {pages: 5, edges: 9, ego: 3}),
+                 ["5 pages \u00b7 9 edges", "ego 3"]);
+// archive: the baked stats string is still the source of truth
+assert.deepEqual(P({mode: "archive", stats: "12 pages \u00b7 30 edges \u00b7 verdict READY"},
+                   {pages: 12, edges: 30}),
+                 ["12 pages \u00b7 30 edges \u00b7 verdict READY"]);
+assert.deepEqual(P({mode: "archive", stats: "s"}, {ego: 2}), ["s", "ego 2"]);
+assert.deepEqual(P(null, {visible: 4}), ["4 visible"]);
+""")
+    src = (ROOT / "site_kg" / "viewer" / "ui.js").read_text()
+    assert "UI.finaleParts(this.cfg, status)" in src
 
 
 def test_launcher_copy_deck_constraints():
