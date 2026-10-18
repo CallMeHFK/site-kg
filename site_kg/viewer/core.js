@@ -137,12 +137,15 @@
     return id;
   };
 
-  LiveGraph.prototype.nodeAdded = function (id, rec) {
+  LiveGraph.prototype.nodeAdded = function (id, rec, fromEvent) {
     id = String(id);
     rec = rec || {};
+    // On event objects `t` is the event type ("node_updated"), never a title:
+    // only snapshot-style records may use `t` as the title fallback.
+    var titleFallback = fromEvent ? id : (rec.t != null ? rec.t : id);
     var i = this.indexById.get(id);
     if (i !== undefined) {
-      if (rec.title != null || rec.t != null) this.titles[i] = String(rec.title != null ? rec.title : rec.t);
+      if (rec.title != null || (!fromEvent && rec.t != null)) this.titles[i] = String(rec.title != null ? rec.title : rec.t);
       if (rec.url != null || rec.u != null) this.urls[i] = String(rec.url != null ? rec.url : rec.u);
       if (rec.c != null) this._nodeCluster[i] = this.clusterId(rec.c);
       if (rec.g != null) this.degree[i] = rec.g | 0;
@@ -153,7 +156,7 @@
     if (this.n === this.cap) this._growNodes();
     i = this.n++;
     this.ids[i] = id;
-    this.titles[i] = String(rec.title != null ? rec.title : (rec.t != null ? rec.t : id));
+    this.titles[i] = String(rec.title != null ? rec.title : titleFallback);
     this.urls[i] = String(rec.url != null ? rec.url : (rec.u != null ? rec.u : ""));
     var cluster = rec.c == null ? "" : String(rec.c);
     this._nodeCluster[i] = this.clusterId(cluster);
@@ -232,7 +235,7 @@
       var ev = events[k];
       if (!ev || !ev.t) continue;
       if (ev.t === "node_added" || ev.t === "node_updated") {
-        this.nodeAdded(ev.id, ev);
+        this.nodeAdded(ev.id, ev, true);
       } else if (ev.t === "edge_added") {
         this.edgeAdded(ev.s, ev.d, ev.kind, ev.late);
       } else if (ev.t === "ingest_done") {

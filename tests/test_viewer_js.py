@@ -107,6 +107,23 @@ assert.deepEqual(g.stats(), {nodes: 2, edges: 2, pending: 0, dangling: 0});
 """)
 
 
+def test_node_updated_events_never_clobber_titles():
+    _run(_prelude(CORE) + """
+const g = new SK.LiveGraph(8);
+g.applyBatch([
+  {t: "node_added", id: "a", title: "Ay", url: "http://x/"},
+  {t: "node_updated", id: "a", g: 4, r: 0.25},
+  {t: "node_updated", id: "late", g: 1, r: 0.5},
+]);
+assert.equal(g.titles[g.indexById.get("a")], "Ay");
+assert.equal(g.urls[g.indexById.get("a")], "http://x/");
+assert.equal(g.degree[g.indexById.get("a")], 4);
+assert.equal(g.rank[g.indexById.get("a")], 0.25);
+assert.equal(g.titles[g.indexById.get("late")], "late");
+assert.notEqual(g.titles[g.indexById.get("late")], "node_updated");
+""")
+
+
 def test_batcher_orders_by_seq_and_limits_flush_rate():
     _run(_prelude(CORE) + """
 const g = new SK.LiveGraph(16);
