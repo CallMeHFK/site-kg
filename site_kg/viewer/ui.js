@@ -61,12 +61,15 @@
   };
 
   /* The bar wraps at narrow widths; the canvas is offset by --bar, so keep the
-     custom property in sync with the bar's real height. */
+     custom property in sync with the bar's natural height. min-height must be
+     suspended while measuring, or the property ratchets upward forever. */
   UI.prototype._wireBarResize = function () {
     var bar = byId("bar");
     if (!bar) return;
     var sync = function () {
+      bar.style.minHeight = "0px";
       var h = Math.ceil(bar.getBoundingClientRect().height);
+      bar.style.minHeight = "";
       if (h > 0) document.documentElement.style.setProperty("--bar", h + "px");
     };
     this._barSync = sync;
@@ -159,6 +162,8 @@
 
     var chap = el("button", "mb", "chapters");
     chap.type = "button";
+    chap.title = "keyboard and pointer help";
+    chap.setAttribute("aria-label", "keyboard and pointer help");
     chap.addEventListener("click", function () {
       self.legendEl.classList.toggle("on");
       if (self.legendEl.classList.contains("on")) self._buildLegend();
@@ -346,7 +351,8 @@
   UI.finaleParts = function (cfg, status) {
     var parts = [];
     if (cfg && cfg.mode === "live" && status) {
-      parts.push((status.pages || 0) + " pages \u00b7 " + (status.edges || 0) + " edges");
+      parts.push((status.pages || 0) + " pages \u00b7 " + (status.nodes || 0)
+        + " nodes \u00b7 " + (status.edges || 0) + " edges");
     } else if (cfg && cfg.stats) {
       parts.push(cfg.stats);
     }
@@ -531,6 +537,10 @@
 
   UI.prototype.showLauncher = function () {
     if (!this.launcherEl) return;
+    if (this._launcherHideTimer) {
+      clearTimeout(this._launcherHideTimer);
+      this._launcherHideTimer = 0;
+    }
     var card = this.launcherEl.querySelector("#launch-card");
     if (!card) return;
     this.launcherEl.classList.remove("leave");
@@ -552,13 +562,17 @@
     hero.appendChild(el("div", "p-field"));
     hero.appendChild(el("header", "p-wordmark", "site-kg live"));
     var statement = el("div", "p-statement");
-    var mask1 = el("div", "p-mask p-mask1");
+    var mask1 = el("h1", "p-mask p-mask1");
     mask1.appendChild(el("span", "p-line", copy.line1 || "ANY SITE IS A GRAPH."));
-    var mask2 = el("div", "p-mask p-mask2");
+    var mask2 = el("p", "p-mask p-mask2");
     var line2 = el("span", "p-line p-line2");
     var line2Text = copy.line2 || "WATCH IT BUILD.";
     /* the lower half of the seam is painted by ::before from --line2, so the
-       words exist once in the document text and once on screen */
+       words exist once in the document text and once on screen; the visible
+       span is silenced and the mask carries the label so readers say it once */
+    mask2.setAttribute("role", "img");
+    mask2.setAttribute("aria-label", line2Text);
+    line2.setAttribute("aria-hidden", "true");
     line2.style.setProperty("--line2",
         "'" + line2Text.replace(/\\/g, "\\\\").replace(/'/g, "\\'") + "'");
     line2.appendChild(el("span", "p-copy p-copy-a", line2Text));
@@ -633,7 +647,7 @@
       var li = el("li", "p-step reveal");
       li.style.setProperty("--i", String(i));
       li.style.setProperty("--d", (i * 70) + "ms");
-      li.appendChild(el("p", "p-step-line", step[0]));
+      li.appendChild(el("h2", "p-step-line", step[0]));
       li.appendChild(el("p", "p-step-note", step[1]));
       list.appendChild(li);
     });
@@ -721,19 +735,29 @@
     if (!launcher || !launcher.classList.contains("on")) return;
     var reduce = window.matchMedia
       && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    var self = this;
     var finished = false;
     var done = function () {
       if (finished) return;
       finished = true;
+      if (self._launcherHideTimer) {
+        clearTimeout(self._launcherHideTimer);
+        self._launcherHideTimer = 0;
+      }
       launcher.classList.remove("on", "leave");
-      launcher.removeEventListener("animationend", done);
+      launcher.removeEventListener("animationend", onAnimationEnd);
+    };
+    /* only the poster's own leave animation may end the hide; children's
+       entrance animations bubble here and would cut it short */
+    var onAnimationEnd = function (ev) {
+      if (ev.target === launcher && ev.animationName === "posterLeave") done();
     };
     if (reduce) {
       done();
       return;
     }
-    launcher.addEventListener("animationend", done);
-    setTimeout(done, 800); /* failure-safe: never leave the poster up */
+    launcher.addEventListener("animationend", onAnimationEnd);
+    this._launcherHideTimer = setTimeout(done, 800); /* failure-safe: never leave the poster up */
     launcher.classList.add("leave");
   };
 
@@ -758,7 +782,13 @@
     }
     var url = res.url;
     if (scene) this.activateScene(scene);
-    this.statusEl.textContent = "starting live ingest \u2026";
+    /* the status line sits under the poster; the launcher's own error line
+       is the feedback the user can actually see while the request runs */
+    var ebox = this.errEl || byId("launch-err");
+    if (ebox) {
+      ebox.textContent = "starting live ingest \u2026";
+      ebox.classList.add("ok");
+    }
     var headers = {"Content-Type": "application/json"};
     if (this.token) headers["X-Site-KG-Token"] = this.token;
     var request = typeof fetch === "function"
@@ -773,7 +803,7 @@
         if (!r.ok || !body.ok) {
           throw new Error(body.error || ("start failed: " + r.status));
         }
-        self.statusEl.textContent = "";
+        if (ebox) ebox.textContent = "";
         self.setLiveTarget(url);
         self.hideLauncher();
         self.director.start("live", null);
@@ -782,12 +812,11 @@
         return body;
       });
     }).catch(function (err) {
-      self.statusEl.textContent = "live start failed";
       self.showLauncher();
-      var ebox = byId("launch-err");
-      if (ebox) {
-        ebox.textContent = (err && err.message) ? err.message : String(err);
-        ebox.classList.remove("ok");
+      var failbox = self.errEl || byId("launch-err");
+      if (failbox) {
+        failbox.textContent = (err && err.message) ? err.message : String(err);
+        failbox.classList.remove("ok");
       }
       return null;
     });

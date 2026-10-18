@@ -36,17 +36,35 @@
     }
   }
 
+  /* Loopback hosts get plain http when the user omits the scheme; the
+     server itself (live.py LOOPBACK_HOSTS) is the authority on targets. */
+  var LOOPBACK = {"localhost": true, "127.0.0.1": true, "::1": true, "[::1]": true};
+
+  /* Hostname a scheme-less input would produce (port included in input). */
+  function bareHost(candidate) {
+    try {
+      return new URL("http://" + candidate).hostname;
+    } catch (err) {
+      return "";
+    }
+  }
+
   /* Normalise a typed address into a launchable URL.
-     Returns {ok: true, url} or {ok: false, error}. */
+     Returns {ok: true, url} or {ok: false, error}.
+     Explicit http(s):// targets only need a non-empty hostname (intranet
+     names, container hosts and IPv6 literals are valid); the host-shape
+     heuristic only guards scheme-less input, where we must guess. */
   function normalizeTarget(raw) {
     var value = String(raw == null ? "" : raw).trim();
     if (!value) return {ok: false, error: "A site address is required."};
     var candidate = value;
-    if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(candidate)) {
+    var explicit = /^[a-z][a-z0-9+.-]*:\/\//i.test(candidate);
+    if (!explicit) {
       if (/\s/.test(candidate)) {
         return {ok: false, error: "That doesn't look like a web address."};
       }
-      candidate = "https://" + candidate;
+      var scheme = LOOPBACK[bareHost(candidate)] ? "http://" : "https://";
+      candidate = scheme + candidate;
     }
     var parsed;
     try {
@@ -57,11 +75,21 @@
     if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
       return {ok: false, error: "Use an http or https address."};
     }
-    var host = parsed.hostname;
-    var hostOk = host === "localhost"
-      || /^\d{1,3}(\.\d{1,3}){3}$/.test(host)
-      || (host.indexOf(".") > 0 && /[a-z0-9-]/i.test(host));
-    if (!hostOk) return {ok: false, error: "That doesn't look like a web address."};
+    if (!parsed.hostname) {
+      return {ok: false, error: "That doesn't look like a web address."};
+    }
+    if (!explicit) {
+      var host = parsed.hostname;
+      var hostOk = LOOPBACK[host]
+        || /^\d{1,3}(\.\d{1,3}){3}$/.test(host)
+        || (host.indexOf(".") > 0 && /[a-z0-9-]/i.test(host));
+      if (!hostOk) return {ok: false, error: "That doesn't look like a web address."};
+    }
+    /* credentials never belong in a crawl target or the run record */
+    if (parsed.username || parsed.password) {
+      parsed.username = "";
+      parsed.password = "";
+    }
     return {ok: true, url: parsed.href};
   }
 

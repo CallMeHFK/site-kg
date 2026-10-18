@@ -364,7 +364,7 @@ def test_ui_forwards_page_token_to_live_api_and_events():
 
 
 def test_launcher_normalize_target_cases():
-    _run(_prelude(LAUNCHER) + """
+    _run(_prelude(LAUNCHER) + r"""
 const L = SK.launcher;
 assert.deepEqual(L.normalizeTarget("docs.example.com"),
                  {ok: true, url: "https://docs.example.com/"});
@@ -379,6 +379,21 @@ assert.equal(L.normalizeTarget("javascript:alert(1)").ok, false);
 assert.equal(L.normalizeTarget("nodots").ok, false);
 assert.equal(L.normalizeTarget("docs.example.com").url,
              "https://docs.example.com/");
+// explicit scheme skips the host-shape heuristic (server is the authority)
+assert.equal(L.normalizeTarget("http://intranet/").url, "http://intranet/");
+assert.equal(L.normalizeTarget("http://nodebb:3000/docs").url,
+             "http://nodebb:3000/docs");
+assert.equal(L.normalizeTarget("http://[::1]:8080/a").url,
+             "http://[::1]:8080/a");
+// scheme-less loopback gets plain http, not https
+assert.equal(L.normalizeTarget("localhost:8080").url, "http://localhost:8080/");
+assert.equal(L.normalizeTarget("127.0.0.1:9000").url, "http://127.0.0.1:9000/");
+assert.equal(L.normalizeTarget("[::1]:8080/a").url, "http://[::1]:8080/a");
+// credentials are stripped, never forwarded or recorded
+assert.equal(L.normalizeTarget("http://user:pw@evil.com/x").url,
+             "http://evil.com/x");
+assert.equal(L.normalizeTarget("http://user@host.internal/").url,
+             "http://host.internal/");
 """)
 
 
@@ -415,10 +430,35 @@ assert.equal(g.pages, 17);
 b.push({t: "progress", pages: 2, seq: 5});
 b.flush(1200, true);
 assert.equal(g.pages, 17, "pages fold to the max and never regress");
+b.push({t: "ingest_done", pages: 21, seq: 6});
+b.flush(1500, true);
+assert.equal(g.pages, 21, "ingest_done pages fold too");
+b.push({t: "progress", pages: 4, seq: 7});
+b.flush(1800, true);
+assert.equal(g.pages, 21);
 const director = new SK.Director(g, {name: "planets"}, null, null);
 director.state = "ingesting";
-assert.equal(director.status().pages, 17);
+assert.equal(director.status().pages, 21);
 assert.equal(director.status().state, "ingesting");
+""")
+
+
+def test_load_snapshot_keeps_server_page_count():
+    """A reconnect snapshot has fewer nodes than pages crawled; restoring
+    pages = n under-reported (60 pages showed as 45) after every reconnect."""
+    _run(_prelude(CORE) + r"""
+const g = new SK.LiveGraph(16);
+g.loadSnapshot({
+  nodes: [{i: "a", t: "A", u: "http://x/a"}, {i: "b", t: "B", u: "http://x/b"}],
+  edges: [],
+  progress: {pages: 60, nodes: 2, edges: 0, bytes: 9000},
+  last_seq: 3
+});
+assert.equal(g.pages, 60, "server page count survives the snapshot");
+// no progress block (older snapshot shape) falls back to node count
+const g2 = new SK.LiveGraph(16);
+g2.loadSnapshot({nodes: [{i: "c", t: "C"}], edges: []});
+assert.equal(g2.pages, 1);
 """)
 
 
@@ -426,13 +466,13 @@ def test_finale_parts_show_live_counts_not_baked_stats():
     _run(_prelude(UI) + r"""
 const P = SK.UI.finaleParts;
 // live: real counts from director status, never the baked zeros
-assert.deepEqual(P({mode: "live"}, {pages: 55, edges: 213}),
-                 ["55 pages \u00b7 213 edges"]);
+assert.deepEqual(P({mode: "live"}, {pages: 55, nodes: 48, edges: 213}),
+                 ["55 pages \u00b7 48 nodes \u00b7 213 edges"]);
 assert.deepEqual(P({mode: "live", stats: "0 pages \u00b7 0 edges \u00b7 verdict ?"},
-                   {pages: 3, edges: 4}),
-                 ["3 pages \u00b7 4 edges"]);
-assert.deepEqual(P({mode: "live"}, {pages: 5, edges: 9, ego: 3}),
-                 ["5 pages \u00b7 9 edges", "ego 3"]);
+                   {pages: 3, nodes: 3, edges: 4}),
+                 ["3 pages \u00b7 3 nodes \u00b7 4 edges"]);
+assert.deepEqual(P({mode: "live"}, {pages: 5, nodes: 5, edges: 9, ego: 3}),
+                 ["5 pages \u00b7 5 nodes \u00b7 9 edges", "ego 3"]);
 // archive: the baked stats string is still the source of truth
 assert.deepEqual(P({mode: "archive", stats: "12 pages \u00b7 30 edges \u00b7 verdict READY"},
                    {pages: 12, edges: 30}),

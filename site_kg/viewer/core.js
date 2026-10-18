@@ -230,6 +230,13 @@
     this.dangling = this.pendingCount;
   };
 
+  /* Pages crawl counts exceed node counts (frames without graph nodes, skips);
+     fold the max so the counter never regresses. */
+  LiveGraph.prototype._foldPages = function (value) {
+    var pages = value | 0;
+    if (pages > this.pages) this.pages = pages;
+  };
+
   LiveGraph.prototype.applyBatch = function (events) {
     if (!events) return this;
     for (var k = 0; k < events.length; k++) {
@@ -240,12 +247,10 @@
       } else if (ev.t === "edge_added") {
         this.edgeAdded(ev.s, ev.d, ev.kind, ev.late);
       } else if (ev.t === "progress") {
-        if (ev.pages != null) {
-          var pages = ev.pages | 0;
-          if (pages > this.pages) this.pages = pages;
-        }
+        if (ev.pages != null) this._foldPages(ev.pages);
       } else if (ev.t === "ingest_done") {
         this.dangling = this.pendingCount;
+        if (ev.pages != null) this._foldPages(ev.pages);
       }
     }
     return this;
@@ -299,7 +304,9 @@
     this.runId = String(snap.run_id || "");
     this.lastSeq = snap.last_seq || 0;
     this.dangling = snap.dangling == null ? this.pendingCount : snap.dangling;
-    this.pages = this.n;
+    /* A reconnect snapshot carries fewer nodes than pages crawled (skipped
+       frames etc.); keep the server's real page count when it has one. */
+    this.pages = Math.max(this.n, (snap.progress && snap.progress.pages) | 0);
     this.version++;
     return this;
   };
@@ -460,8 +467,6 @@
             if (ri + 1 > nodeHi) nodeHi = ri + 1;
           }
         }
-      } else if (t === "ingest_done") {
-        live.dangling = live.pendingCount;
       } else {
         live.applyBatch([ev]);
       }
