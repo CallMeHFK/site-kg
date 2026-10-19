@@ -282,6 +282,7 @@
 
   LiveGraph.prototype.loadSnapshot = function (snap) {
     var nodes = snap.nodes || [];
+    var prevPages = this.pages; /* pages survives reset: never regress */
     this.reset(Math.max(64, nodes.length + 8));
     var rows = (snap.layout && snap.layout.nodes) || [];
     var byIndex = {};
@@ -305,8 +306,10 @@
     this.lastSeq = snap.last_seq || 0;
     this.dangling = snap.dangling == null ? this.pendingCount : snap.dangling;
     /* A reconnect snapshot carries fewer nodes than pages crawled (skipped
-       frames etc.); keep the server's real page count when it has one. */
-    this.pages = Math.max(this.n, (snap.progress && snap.progress.pages) | 0);
+       frames etc.); keep the server's real page count when it has one, and
+       never step backwards from what the stream already reported. */
+    this.pages = Math.max(this.n, prevPages,
+                          (snap.progress && snap.progress.pages) | 0);
     this.version++;
     return this;
   };

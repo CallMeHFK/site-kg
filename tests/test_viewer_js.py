@@ -459,6 +459,14 @@ assert.equal(g.pages, 60, "server page count survives the snapshot");
 const g2 = new SK.LiveGraph(16);
 g2.loadSnapshot({nodes: [{i: "c", t: "C"}], edges: []});
 assert.equal(g2.pages, 1);
+// a snapshot whose progress lags the stream's folded count never regresses
+const g3 = new SK.LiveGraph(16);
+g3.applyBatch([{t: "progress", pages: 60, seq: 1},
+               {t: "node_added", id: "a", title: "A", seq: 2}]);
+assert.equal(g3.pages, 60);
+g3.loadSnapshot({nodes: [{i: "a", t: "A"}], edges: [],
+                 progress: {pages: 45}, last_seq: 2});
+assert.equal(g3.pages, 60, "snapshot pages cannot step backwards");
 """)
 
 
@@ -522,4 +530,112 @@ global.document = {getElementById: function () {
   return {textContent: "not json"};
 }};
 assert.deepEqual(SK.launcher.loadArt(), {});
+""")
+
+
+def test_bar_resize_floor_and_convergence():
+    """--bar follows the measured bar height but never drops below the 52px
+    design floor, and a ResizeObserver echo loop converges instead of ratcheting."""
+    _run(_prelude(UI) + r"""
+let barHeight = 40;
+const bar = {
+  style: {minHeight: ""},
+  getBoundingClientRect: function () { return {height: barHeight}; }
+};
+const props = {};
+global.document = {
+  getElementById: function (id) { return id === "bar" ? bar : null; },
+  documentElement: {style: {
+    setProperty: function (k, v) { props[k] = v; }
+  }}
+};
+let roCb = null;
+global.ResizeObserver = function (cb) {
+  roCb = cb;
+  this.observe = function () {};
+  this.disconnect = function () {};
+};
+window.addEventListener = function () {};
+
+const ui = new SK.UI();
+ui._wireBarResize();
+assert.equal(typeof roCb, "function", "ResizeObserver path was wired");
+assert.equal(bar.style.minHeight, "", "min-height restored after measuring");
+assert.equal(props["--bar"], "52px", "40px height lifts to the 52px floor");
+
+barHeight = 83;
+roCb();
+assert.equal(props["--bar"], "83px", "taller bar is followed exactly");
+assert.equal(bar.style.minHeight, "");
+
+// echo loop: the observer firing on its own write must settle, not climb
+barHeight = 30;
+for (let i = 0; i < 5; i++) roCb();
+assert.equal(props["--bar"], "52px", "repeated triggers settle on the floor");
+barHeight = 83;
+for (let i = 0; i < 5; i++) roCb();
+assert.equal(props["--bar"], "83px", "repeated triggers settle on the height");
+""")
+
+
+def test_launcher_hide_show_listener_hygiene():
+    """hide/show cycles never stack animationend handlers; only the poster's
+    own posterLeave animation finishes the hide; reduced motion finishes sync."""
+    _run(_prelude(UI) + r"""
+const listeners = [];
+function makeLauncher() {
+  const set = new Set(["on"]);
+  return {
+    classList: {
+      contains: function (c) { return set.has(c); },
+      add: function () { for (let i = 0; i < arguments.length; i++) set.add(arguments[i]); },
+      remove: function () { for (let i = 0; i < arguments.length; i++) set.delete(arguments[i]); }
+    },
+    addEventListener: function (type, fn) { listeners.push({type: type, fn: fn}); },
+    removeEventListener: function (type, fn) {
+      const i = listeners.findIndex(function (e) {
+        return e.type === type && e.fn === fn;
+      });
+      if (i >= 0) listeners.splice(i, 1);
+    },
+    querySelector: function (sel) {
+      return sel === "#launch-card" ? {firstChild: {}} : null;
+    }
+  };
+}
+const launcher = makeLauncher();
+window.matchMedia = function () { return {matches: false}; };
+
+const ui = new SK.UI();
+ui.launcherEl = launcher;
+
+// five hide/show cycles must leave exactly one live animationend handler
+for (let i = 0; i < 5; i++) {
+  ui.showLauncher();
+  ui.hideLauncher();
+}
+const animEnds = listeners.filter(function (e) {
+  return e.type === "animationend";
+});
+assert.equal(animEnds.length, 1, "no handler accumulation across cycles");
+
+// a child's bubbling fadeIn must NOT finish the hide; the poster's own
+// posterLeave does, removing the handler and clearing the pending timer
+animEnds[0].fn({target: {parentElement: launcher}, animationName: "fadeIn"});
+assert.equal(listeners.length, 1, "child animation does not finish the hide");
+assert.equal(launcher.classList.contains("on"), true, "poster still up");
+animEnds[0].fn({target: launcher, animationName: "posterLeave"});
+assert.equal(listeners.length, 0, "posterLeave finishes and unregisters");
+assert.equal(launcher.classList.contains("on"), false, "poster hidden");
+
+// prefers-reduced-motion: finish immediately, register nothing
+window.matchMedia = function () { return {matches: true}; };
+const ui2 = new SK.UI();
+const launcher2 = makeLauncher();
+ui2.launcherEl = launcher2;
+ui2.showLauncher();
+ui2.hideLauncher();
+assert.equal(listeners.length, 0, "reduced motion registers no listener");
+assert.equal(launcher2.classList.contains("on"), false);
+assert.equal(launcher2.classList.contains("leave"), false);
 """)

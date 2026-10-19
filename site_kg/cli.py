@@ -85,6 +85,13 @@ def main(argv: list[str] | None = None) -> None:
     lv.add_argument("--max-nodes", type=int, default=None)
     lv.add_argument("--port", type=int, default=0)
     lv.add_argument("--token", default=None)
+    lv.add_argument("--block-private", action="store_true",
+                    help="refuse /api/start targets that point at the private "
+                         "network: loopback, 10/8, 172.16/12, 192.168/16, "
+                         "169.254/16, fc00::/7, unspecified addresses, and "
+                         "domains that resolve there (or fail to resolve). "
+                         "Default off so local dev servers and intranets stay "
+                         "crawlable; use on untrusted networks")
     t = sub.add_parser("stats")
     t.add_argument("site_id", nargs="?")
     v = sub.add_parser("render")
@@ -118,7 +125,8 @@ def main(argv: list[str] | None = None) -> None:
         kind, target = _resolve_live_target(args.target, local=args.local,
                                             replay=args.replay)
         opts = {"scene": args.scene or "planets", "max_nodes": args.max_nodes,
-                "port": args.port, "token": args.token}
+                "port": args.port, "token": args.token,
+                "block_private": args.block_private}
         if kind == "url":
             site_id = store.site_id_for(target)
             if args.scene:

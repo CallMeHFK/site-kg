@@ -8,7 +8,7 @@ import urllib.request
 
 import pytest
 
-from site_kg.live import LiveHub, serve_hub
+from site_kg.live import LiveHub, _private_target_error, serve_hub
 
 
 def _opener():
@@ -159,3 +159,87 @@ def test_page_is_served_without_cors(server):
         assert resp.status == 200
         assert resp.headers.get_content_type() == "text/html"
         assert resp.headers.get("Access-Control-Allow-Origin") is None
+
+
+# -- --block-private: opt-in private network refusal -------------------------
+
+def test_private_target_error_classifies_hosts(monkeypatch):
+    # loopback and private ranges are refused, IP literal or resolved
+    for target in ("http://127.0.0.1:9000/", "http://10.1.2.3/",
+                   "http://192.168.1.4/", "http://172.16.0.9/",
+                   "http://169.254.3.3/", "http://[::1]:8080/",
+                   "http://[fc00::1]/", "http://0.0.0.0/"):
+        reason = _private_target_error(target)
+        assert reason and "block-private" in reason, target
+    # internal TLDs are refused without resolution
+    assert "internal" in _private_target_error("http://nas.local/")
+    assert "internal" in _private_target_error("http://db.internal/x")
+    # resolution is consulted for names; every record must be public
+    import socket
+    monkeypatch.setattr(socket, "getaddrinfo",
+                        lambda host, port: [(socket.AF_INET, socket.SOCK_STREAM,
+                                             6, "", ("93.184.216.34", 0))])
+    assert _private_target_error("https://example.com/") is None
+    monkeypatch.setattr(socket, "getaddrinfo",
+                        lambda host, port: [(socket.AF_INET, socket.SOCK_STREAM,
+                                             6, "", ("192.168.0.10", 0))])
+    assert _private_target_error("https://example.com/") is not None
+    # one private record among public ones is enough to refuse
+    monkeypatch.setattr(socket, "getaddrinfo",
+                        lambda host, port: [(socket.AF_INET, socket.SOCK_STREAM,
+                                             6, "", ("93.184.216.34", 0)),
+                                            (socket.AF_INET6, socket.SOCK_STREAM,
+                                             6, "", ("::1", 0, 0, 0))])
+    assert _private_target_error("https://example.com/") is not None
+    # resolution failure is a refusal, not a pass
+    def _boom(host, port):
+        raise OSError("no dns")
+    monkeypatch.setattr(socket, "getaddrinfo", _boom)
+    assert "cannot resolve" in _private_target_error("https://example.com/")
+
+
+def test_start_accepts_loopback_by_default():
+    """Default mode must keep crawling local dev servers: no --block-private,
+    a loopback target passes validation (the ingest itself may still fail)."""
+    srv = serve_hub(LiveHub(), port=0)
+    srv.start()
+    try:
+        with _post(srv.url, "/api/start", {"target": "http://127.0.0.1:1/",
+                                            "scene": "planets"}) as resp:
+            assert resp.status == 200
+    finally:
+        srv.stop()
+
+
+def test_start_block_private_refuses_private_targets():
+    srv = serve_hub(LiveHub(block_private=True), port=0)
+    srv.start()
+    try:
+        for target in ("http://127.0.0.1:9000/", "http://10.9.8.7/",
+                       "http://192.168.1.1/", "http://nas.local/"):
+            with pytest.raises(urllib.error.HTTPError) as err:
+                _post(srv.url, "/api/start", {"target": target,
+                                               "scene": "planets"})
+            assert err.value.code == 400
+            body = json.loads(err.value.read())
+            assert body["ok"] is False
+            assert "block-private" in body["error"]
+        # and a public-looking name still passes validation
+        import socket
+        orig = socket.getaddrinfo
+
+        def _fake(host, port, *rest):
+            if host == "example.com":  # the target, not the POST's loopback
+                return [(socket.AF_INET, socket.SOCK_STREAM, 6, "",
+                         ("93.184.216.34", 0))]
+            return orig(host, port, *rest)
+
+        socket.getaddrinfo = _fake
+        try:
+            with _post(srv.url, "/api/start", {"target": "https://example.com",
+                                                "scene": "planets"}) as resp:
+                assert resp.status == 200
+        finally:
+            socket.getaddrinfo = orig
+    finally:
+        srv.stop()

@@ -14,9 +14,11 @@ from __future__ import annotations
 
 import asyncio
 import hmac
+import ipaddress
 import json
 import queue
 import secrets
+import socket
 import tempfile
 import threading
 import time
@@ -45,6 +47,55 @@ def _is_http(target: str) -> bool:
     return scheme in ("http", "https")
 
 
+_INTERNAL_TLDS = (".local", ".internal")
+
+
+def _addr_is_blocked(addr: str) -> bool:
+    """True when an IP literal/resolved address must be refused under
+    --block-private: loopback, private ranges, link-local, unspecified."""
+    try:
+        ip = ipaddress.ip_address(addr)
+    except ValueError:
+        return True  # not an address we can vouch for
+    return (ip.is_loopback or ip.is_private or ip.is_link_local
+            or ip.is_unspecified or ip.is_reserved or ip.is_multicast)
+
+
+def _private_target_error(target: str) -> str | None:
+    """Rejection reason for an http(s) target that points at the private
+    network, or None when it may pass. Only consulted when --block-private is
+    on: by default local dev servers and intranets are first-class targets.
+    Domains are resolved and every record must be public; resolution failure
+    counts as blocked so DNS cannot smuggle a private address through."""
+    host = urllib.parse.urlsplit(target).hostname
+    if not host:
+        return ("target has no host; blocked by --block-private")
+    host = host.rstrip(".").lower()
+    if host.endswith(_INTERNAL_TLDS):
+        return (f"target host {host} is an internal name (.local/.internal); "
+                "blocked by --block-private")
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        pass  # a name: resolve it below
+    else:
+        if _addr_is_blocked(host):
+            return (f"target host {host} is a private/loopback address; "
+                    "blocked by --block-private")
+        return None
+    try:
+        records = socket.getaddrinfo(host, None)
+    except OSError:
+        return (f"cannot resolve host {host}; blocked by --block-private")
+    for record in records:
+        addr = record[4][0]
+        # strip IPv6 scope/zone ids ("fe80::1%eth0") before judging
+        if _addr_is_blocked(addr.split("%", 1)[0]):
+            return (f"target host {host} resolves to a private/loopback "
+                    "address; blocked by --block-private")
+    return None
+
+
 def _state_event(ev: dict) -> dict:
     """Wire nodes use graph field names (c/g/r); LiveState was written with
     the long names, so translate at the boundary instead of duplicating the
@@ -60,11 +111,12 @@ def _state_event(ev: dict) -> dict:
 
 class LiveHub:
     def __init__(self, *, site_id: str = "", scene: str = "planets",
-                 max_nodes: int | None = None):
+                 max_nodes: int | None = None, block_private: bool = False):
         if scene not in SCENES:
             raise ValueError(f"unknown scene {scene!r}; choose from {', '.join(SCENES)}")
         self.site_id = site_id
         self.max_nodes = max_nodes
+        self.block_private = bool(block_private)
         self.log = EventLog()
         self.state = LiveState()
         self.layout = LiveLayout()
@@ -144,6 +196,10 @@ class LiveHub:
             target = str(root.resolve())
         elif not _is_http(target):
             raise ValueError("target must be an http(s) URL")
+        elif self.block_private:
+            reason = _private_target_error(target)
+            if reason:
+                raise ValueError(reason)
         with self._lock:
             if self.run["state"] == "running":
                 raise RuntimeError("a live run is already in progress")
@@ -621,10 +677,12 @@ def serve_hub(hub: LiveHub, *, port: int = 0, token: str | None = None,
 
 def serve_live(site_id: str, *, source: str | None = None, scene: str = "planets",
                max_nodes: int | None = None, port: int = 0, replay: bool = False,
-               token: str | None = None, title: str | None = None) -> LiveHandle:
+               token: str | None = None, title: str | None = None,
+               block_private: bool = False) -> LiveHandle:
     if scene not in SCENES:
         raise ValueError(f"unknown scene {scene!r}; choose from {', '.join(SCENES)}")
-    hub = LiveHub(site_id=site_id, scene=scene, max_nodes=max_nodes)
+    hub = LiveHub(site_id=site_id, scene=scene, max_nodes=max_nodes,
+                  block_private=block_private)
     server = serve_hub(hub, port=port, token=token, scene=scene,
                        connect=bool(source or replay), title=title or "")
     server.start()
