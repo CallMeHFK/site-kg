@@ -4,7 +4,7 @@ a graph was constructed.
 `render_site` (viewer.py) is the inspection path -- it shows the finished graph.
 This module answers a different question: what did the build *do*? It replays
 the construction in order: nodes are born along their corpus (crawl/scan) order
-onto chapter rings, flying out of the core; then evidence edges (ref, imports,
+onto chapter shells, flying out of the core; then evidence edges (ref, imports,
 contains, hub) are drawn; then one wave per derived relation dimension
 (relations.py), every edge growing from its source node and binding to its
 target with a pulse. A HUD counts nodes, edges and per-dimension edges as they
@@ -55,14 +55,15 @@ PHASE_LABELS = {
 }
 
 FLIGHT = 0.55          # seconds an edge takes to fly from source to target
-R_MAX = 100.0          # ring layout radius, world units
+R_MAX = 100.0          # shell layout radius, world units
 HUB_PULL = 0.30        # how far high-degree nodes migrate toward the core
+_GOLDEN = math.pi * (3 - math.sqrt(5))   # Fibonacci lattice angle
 TITLES_MAX_NODES = 5000   # hover titles only at inspection scale
 
 
 def _corpus_dur(n: int) -> float:
     """Node phase length: sublinear in corpus size, capped, so a 75k-doc tree
-    still finishes its ring in about ten seconds at 1x."""
+    still finishes its shell in about ten seconds at 1x."""
     return min(10.0, max(1.2, n / 2500.0))
 
 
@@ -79,10 +80,15 @@ def _hex(hexcol: int) -> str:
     return f"#{hexcol:06x}"
 
 
-def layout_rings(graph: dict, seed: int = 7) -> None:
-    """Deterministic ring layout, in place: one ring per chapter (biggest
-    outermost), nodes spread by golden angle, high-degree nodes pulled toward
-    the core so hubs and inter-ring edges gather into a dense centre.
+def layout_shells(graph: dict, seed: int = 7) -> None:
+    """Deterministic 3D shell layout, in place: one spherical shell per chapter
+    (biggest outermost), nodes spread by a Fibonacci lattice over each shell,
+    high-degree nodes pulled toward the core so hubs and inter-shell edges
+    gather into a dense centre.
+
+    A flat ring layout turns a large corpus into a pie; the shells keep the
+    chapter-is-radius semantics while using the full volume, so a 75k-node
+    graph reads as an orb instead of a disc.
 
     Deterministic: same graph + seed => same coordinates, so a rebuild does not
     reshuffle the replay.
@@ -99,19 +105,28 @@ def layout_rings(graph: dict, seed: int = 7) -> None:
     for nd in nodes:
         by_ch[nd["c"]].append(nd)
     rng = random.Random(seed)
-    golden = math.pi * (3 - math.sqrt(5))
     biggest = max(len(m) for m in by_ch.values())
     for ch in sorted(by_ch, key=lambda c: (-len(by_ch[c]), c)):
         members = sorted(by_ch[ch], key=lambda nd: nd["i"])
-        base_r = R_MAX * (0.30 + 0.70 * math.sqrt(len(members) / biggest))
-        off = rng.uniform(0.0, 2 * math.pi)
+        m = len(members)
+        base_r = R_MAX * (0.30 + 0.70 * math.sqrt(m / biggest))
+        # per-shell orientation so shells do not share a pole
+        yaw, tilt = rng.uniform(0.0, 2 * math.pi), rng.uniform(-0.55, 0.55)
+        cy, sy, ct, st = (math.cos(yaw), math.sin(yaw),
+                          math.cos(tilt), math.sin(tilt))
         for j, nd in enumerate(members):
-            ang = off + j * golden + rng.uniform(-0.35, 0.35)
+            # Fibonacci lattice: even over the sphere, deterministic in j
+            z = 1.0 - 2.0 * (j + 0.5) / m
+            r_xy = math.sqrt(max(0.0, 1.0 - z * z))
+            phi = j * _GOLDEN + rng.uniform(-0.30, 0.30)
+            px, py, pz = r_xy * math.cos(phi), z, r_xy * math.sin(phi)
+            px, pz = px * cy + pz * sy, pz * cy - px * sy   # yaw about Y
+            py, pz = py * ct - pz * st, py * st + pz * ct   # tilt about X
             pull = 1.0 - HUB_PULL * math.sqrt(deg[nd["i"]] / gmax)
-            r = base_r * pull * rng.uniform(0.96, 1.04)
-            nd["x"] = round(r * math.cos(ang), 2)
-            nd["z"] = round(r * math.sin(ang), 2)
-            nd["y"] = round(rng.uniform(-1.0, 1.0) * R_MAX * 0.02, 2)
+            r = base_r * pull * rng.uniform(0.97, 1.03)
+            nd["x"] = round(px * r, 2)
+            nd["y"] = round(py * r, 2)
+            nd["z"] = round(pz * r, 2)
 
 
 def build_view_data(graph: dict, meta: dict) -> dict:
@@ -217,8 +232,12 @@ def render_build_viewer(graph: dict, meta: dict, out_path: Path) -> Path:
     g = {"nodes": [dict(nd) for nd in graph["nodes"]], "edges": graph["edges"]}
     if not g["nodes"]:
         raise ValueError("empty graph: nothing to replay")
-    layout_rings(g)
+    layout_shells(g)
     data = build_view_data(g, meta)
+    # framing radius: the viewer fits this sphere into the viewport on every
+    # aspect ratio (portrait crops width, so a fixed distance would clip it)
+    data["boundR"] = round(max((nd["x"] ** 2 + nd["y"] ** 2 + nd["z"] ** 2) ** 0.5
+                               for nd in g["nodes"]), 2)
     payload = json.dumps(data, ensure_ascii=False)
     # keep the JSON safe inside a <script> block
     for bad, esc in (("<", "\\u003c"), ("\u2028", "\\u2028"), ("\u2029", "\\u2029")):
@@ -376,7 +395,8 @@ const DATA = __DATA__;
 const $ = id => document.getElementById(id);
 const cv = $('gl');
 const uni = new Float32Array(28);
-const cam = {yaw: 0.7, pitch: 0.42, dist: 255};
+let zoomK = 1;
+const cam = {yaw: 0.7, pitch: 0.42, dist: fitDist()};
 let device, ctx, format, bg, pNode, pEdge, pHead, pPulse, module, ubo;
 let N = 0, E = 0, nodes, degs, edges, births;
 let t = -0.4, speed = 1, paused = false, last = performance.now();
@@ -457,7 +477,7 @@ fn billboard(center: vec3f, corner: vec2f, sizePx: f32) -> vec4f {
   let age = U.tc.x - birth_of(i);
   let grow = smoothstep(0.0, 0.45, age);
   let g = clamp(degs[i], 0.0, 1.0);
-  // nodes materialize out of the core, then fly to their ring slot
+  // nodes materialize out of the core, then fly to their shell slot
   let a = hash01(i) * 6.2831853;
   let r0 = 8.0 + 18.0 * hash01(i + 977u);
   let spawn = vec3f(cos(a) * r0, (hash01(i + 131u) - 0.5) * 12.0, sin(a) * r0);
@@ -577,6 +597,15 @@ function camPos() {
   const cp = Math.cos(cam.pitch), sp = Math.sin(cam.pitch);
   return [Math.sin(cam.yaw) * cp * cam.dist, sp * cam.dist,
           Math.cos(cam.yaw) * cp * cam.dist];
+}
+// Frame the bounding sphere: portrait viewports crop width, so fit against
+// whichever half-angle is tighter. Yaw/pitch invariant -- every node stays
+// inside its tangent cone, so nothing clips at any orbit angle.
+function fitDist() {
+  const halfV = 0.45, aspect = innerWidth / Math.max(innerHeight, 1);
+  const half = Math.min(halfV, Math.atan(Math.tan(halfV) * aspect));
+  const d = DATA.boundR / Math.sin(half) * 1.08 * zoomK;
+  return Math.max(40, Math.min(900, d));
 }
 
 /* ---------- HUD ---------- */
@@ -732,7 +761,8 @@ function bindControls() {
   });
   cv.addEventListener('wheel', e => {
     e.preventDefault();
-    cam.dist = Math.max(40, Math.min(900, cam.dist * Math.exp(e.deltaY * 0.001)));
+    zoomK = Math.max(0.25, Math.min(8, zoomK * Math.exp(e.deltaY * 0.001)));
+    cam.dist = fitDist();
   }, {passive: false});
   addEventListener('resize', resize);
 }
@@ -743,6 +773,7 @@ function resize() {
   cv.width = Math.max(1, Math.round(innerWidth * dpr));
   cv.height = Math.max(1, Math.round(innerHeight * dpr));
   uni[20] = cv.width; uni[21] = cv.height;
+  cam.dist = fitDist();  // refit on rotate/resize
 }
 function storage(arr) {
   const b = device.createBuffer({

@@ -190,7 +190,7 @@ WantedBy=default.target
 - 语义增强（可选）：配置 `SITE_KG_LLM_KEY` 后用 cognee `cognify` 在结构边之上叠加实体/关系边。
 - 本地代码摄入的 tree-sitter 符号/引用边（aider 式 tags），作为正则层之上的可选 extra。
 - 壳页兜底失效的 JS 站点（无限滚动、重反爬）走 Crawl4AI 深爬，经 `.[crawl]` extra 启用。
-- 可视化已完成：`render_site` 产出自包含 3D Three.js 查看器（bundle 内嵌可离线，布局在渲染期用固定种子计算）；`render_build` 再用 WebGPU 回放构建过程本身——节点与各维度边波次动态落上章环，HUD 实时计数。
+- 可视化已完成：`render_site` 产出自包含 3D Three.js 查看器（bundle 内嵌可离线，布局在渲染期用固定种子计算）；`render_build` 再用 WebGPU 回放构建过程本身——节点与各维度边波次动态落上 3D 章壳，HUD 实时计数。
 
 ## 许可
 
