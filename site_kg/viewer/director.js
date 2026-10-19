@@ -156,6 +156,8 @@
         this.ingestDone = true;
         this.state = "settling";
         this.camera.fitLive({robust: true, duration: 700});
+      } else if (t === "discover") {
+        live.applyBatch([ev]);
       } else if (t === "settled") {
         this.layoutSettled = true;
       }
@@ -339,6 +341,9 @@
         self.ingestDone = true;
         self.layoutSettled = true;
         self.state = "complete";
+      } else if (health && health.state === "failed") {
+        self.state = "failed";
+        self.error = String(health.error || self.error || "live run failed");
       }
       if (self.ui) {
         if (self.ui._buildLegend) self.ui._buildLegend();
@@ -501,6 +506,8 @@
     }
     return {nodes: live.n, edges: live.m, pages: live.pages, revealed: revealed,
             visible: visible, pending: live.pendingCount, state: this.state,
+            discovered: live.discovered, discoverFailed: live.discoverFailed,
+            error: this.error,
             scene: this.renderer.name, mode: this.mode, finale: this.finaleDone,
             ego: this.selection ? this.selection.length : 0,
             fps: Math.round(this.fps)};

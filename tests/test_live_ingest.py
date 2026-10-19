@@ -1,12 +1,14 @@
 """Live ingestion streams per-page nodes before edges and reports skips."""
 from __future__ import annotations
 
+import asyncio
 import functools
 import http.server
 import threading
 import time
 from pathlib import Path
 
+import site_kg.live as livemod
 from site_kg import store
 from site_kg.live import LiveHub
 
@@ -68,3 +70,110 @@ def test_live_ingest_emits_nodes_before_done(tmp_path, monkeypatch):
     assert any(str(ev.get("reason", "")).startswith("status:404") for ev in skipped)
     assert kinds[-1] == "settled"
     assert events[-1]["seq"] > done["seq"]
+
+
+def _wait_state(hub: LiveHub, timeout: float = 15.0) -> str:
+    deadline = time.monotonic() + timeout
+    while hub.run["state"] == "running" and time.monotonic() < deadline:
+        time.sleep(0.02)
+    return str(hub.run["state"])
+
+
+def _bfs_pages() -> dict[str, str]:
+    """No sitemap/objects.inv: forces the BFS inventory path."""
+    def page(title: str, links: list[str]) -> str:
+        anchors = " ".join(f'<a href="{href}">link</a>' for href in links)
+        return (f"<html><head><title>{title}</title></head><body><main>"
+                f"<h1>{title}</h1><p>{PROSE}</p>{anchors}</main></body></html>")
+
+    return {
+        "index.html": page("Index", ["alpha.html", "beta.html", "missing.html"]),
+        "alpha.html": page("Alpha", ["index.html"]),
+        "beta.html": page("Beta", ["alpha.html"]),
+    }
+
+
+def test_live_ingest_emits_discover_events(tmp_path, monkeypatch):
+    monkeypatch.setattr(store, "DATA", tmp_path / "sites")
+    url, srv = _serve(tmp_path, _bfs_pages())
+    hub = LiveHub()
+    try:
+        hub.start(url, "planets")
+        assert _wait_state(hub) == "complete", hub.run.get("error")
+        sub, events = hub.log.subscribe(0)
+        hub.log.unsubscribe(sub)
+    finally:
+        srv.shutdown()
+        hub.close()
+
+    discover = [ev for ev in events if ev["t"] == "discover"]
+    assert discover, "BFS must stream discover frames"
+    for ev in discover:
+        assert set(ev) >= {"t", "found", "failed", "depth"}
+        assert isinstance(ev["found"], int)
+        assert isinstance(ev["failed"], int)
+        assert isinstance(ev["depth"], int)
+    found = [ev["found"] for ev in discover]
+    assert found == sorted(found), "discover counters never regress"
+    assert found[-1] == 3
+    assert max(ev["failed"] for ev in discover) >= 1
+
+
+def test_discovery_timeout_emits_error_and_marks_failed(tmp_path, monkeypatch):
+    monkeypatch.setattr(store, "DATA", tmp_path / "sites")
+    monkeypatch.setattr(livemod, "DISCOVERY_TIMEOUT_S", 0.05)
+
+    async def slow_inventory(*args, **kwargs):
+        await asyncio.sleep(5)
+        return [], "bfs", {}
+
+    monkeypatch.setattr(livemod.manifest, "page_inventory", slow_inventory)
+    hub = LiveHub()
+    try:
+        hub.start("http://127.0.0.1:1/", "planets")
+        assert _wait_state(hub) == "failed"
+        sub, events = hub.log.subscribe(0)
+        hub.log.unsubscribe(sub)
+    finally:
+        hub.close()
+
+    assert "discovery timed out" in str(hub.run["error"])
+    errors = [ev for ev in events if ev["t"] == "error"]
+    assert errors and "discovery timed out" in errors[-1]["error"]
+    assert errors[-1]["error"] == hub.run["error"]
+
+
+def test_fetch_timeout_emits_error_and_marks_failed(tmp_path, monkeypatch):
+    monkeypatch.setattr(store, "DATA", tmp_path / "sites")
+    monkeypatch.setattr(livemod, "FETCH_TIMEOUT_S", 0.05)
+
+    async def fast_inventory(base, **kwargs):
+        callback = kwargs.get("on_discover")
+        if callback:
+            callback(1, 0, 0)
+        return ["http://127.0.0.1:1/index.html"], "bfs", {"errors": {},
+                                                          "failed": 0,
+                                                          "discovered": 1}
+
+    async def slow_fetch(*args, **kwargs):
+        await asyncio.sleep(5)
+        return {}, {}
+
+    monkeypatch.setattr(livemod.manifest, "page_inventory", fast_inventory)
+    monkeypatch.setattr(livemod.ingestmod, "fetch_pages", slow_fetch)
+    hub = LiveHub()
+    try:
+        hub.start("http://127.0.0.1:1/", "planets")
+        assert _wait_state(hub) == "failed"
+        sub, events = hub.log.subscribe(0)
+        hub.log.unsubscribe(sub)
+    finally:
+        hub.close()
+
+    assert "fetch timed out" in str(hub.run["error"])
+    assert [ev for ev in events if ev["t"] == "discover"]
+    errors = [ev for ev in events if ev["t"] == "error"]
+    assert errors and "fetch timed out" in errors[-1]["error"]
+    assert hub.health()["state"] == "failed"
+    assert hub.health()["error"] == hub.run["error"]
+

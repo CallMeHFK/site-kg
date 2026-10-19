@@ -119,6 +119,7 @@
     var title = el("b", null, this.cfg.title || "site-kg graph");
     title.id = "title";
     bar.appendChild(title);
+    this.titleEl = title;
 
     var target = el("span");
     target.id = "live-target";
@@ -352,10 +353,16 @@
   };
 
   UI.prototype.setLiveTarget = function (url) {
-    if (!this.targetEl) return;
-    var host = SK.launcher ? SK.launcher.hostLabel(url) : String(url || "");
-    this.targetEl.textContent = host;
-    this.targetEl.title = host;
+    var value = String(url == null ? "" : url);
+    var host = SK.launcher ? SK.launcher.hostLabel(value) : value;
+    if (this.targetEl) {
+      this.targetEl.textContent = host;
+      this.targetEl.title = host;
+    }
+    /* The bar title and the tab title were baked from cfg.title at render
+       time; a new launch must replace both, not just the host chip. */
+    if (this.titleEl) this.titleEl.textContent = value;
+    if (typeof document !== "undefined") document.title = value;
   };
 
   UI.finaleParts = function (cfg, status) {
@@ -783,7 +790,7 @@
   UI.prototype.connectLive = function (base, scene) {
     if (scene) this.activateScene(scene);
     this.hideLauncher();
-    if (this.cfg.liveUrl) this.setLiveTarget(this.cfg.liveUrl);
+    if (this.cfg.liveUrl) this.setLiveTarget(this.cfg.title || this.cfg.liveUrl);
     this.director.connectEvents("", 0, {base: base || "", token: this.token});
   };
 

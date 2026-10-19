@@ -105,8 +105,44 @@ assert.equal(g.m, 2);
 assert.equal(g.degree[0], 4);
 assert.equal(g.rank[0], 0.25);
 assert.equal(g.edgeKeys.size, 2);
-assert.deepEqual(g.stats(), {nodes: 2, edges: 2, pending: 0, dangling: 0});
+assert.deepEqual(g.stats(), {nodes: 2, edges: 2, pending: 0, dangling: 0,
+                             discovered: 0, discoverFailed: 0});
 """)
+
+
+def test_discover_events_fold_monotonically():
+    """Discovery counters survive duplicate/replayed frames and snapshots."""
+    _run(_prelude(CORE) + """
+const g = new SK.LiveGraph(16);
+g.applyBatch([
+  {t: "discover", found: 5, failed: 1, depth: 1},
+  {t: "discover", found: 3, failed: 0, depth: 2},
+  {t: "discover", found: 9, failed: 4, depth: 2},
+]);
+assert.equal(g.discovered, 9, "discovered never regresses");
+assert.equal(g.discoverFailed, 4, "failed never regresses");
+assert.equal(g.stats().discovered, 9);
+assert.equal(g.stats().discoverFailed, 4);
+g.loadSnapshot({nodes: [], edges: [], last_seq: 1});
+assert.equal(g.discovered, 9, "a reconnect snapshot keeps the discovery count");
+assert.equal(g.discoverFailed, 4);
+g.reset(16);
+assert.equal(g.discovered, 0, "a new run starts clean");
+assert.equal(g.discoverFailed, 0);
+""")
+    _run(_prelude(CORE, DIRECTOR) + """
+const g = new SK.LiveGraph(16);
+const d = new SK.Director(g, {name: "planets"}, null, null);
+d.onEvents({t: "discover", found: 7, failed: 2, depth: 1});
+assert.equal(d.status().discovered, 7);
+assert.equal(d.status().discoverFailed, 2);
+d.state = "failed";
+d.error = "discovery timed out after 180s";
+const st = d.status();
+assert.equal(st.state, "failed");
+assert.equal(st.error, "discovery timed out after 180s");
+""")
+
 
 
 def test_node_updated_events_never_clobber_titles():
@@ -416,6 +452,46 @@ assert.equal(L.readout(null).label, "0 pages · 0 nodes · 0 edges");
 """)
 
 
+def test_launcher_readout_shows_discovery_and_failure():
+    _run(_prelude(LAUNCHER) + """
+const L = SK.launcher;
+assert.equal(L.phaseLabel("failed"), "failed", "failed is not folded into ingesting");
+const found = L.readout({pages: 0, nodes: 0, edges: 0, discovered: 17,
+                         state: "ingesting"});
+assert.equal(found.found, true);
+assert.equal(found.label, "17 pages found · 0 nodes · 0 edges");
+assert.equal(found.building, true);
+// once real pages arrive they replace the discovery hint
+const fetched = L.readout({pages: 12, nodes: 9, edges: 21, discovered: 17,
+                           state: "ingesting"});
+assert.equal(fetched.found, false);
+assert.equal(fetched.label, "12 pages · 9 nodes · 21 edges");
+// completion still reports the real page/edge counts
+const done = L.readout({pages: 17, nodes: 12, edges: 40, discovered: 20,
+                        state: "complete"});
+assert.equal(done.label, "17 pages · 12 nodes · 40 edges");
+assert.equal(done.phase, "complete");
+// archive with no doc count keeps the no-pages contract
+const archive = L.readout({pages: 9, nodes: 5, edges: 3, discovered: 9},
+                          {pages: false});
+assert.equal(archive.label, "5 nodes · 3 edges");
+// failure surfaces the server error, truncated, with a visible phase label
+const failed = L.readout({state: "failed",
+                          error: "discovery timed out after 180s"});
+assert.equal(failed.phase, "failed");
+assert.equal(failed.failed, true);
+assert.equal(failed.building, false);
+assert.equal(failed.label, "failed: discovery timed out after 180s");
+const long = L.readout({state: "failed", error: "x".repeat(500)});
+assert.ok(long.label.length <= 128, "error summary stays bounded");
+assert.ok(long.label.indexOf("failed: ") === 0);
+const blank = L.readout({state: "failed"});
+assert.equal(blank.label, "failed: live run failed");
+""")
+src = (ROOT / "site_kg" / "viewer" / "launcher.js").read_text()
+assert 'failed: "failed"' in src
+
+
 def test_batcher_folds_progress_pages_into_live_state():
     _run(_prelude(CORE, DIRECTOR) + """
 const g = new SK.LiveGraph(16);
@@ -490,6 +566,25 @@ assert.deepEqual(P(null, {visible: 4}), ["4 visible"]);
 """)
     src = (ROOT / "site_kg" / "viewer" / "ui.js").read_text()
     assert "UI.finaleParts(this.cfg, status)" in src
+
+
+def test_set_live_target_updates_bar_and_document_title():
+    """A new launch replaces the baked cfg.title in both the bar and the tab;
+    archive viewers never call this, so their title is untouched."""
+    _run(_prelude(UI, LAUNCHER) + """
+global.document = {title: "old baked title"};
+const ui = new SK.UI();
+ui.titleEl = {textContent: "old baked title"};
+ui.targetEl = {textContent: "", title: ""};
+ui.setLiveTarget("https://new.example/docs/start");
+assert.equal(ui.targetEl.textContent, "new.example");
+assert.equal(ui.titleEl.textContent, "https://new.example/docs/start");
+assert.equal(document.title, "https://new.example/docs/start");
+// no mounted elements (archive-ish harness) must not throw
+const bare = new SK.UI();
+bare.setLiveTarget("https://other.example/");
+assert.equal(document.title, "https://other.example/");
+""")
 
 
 def test_launcher_copy_deck_constraints():

@@ -121,3 +121,38 @@ def test_robots_blocked_is_surfaced_not_silent():
         assert stats["robots_blocked"] == 1
 
     asyncio.run(run())
+
+
+def test_robots_read_runs_off_the_event_loop(monkeypatch):
+    """urllib's RobotFileParser.read() is blocking; it must not stall timers."""
+    import asyncio
+    import time
+
+    class Allow:
+        def can_fetch(self, ua, url):
+            return True
+
+    def slow_robots(base):
+        time.sleep(0.25)
+        return Allow()
+
+    monkeypatch.setattr(ingest, "_robots", slow_robots)
+    ticks: list[float] = []
+
+    async def run():
+        async def ticker():
+            while True:
+                ticks.append(time.monotonic())
+                await asyncio.sleep(0.01)
+
+        task = asyncio.create_task(ticker())
+        try:
+            await ingest.fetch_pages(["http://127.0.0.1:1/a/"],
+                                     "http://127.0.0.1:1/a/",
+                                     respect_robots=True)
+        finally:
+            task.cancel()
+
+    asyncio.run(run())
+    assert len(ticks) >= 5, "the loop kept ticking while robots.txt was read"
+

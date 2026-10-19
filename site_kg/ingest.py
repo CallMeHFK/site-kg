@@ -59,13 +59,19 @@ def _robots(base: str) -> RobotFileParser:
     return rp
 
 
+async def _robots_async(base: str) -> RobotFileParser:
+    """``RobotFileParser.read()`` is blocking (urllib); run it off-loop so a
+    slow robots.txt cannot stall SSE heartbeats and every other request."""
+    return await asyncio.to_thread(_robots, base)
+
+
 async def fetch_pages(urls: list[str], base: str, concurrency: int = 4, delay: float = 0.2,
                       respect_robots: bool = True,
                       on_page=None) -> tuple[dict[str, str], dict]:
     """Returns (pages, stats). stats surfaces why pages are missing instead of
     silently producing an empty corpus. on_page(url, page_or_none, reason) fires
     exactly once per URL as its fetch settles; reason is None on success."""
-    rp = _robots(base) if respect_robots else None
+    rp = await _robots_async(base) if respect_robots else None
     sem = asyncio.Semaphore(concurrency)
     out: dict[str, str] = {}
     stats = {"robots_blocked": 0, "errors": {}, "skipped": 0}

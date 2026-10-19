@@ -102,16 +102,31 @@
     }
   }
 
-  var PHASES = {ingesting: "ingesting", settling: "settling", complete: "complete"};
+  var PHASES = {ingesting: "ingesting", settling: "settling",
+                complete: "complete", failed: "failed"};
 
   function phaseLabel(state) {
     return PHASES[state] || "ingesting";
   }
 
+  var ERROR_LIMIT = 120;
+
+  function errorSummary(error) {
+    var text = String(error == null ? "" : error).replace(/\s+/g, " ").trim();
+    if (!text) text = "live run failed";
+    if (text.length > ERROR_LIMIT) text = text.slice(0, ERROR_LIMIT - 3) + "...";
+    return text;
+  }
+
   /* Build readout from a director status: live pages/nodes/edges + phase.
      opts.pages === false omits the pages field (archive without a real doc
      count), so the HUD never prints the node count twice; a numeric
-     opts.pages overrides the status pages. */
+     opts.pages overrides the status pages.
+
+     While discovery is still running there are no pages to report yet, so a
+     non-zero discovered count is shown as "N pages found" instead of a dead
+     zero. A failed run puts the error in the same readout: the HUD has no
+     separate error line and colour alone would not communicate it. */
   function readout(status, opts) {
     var s = status || {};
     var o = opts || {};
@@ -119,13 +134,27 @@
       : (o.pages != null ? Math.max(0, o.pages | 0) : Math.max(0, s.pages | 0));
     var nodes = Math.max(0, s.nodes | 0);
     var edges = Math.max(0, s.edges | 0);
-    var label = pages == null
-      ? nodes + " nodes · " + edges + " edges"
-      : pages + " pages · " + nodes + " nodes · " + edges + " edges";
+    var discovered = Math.max(0, s.discovered | 0);
+    var failed = s.state === "failed";
+    var error = failed ? errorSummary(s.error) : "";
+    var found = pages === 0 && discovered > 0;
+    var label;
+    if (failed) {
+      label = "failed: " + error;
+    } else if (found) {
+      label = discovered + " pages found · " + nodes + " nodes · "
+        + edges + " edges";
+    } else {
+      label = pages == null
+        ? nodes + " nodes · " + edges + " edges"
+        : pages + " pages · " + nodes + " nodes · " + edges + " edges";
+    }
     return {
       pages: pages, nodes: nodes, edges: edges,
+      discovered: discovered, found: found,
+      failed: failed, error: error,
       phase: phaseLabel(s.state),
-      building: s.state !== "complete",
+      building: !failed && s.state !== "complete",
       label: label
     };
   }

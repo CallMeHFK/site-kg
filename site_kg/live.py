@@ -39,6 +39,9 @@ LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 MAX_BODY = 256 * 1024
 HEARTBEAT_S = 15.0
 LAYOUT_BATCH = 512
+# Hard ceilings: a single unresponsive host must not wedge the run forever.
+DISCOVERY_TIMEOUT_S = 180.0
+FETCH_TIMEOUT_S = 900.0
 _STATE_ALIASES = {"c": "cluster", "g": "doc", "r": "rank"}
 
 
@@ -148,7 +151,7 @@ class LiveHub:
         with self._lock:
             return {"ok": True, "run_id": self.run.get("run_id"),
                     "last_seq": self.log.last_seq, "state": self.run.get("state"),
-                    "scene": self.run.get("scene"),
+                    "scene": self.run.get("scene"), "error": self.run.get("error"),
                     "nodes": len(self.state.nodes), "edges": len(self.state.edges)}
 
     def snapshot(self) -> dict:
@@ -291,13 +294,29 @@ class LiveHub:
             nbytes += len(page.encode("utf-8", "ignore"))
             self.emit({"t": "progress", "pages": fetched, "bytes": nbytes})
 
+        def on_discover(found: int, depth: int, failed: int) -> None:
+            self.emit({"t": "discover", "found": int(found),
+                       "failed": int(failed), "depth": int(depth)})
+
         async def crawl():
-            urls, _source, _inv = await manifest.page_inventory(
-                target, max_pages=200, max_depth=4)
+            try:
+                urls, _source, _inv = await asyncio.wait_for(
+                    manifest.page_inventory(target, max_pages=200, max_depth=4,
+                                            on_discover=on_discover),
+                    timeout=DISCOVERY_TIMEOUT_S)
+            except TimeoutError:
+                raise RuntimeError(
+                    f"discovery timed out after {DISCOVERY_TIMEOUT_S:g}s") from None
             if not urls:
                 raise RuntimeError("no pages discovered")
-            return await ingestmod.fetch_pages(urls, target, concurrency=4,
-                                               on_page=on_page)
+            try:
+                return await asyncio.wait_for(
+                    ingestmod.fetch_pages(urls, target, concurrency=4,
+                                          on_page=on_page),
+                    timeout=FETCH_TIMEOUT_S)
+            except TimeoutError:
+                raise RuntimeError(
+                    f"fetch timed out after {FETCH_TIMEOUT_S:g}s") from None
 
         pages, stats = asyncio.run(crawl())
         if not pages:

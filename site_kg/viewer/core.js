@@ -79,6 +79,8 @@
     this.pendingCount = 0;
     this.dangling = 0;
     this.pages = 0;
+    this.discovered = 0;
+    this.discoverFailed = 0;
     this.version = 0;
     this.dimVersion = 0;
     this.graphHash = 0;
@@ -248,6 +250,15 @@
         this.edgeAdded(ev.s, ev.d, ev.kind, ev.late);
       } else if (ev.t === "progress") {
         if (ev.pages != null) this._foldPages(ev.pages);
+      } else if (ev.t === "discover") {
+        /* discovery is monotonic within a run: a late/duplicate frame from a
+           reconnect can never make the HUD count down */
+        if (ev.found != null) {
+          this.discovered = Math.max(this.discovered, ev.found | 0);
+        }
+        if (ev.failed != null) {
+          this.discoverFailed = Math.max(this.discoverFailed, ev.failed | 0);
+        }
       } else if (ev.t === "ingest_done") {
         this.dangling = this.pendingCount;
         if (ev.pages != null) this._foldPages(ev.pages);
@@ -283,7 +294,11 @@
   LiveGraph.prototype.loadSnapshot = function (snap) {
     var nodes = snap.nodes || [];
     var prevPages = this.pages; /* pages survives reset: never regress */
+    var prevDiscovered = this.discovered;
+    var prevFailed = this.discoverFailed;
     this.reset(Math.max(64, nodes.length + 8));
+    this.discovered = prevDiscovered;
+    this.discoverFailed = prevFailed;
     var rows = (snap.layout && snap.layout.nodes) || [];
     var byIndex = {};
     for (var r = 0; r < rows.length; r++) byIndex[rows[r].i] = rows[r];
@@ -343,7 +358,8 @@
 
   LiveGraph.prototype.stats = function () {
     return {nodes: this.n, edges: this.m, pending: this.pendingCount,
-            dangling: this.dangling};
+            dangling: this.dangling, discovered: this.discovered,
+            discoverFailed: this.discoverFailed};
   };
 
   SK.LiveGraph = LiveGraph;

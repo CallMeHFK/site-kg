@@ -112,20 +112,41 @@ async def from_doxygen_navtree(client: httpx.AsyncClient, base: str) -> list[str
 
 
 async def bfs(client: httpx.AsyncClient, base: str, max_pages: int, max_depth: int,
-              stats: dict) -> list[str]:
+              stats: dict, on_discover=None) -> list[str]:
     """Same-site BFS over <a href>. Pages that fetch as client-side shells are
     re-rendered headlessly so their links are discoverable. Renderer failures
-    degrade to the static HTML and are counted in stats."""
+    degrade to the static HTML and are counted in stats.
+
+    ``on_discover(found, depth, failed)`` fires after every settled page and
+    after a batch of links is queued, so a caller can show progress instead of
+    sitting silent for the whole crawl. ``failed`` counts fetches that errored
+    or returned non-HTML, rather than swallowing them."""
     from .render import ambient_proxy, internal_links, is_js_shell, try_render_urls
+
+    failed = 0
+
+    def notify(found: int, depth: int) -> None:
+        stats["failed"] = failed
+        stats["discovered"] = found
+        if on_discover is not None:
+            on_discover(found, depth, failed)
 
     seen, queue, out = {base}, [(base, 0)], []
     while queue and len(out) < max_pages:
         url, depth = queue.pop(0)
         try:
             r = await client.get(url, follow_redirects=True)
-        except Exception:
+        except Exception as exc:
+            failed += 1
+            stats["errors"][type(exc).__name__] = \
+                stats["errors"].get(type(exc).__name__, 0) + 1
+            notify(len(out), depth)
             continue
         if r.status_code != 200 or "text/html" not in r.headers.get("content-type", ""):
+            failed += 1
+            key = f"status:{r.status_code}"
+            stats["errors"][key] = stats["errors"].get(key, 0) + 1
+            notify(len(out), depth)
             continue
         html = r.text
         if is_js_shell(html):
@@ -137,29 +158,51 @@ async def bfs(client: httpx.AsyncClient, base: str, max_pages: int, max_depth: i
             else:
                 html = rendered.get(url, html)
         out.append(url)
+        notify(len(out), depth)
         if depth >= max_depth:
             continue
+        queued = len(queue)
         for u in internal_links(html, url, base):
             if u not in seen:
                 seen.add(u)
                 queue.append((u, depth + 1))
+        if len(queue) != queued:
+            notify(len(out), depth)
+    stats["failed"] = failed
+    stats["discovered"] = len(out)
     return sorted(out)
 
 
-async def page_inventory(base: str, max_pages: int = 500,
-                         max_depth: int = 4) -> tuple[list[str], str, dict]:
+async def page_inventory(base: str, max_pages: int = 500, max_depth: int = 4,
+                         on_discover=None) -> tuple[list[str], str, dict]:
     """Returns (urls, source, stats) where source is objects_inv|navtree|sitemap|bfs.
-    stats carries renderer-degradation counters from the BFS probe."""
-    stats: dict = {"errors": {}}
+    stats carries renderer-degradation counters and ``failed``/``discovered``.
+
+    ``on_discover(found, depth, failed)`` is optional; without it behaviour is
+    unchanged. Fast inventory sources still report once so the caller sees the
+    page count before fetching starts."""
+    stats: dict = {"errors": {}, "failed": 0, "discovered": 0}
+
+    def report(urls: list[str]) -> None:
+        stats["discovered"] = len(urls)
+        if on_discover is not None:
+            on_discover(len(urls), 0, stats["failed"])
+
     async with httpx.AsyncClient(headers=UA, timeout=30, follow_redirects=True) as client:
         inv = await from_objects_inv(client, base)
         if inv:
-            return inv[:max_pages], "objects_inv", stats
+            urls = inv[:max_pages]
+            report(urls)
+            return urls, "objects_inv", stats
         nav = await from_doxygen_navtree(client, base)
         if nav:
-            return nav[:max_pages], "navtree", stats
+            urls = nav[:max_pages]
+            report(urls)
+            return urls, "navtree", stats
         sm = await from_sitemap(client, base)
         if sm:
-            return sm[:max_pages], "sitemap", stats
-        urls = await bfs(client, base, max_pages, max_depth, stats)
+            urls = sm[:max_pages]
+            report(urls)
+            return urls, "sitemap", stats
+        urls = await bfs(client, base, max_pages, max_depth, stats, on_discover)
         return urls, "bfs", stats
