@@ -35,7 +35,7 @@ LAUNCH_ART_FILES = {"people": "asset-people.jpg", "neural": "asset-neural.jpg",
                     "planets": "asset-planets.jpg", "hud": "asset-hud.jpg"}
 
 _PLACEHOLDER = re.compile(
-    r"__(TITLE_JSON|STATS_JSON|RUN_ID_JSON|LIVE_URL_JSON|TITLE|MODE|SCENE|EXTERNAL|PAYLOAD|BUNDLE|LAUNCH_ART)__")
+    r"__(TITLE_JSON|STATS_JSON|DOCS_JSON|RUN_ID_JSON|LIVE_URL_JSON|TITLE|MODE|SCENE|EXTERNAL|PAYLOAD|BUNDLE|LAUNCH_ART)__")
 
 
 def assemble_bundle() -> str:
@@ -179,10 +179,15 @@ def render_viewer(graph: dict, meta: dict, out_path: Path, *, scene: str = "plan
                 graph_bytes, layout_bytes, timeline_bytes)
 
     live_url = str(meta.get("live_url") or "") if mode == "live" else ""
+    # Archive HUD pages: the real crawled document count, not the (possibly
+    # max_nodes-trimmed) node count. Null when meta has no count, so the JS
+    # omits pages instead of repeating nodes.
+    docs_json = json.dumps(meta.get("docs")) if mode == "archive" else "null"
     template = TEMPLATE.read_text(encoding="utf-8")
     values = {
         "TITLE_JSON": _json_string(title),
         "STATS_JSON": _json_string(stats),
+        "DOCS_JSON": docs_json,
         "RUN_ID_JSON": _json_string(run_id),
         "LIVE_URL_JSON": _json_string(live_url),
         "TITLE": html.escape(title),

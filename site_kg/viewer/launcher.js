@@ -108,17 +108,25 @@
     return PHASES[state] || "ingesting";
   }
 
-  /* Build readout from a director status: live pages/nodes/edges + phase. */
-  function readout(status) {
+  /* Build readout from a director status: live pages/nodes/edges + phase.
+     opts.pages === false omits the pages field (archive without a real doc
+     count), so the HUD never prints the node count twice; a numeric
+     opts.pages overrides the status pages. */
+  function readout(status, opts) {
     var s = status || {};
-    var pages = Math.max(0, s.pages | 0);
+    var o = opts || {};
+    var pages = o.pages === false ? null
+      : (o.pages != null ? Math.max(0, o.pages | 0) : Math.max(0, s.pages | 0));
     var nodes = Math.max(0, s.nodes | 0);
     var edges = Math.max(0, s.edges | 0);
+    var label = pages == null
+      ? nodes + " nodes · " + edges + " edges"
+      : pages + " pages · " + nodes + " nodes · " + edges + " edges";
     return {
       pages: pages, nodes: nodes, edges: edges,
       phase: phaseLabel(s.state),
       building: s.state !== "complete",
-      label: pages + " pages · " + nodes + " nodes · " + edges + " edges"
+      label: label
     };
   }
 

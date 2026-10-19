@@ -39,7 +39,7 @@
  /* ---- live chrome (HUD) ---- */
  #hud{position:fixed;top:0;left:0;right:0;z-index:5;background:var(--surface)}
  #bar{display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px;
-      min-height:var(--bar);padding:7px 14px}
+      min-height:52px;padding:7px 14px}
  #title{font-size:16px;font-weight:600;color:var(--on-surface);white-space:nowrap}
  #live-target{font-size:16px;color:var(--on-surface-muted);white-space:nowrap;
       overflow:hidden;text-overflow:ellipsis;max-width:32ch;flex:0 1 auto}
@@ -81,9 +81,6 @@
       color:var(--on-surface);padding:5px 8px;font-size:14px;z-index:30;
       max-width:360px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
  #tip.on{display:block}
- #status{position:fixed;left:14px;bottom:10px;color:var(--on-surface-muted);
-         font-size:14px;z-index:3;font-variant-numeric:tabular-nums;
-         pointer-events:none}
  #legend{position:fixed;left:12px;top:calc(var(--bar) + 10px);width:240px;
          max-height:60vh;overflow-y:auto;padding:10px 12px;display:none;z-index:6}
  #legend.on{display:block}
@@ -269,11 +266,10 @@
 <div id="legend" class="panel"></div>
 <div id="info" class="panel"></div>
 <div id="tip"></div>
-<div id="status"></div>
 <div id="launcher"><div id="launch-card"></div></div>
 <div id="fatal" class="panel"></div>
 <script type="application/json" id="sk-config">
-{"title":__TITLE_JSON__,"stats":__STATS_JSON__,"mode":"__MODE__","scene":"__SCENE__","runId":__RUN_ID_JSON__,"external":__EXTERNAL__,"liveUrl":__LIVE_URL_JSON__}
+{"title":__TITLE_JSON__,"stats":__STATS_JSON__,"docs":__DOCS_JSON__,"mode":"__MODE__","scene":"__SCENE__","runId":__RUN_ID_JSON__,"external":__EXTERNAL__,"liveUrl":__LIVE_URL_JSON__}
 </script>
 <script type="application/json" id="sk-launch-art">__LAUNCH_ART__</script>
 <script type="application/json" id="sk-payload">__PAYLOAD__</script>

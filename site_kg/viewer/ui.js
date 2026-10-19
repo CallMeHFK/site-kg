@@ -31,7 +31,6 @@
     this.director = ctx.director;
     this.root = root;
     this._scene = this.cfg.scene || "planets";
-    this.statusEl = byId("status");
     this.infoEl = byId("info");
     this.tipEl = byId("tip");
     this.legendEl = byId("legend");
@@ -61,8 +60,10 @@
   };
 
   /* The bar wraps at narrow widths; the canvas is offset by --bar, so keep the
-     custom property in sync with the bar's natural height. min-height must be
-     suspended while measuring, or the property ratchets upward forever. */
+     custom property in sync with the bar's natural height. #bar's min-height is
+     a constant design floor, not var(--bar), or the floor would equal the
+     measured height and the property would feed itself. min-height is still
+     suspended while measuring so the natural height can fall below the floor. */
   UI.prototype._wireBarResize = function () {
     var bar = byId("bar");
     if (!bar) return;
@@ -70,7 +71,9 @@
       bar.style.minHeight = "0px";
       var h = Math.ceil(bar.getBoundingClientRect().height);
       bar.style.minHeight = "";
-      if (h > 0) document.documentElement.style.setProperty("--bar", h + "px");
+      if (h > 0) {
+        document.documentElement.style.setProperty("--bar", Math.max(h, 52) + "px");
+      }
     };
     this._barSync = sync;
     if (typeof ResizeObserver !== "undefined") {
@@ -330,7 +333,14 @@
   UI.prototype.updateStatus = function (s) {
     var L = SK.launcher;
     if (this.readoutEl && L) {
-      var r = L.readout(s);
+      var opts = null;
+      if (this.cfg && this.cfg.mode === "archive") {
+        /* archive pages are the crawled document count, not the node count
+           (which max_nodes may have trimmed); with no real doc count, omit
+           pages rather than printing nodes twice */
+        opts = {pages: this.cfg.docs == null ? false : this.cfg.docs};
+      }
+      var r = L.readout(s, opts);
       this.readoutEl.textContent = r.label;
       this.readoutEl.classList.toggle("calm", !r.building);
     }
@@ -535,12 +545,22 @@
 
   /* ---- launcher poster ------------------------------------------------- */
 
-  UI.prototype.showLauncher = function () {
-    if (!this.launcherEl) return;
+  /* Cancel a pending hide: its timer and any animationend handler registered
+     by an earlier hideLauncher call, so retry loops cannot accumulate them. */
+  UI.prototype._dropLauncherHide = function () {
     if (this._launcherHideTimer) {
       clearTimeout(this._launcherHideTimer);
       this._launcherHideTimer = 0;
     }
+    if (this.launcherEl && this._launcherAnimEnd) {
+      this.launcherEl.removeEventListener("animationend", this._launcherAnimEnd);
+      this._launcherAnimEnd = 0;
+    }
+  };
+
+  UI.prototype.showLauncher = function () {
+    if (!this.launcherEl) return;
+    this._dropLauncherHide();
     var card = this.launcherEl.querySelector("#launch-card");
     if (!card) return;
     this.launcherEl.classList.remove("leave");
@@ -737,26 +757,25 @@
       && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     var self = this;
     var finished = false;
+    /* a previous hide may still be pending; drop its timer and listener
+       before registering this one (never stack handlers) */
+    this._dropLauncherHide();
     var done = function () {
       if (finished) return;
       finished = true;
-      if (self._launcherHideTimer) {
-        clearTimeout(self._launcherHideTimer);
-        self._launcherHideTimer = 0;
-      }
+      self._dropLauncherHide();
       launcher.classList.remove("on", "leave");
-      launcher.removeEventListener("animationend", onAnimationEnd);
     };
     /* only the poster's own leave animation may end the hide; children's
        entrance animations bubble here and would cut it short */
-    var onAnimationEnd = function (ev) {
+    this._launcherAnimEnd = function (ev) {
       if (ev.target === launcher && ev.animationName === "posterLeave") done();
     };
     if (reduce) {
       done();
       return;
     }
-    launcher.addEventListener("animationend", onAnimationEnd);
+    launcher.addEventListener("animationend", this._launcherAnimEnd);
     this._launcherHideTimer = setTimeout(done, 800); /* failure-safe: never leave the poster up */
     launcher.classList.add("leave");
   };

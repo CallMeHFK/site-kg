@@ -178,3 +178,37 @@ def test_live_viewer_carries_no_baked_stats(tmp_path: Path):
     s = out.read_text(encoding="utf-8")
     assert '"stats":""' in s
     assert "0 pages" not in s and "verdict ?" not in s
+
+
+def test_launcher_art_is_live_only(tmp_path: Path):
+    """The poster's captures are base64 JPEGs inlined only for live shells;
+    archive shells never show the launcher and must stay lean."""
+    from site_kg.viewer import render_viewer
+
+    g = {"nodes": [{"i": "a", "c": "c1", "t": "A", "u": "http://x/a", "g": 1}],
+         "edges": []}
+    live = render_viewer(g, {"url": "http://x/"}, tmp_path / "live.html",
+                         mode="live").read_text(encoding="utf-8")
+    archive = render_viewer(g, {"url": "http://x/"}, tmp_path / "archive.html",
+                            mode="archive").read_text(encoding="utf-8")
+    assert "data:image/jpeg;base64," in live
+    assert "data:image/jpeg;base64," not in archive
+    assert ('<script type="application/json" id="sk-launch-art">{}</script>'
+            in archive)
+
+
+def test_archive_cfg_carries_real_doc_count(tmp_path: Path):
+    """The HUD's pages field is the crawled doc count (meta.docs), not the
+    node count after max_nodes trimming; live shells have no doc count."""
+    from site_kg.viewer import render_viewer
+
+    g = {"nodes": [{"i": "a", "c": "c1", "t": "A", "u": "http://x/a", "g": 1},
+                   {"i": "b", "c": "c2", "t": "B", "u": "http://x/b", "g": 0}],
+         "edges": [{"s": "a", "t": "b", "k": "ref"}]}
+    archive = render_viewer(g, {"url": "http://x/", "docs": 60},
+                            tmp_path / "archive.html", max_nodes=1,
+                            mode="archive").read_text(encoding="utf-8")
+    live = render_viewer(g, {"url": "http://x/"}, tmp_path / "live.html",
+                         mode="live").read_text(encoding="utf-8")
+    assert '"docs":60' in archive
+    assert '"docs":null' in live
