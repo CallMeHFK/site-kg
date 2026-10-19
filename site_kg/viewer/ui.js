@@ -39,6 +39,7 @@
     if (document.documentElement) document.documentElement.classList.add("sk-anim");
     this._buildBar();
     this._buildLegend();
+    this._buildBuild();
     this._wirePointer();
     this._wireKeys();
     this._buildFinale();
@@ -311,6 +312,77 @@
     legend.appendChild(keys);
   };
 
+  /* Build overlay: the stage, a progress bar, live counts and the last few
+     page titles. It reads director.status() plus director.recent, so no extra
+     server event or endpoint is involved. */
+  UI.prototype._buildBuild = function () {
+    var box = byId("build");
+    if (!box) return;
+    box.innerHTML = "";
+    var panel = el("div", "b-panel");
+    this.buildPhaseEl = el("div", "b-phase", "finding pages");
+    this.buildFillEl = el("span", "b-fill");
+    this.buildTrackEl = el("div", "b-track");
+    this.buildTrackEl.appendChild(this.buildFillEl);
+    this.buildCountsEl = el("div", "b-counts", "");
+    this.buildRecentEl = el("ul", "b-recent");
+    panel.appendChild(this.buildPhaseEl);
+    panel.appendChild(this.buildTrackEl);
+    panel.appendChild(this.buildCountsEl);
+    panel.appendChild(this.buildRecentEl);
+    box.appendChild(panel);
+    this.buildEl = box;
+    this.buildTitles = "";
+    box.classList.add("hide");
+  };
+
+  UI.prototype._drawBuild = function (status) {
+    var box = this.buildEl;
+    if (!box || !SK.launcher) return;
+    var launcherUp = this.launcherEl &&
+      this.launcherEl.classList.contains("on");
+    if (this.cfg.mode !== "live" || launcherUp) {
+      box.classList.add("hide");
+      return;
+    }
+    var v = SK.launcher.buildView(status, this.director.recent);
+    box.classList.remove("hide");
+    box.classList.toggle("bad", v.failed);
+    box.classList.toggle("unknown", v.indeterminate);
+    this.buildPhaseEl.textContent = v.phase;
+    this.buildCountsEl.textContent = v.label;
+    if (!v.indeterminate) {
+      this.buildFillEl.style.transform = "scaleX(" + v.ratio.toFixed(3) + ")";
+    } else {
+      this.buildFillEl.style.transform = "";
+    }
+    var joined = v.titles.join("\n");
+    if (joined !== this.buildTitles) {
+      this.buildTitles = joined;
+      this.buildRecentEl.innerHTML = "";
+      for (var i = 0; i < v.titles.length; i++) {
+        this.buildRecentEl.appendChild(el("li", null, v.titles[i]));
+      }
+    }
+    var self = this;
+    if (v.complete) {
+      if (!this._buildOut && !this._buildDoneTimer) {
+        this._buildDoneTimer = setTimeout(function () {
+          self._buildDoneTimer = 0;
+          self._buildOut = true;
+          box.classList.add("out");
+        }, 1200);
+      }
+    } else {
+      if (this._buildDoneTimer) {
+        clearTimeout(this._buildDoneTimer);
+        this._buildDoneTimer = 0;
+      }
+      this._buildOut = false;
+      box.classList.remove("out");
+    }
+  };
+
   UI.prototype._updateCount = function () {
     if (!this.cntEl) return;
     var live = this.live, visible = 0, i;
@@ -349,6 +421,7 @@
       this.phaseEl.textContent = L.phaseLabel(s.state);
       this.phaseEl.classList.toggle("done", s.state === "complete");
     }
+    this._drawBuild(s);
     this._updateCount();
   };
 

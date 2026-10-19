@@ -97,6 +97,32 @@
         max-width:640px;padding:16px 20px;display:none;z-index:50;color:#ff7b72}
  #fatal.on{display:block}
 
+ /* ---- build overlay: what is being ingested right now ---- */
+ #build{position:fixed;inset:var(--bar) 0 0 0;z-index:4;pointer-events:none}
+ #build.hide{display:none}
+ #build .b-panel{position:absolute;left:14px;top:14px;
+      width:min(340px,calc(100vw - 28px));padding:13px 15px 12px;
+      background:rgba(8,11,18,.9);color:#e6edf3;
+      transition:opacity .45s ease}
+ #build.out .b-panel{opacity:0}
+ #build .b-phase{font-family:var(--display);font-weight:800;
+      line-height:1;font-size:22px;color:#f4f7fb}
+ #build.bad .b-phase{color:#ff7b72}
+ #build .b-track{height:6px;background:#1b2130;margin:11px 0 9px;
+      overflow:hidden}
+ #build .b-fill{display:block;height:100%;width:100%;background:var(--accent);
+      transform:scaleX(0);transform-origin:left;
+      transition:transform .3s ease-out}
+ #build.bad .b-fill{background:#ff7b72}
+ #build.unknown .b-fill{width:38%;transform:translateX(-100%);
+      animation:bscan 1.15s linear infinite}
+ @keyframes bscan{from{transform:translateX(-100%)}to{transform:translateX(264%)}}
+ #build .b-counts{font-size:14px;color:#b3b4ae;font-variant-numeric:tabular-nums}
+ #build .b-recent{list-style:none;margin:10px 0 0;padding:0;font-size:13px;
+      line-height:1.5;color:#c6cbd4}
+ #build .b-recent li{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+ #build .b-recent:empty{display:none}
+
  /* ---- launcher poster (in document flow: the page scrolls, the fixed canvas
    stays behind it and is revealed as the poster yields) ---- */
  #launcher{position:relative;z-index:20;background:var(--paper);color:var(--ink);
@@ -255,12 +281,15 @@
   .sk-anim .reveal{opacity:1;transform:none;transition:none}
   #launcher.leave{animation:none}
   .scene,.p-go{transition:none}
+  #build .b-panel,#build .b-fill{transition:none}
+  #build.unknown .b-fill{animation:none;transform:none;width:100%}
  }
 </style></head>
 <body>
 <canvas id="sk-canvas"></canvas>
 <canvas id="sk-labels"></canvas>
 <div id="hud"><div id="bar"></div></div>
+<div id="build"></div>
 <div id="legend" class="panel"></div>
 <div id="info" class="panel"></div>
 <div id="tip"></div>

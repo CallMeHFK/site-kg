@@ -581,6 +581,45 @@ assert.equal(document.title, "https://other.example/");
 """)
 
 
+def test_build_view_stages_progress_and_titles():
+    """The build overlay's model: stage words, a determinate ratio once pages
+    arrive, and a five-title stream trimmed for the panel."""
+    _run(_prelude(LAUNCHER) + """
+const B = SK.launcher.buildView;
+const finding = B({state: "ingesting", pages: 0, nodes: 0, edges: 0,
+                   discovered: 12}, []);
+assert.equal(finding.phase, "finding pages");
+assert.equal(finding.indeterminate, true);
+assert.equal(finding.ratio, 0);
+const fetching = B({state: "ingesting", pages: 6, nodes: 6, edges: 9,
+                    discovered: 12}, []);
+assert.equal(fetching.phase, "fetching pages");
+assert.equal(fetching.indeterminate, false);
+assert.ok(Math.abs(fetching.ratio - 0.5) < 1e-9);
+assert.equal(fetching.label, "6 pages \\u00b7 6 nodes \\u00b7 9 edges");
+const settling = B({state: "settling", pages: 12, nodes: 10, edges: 20,
+                    discovered: 12}, []);
+assert.equal(settling.phase, "settling");
+assert.equal(settling.ratio, 1);
+const done = B({state: "complete", pages: 12, nodes: 10, edges: 20}, []);
+assert.equal(done.phase, "complete");
+assert.equal(done.complete, true);
+const failed = B({state: "failed", pages: 3, nodes: 2, edges: 1}, []);
+assert.equal(failed.phase, "failed");
+assert.equal(failed.failed, true);
+const titles = B({state: "ingesting", pages: 2, discovered: 5},
+                 ["a", "b", "c", "d", "e", "f"]);
+assert.equal(titles.titles.length, 5);
+assert.equal(titles.titles[0], "b");
+assert.equal(titles.titles[4], "f");
+assert.equal(SK.launcher.trimTitle("  a   b  "), "a b");
+assert.equal(SK.launcher.trimTitle("9. Classes \\u00b6"), "9. Classes");
+const long = SK.launcher.trimTitle("x".repeat(80));
+assert.equal(long.length, 54);
+assert.ok(long.indexOf("\\u2026") > 0);
+""")
+
+
 def test_launcher_copy_deck_constraints():
     src = (ROOT / "site_kg" / "viewer" / "launcher.js").read_text()
     _run(_prelude(LAUNCHER) + """

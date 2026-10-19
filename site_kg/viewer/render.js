@@ -72,28 +72,35 @@
     this.scene.background = new THREE.Color(0x0d1117);
 
     this.nodeUni = {u_px: {value: 1}, u_scale: {value: 1}, u_minpx: {value: 2},
+                    u_time: {value: 0},
                     u_light: {value: new THREE.Vector3(-0.55, 0.6, 0.75).normalize()}};
     this.haloUni = {u_px: this.nodeUni.u_px, u_scale: this.nodeUni.u_scale,
-                    u_minpx: this.nodeUni.u_minpx, u_light: this.nodeUni.u_light,
+                    u_minpx: this.nodeUni.u_minpx, u_time: this.nodeUni.u_time,
+                    u_light: this.nodeUni.u_light,
                     u_halo: {value: 3.1}};
     /* Node sprites are shaded as spheres: the point coordinate gives a normal,
        one directional light gives the terminator, and a fixed view vector gives
-       the specular highlight. */
+       the specular highlight. a_birth grows a node in when it is first revealed;
+       nodes present at load keep birth 0 so no wall of animation fires. */
     var vs = "attribute float a_size; attribute float a_dim; attribute float a_ring;"
-      + " attribute vec3 color;"
+      + " attribute float a_birth; attribute vec3 color;"
       + " uniform float u_px; uniform float u_scale; uniform float u_minpx;"
-      + " varying vec3 vC; varying float vD; varying float vR;"
+      + " uniform float u_time;"
+      + " varying vec3 vC; varying float vD; varying float vR; varying float vAge;"
       + " void main(){ vC=color; vD=a_dim; vR=a_ring;"
+      + "   float age = max(0.0, u_time-a_birth);"
+      + "   float born = smoothstep(0.0,0.45,age); vAge = born;"
+      + "   float grow = (0.55+0.45*born)*(1.0+0.18*sin(born*3.14159));"
       + "   vec4 mv = modelViewMatrix*vec4(position,1.0);"
       + "   float size = a_size*u_scale*u_px*(300.0/max(-mv.z,1.0));"
-      + "   size *= mix(1.0,1.42,vR);"
+      + "   size *= mix(1.0,1.42,vR)*grow;"
       + "   gl_PointSize = clamp(size, u_minpx*0.7, 220.0*u_px);"
       + "   gl_Position = projectionMatrix*mv; }";
     this.pgeo = new THREE.BufferGeometry();
     this.cloud = new THREE.Points(this.pgeo, new THREE.ShaderMaterial({
       uniforms: this.nodeUni, vertexShader: vs,
       fragmentShader: "varying vec3 vC; varying float vD; varying float vR;"
-        + " uniform vec3 u_light;"
+        + " varying float vAge; uniform vec3 u_light;"
         + " void main(){ vec2 b = gl_PointCoord*2.0-1.0;"
         + "   float scale = mix(1.0,1.42,vR); vec2 p = b*scale;"
         + "   float r2 = dot(p,p);"
@@ -111,7 +118,7 @@
         + "   col += (vC*1.5+0.10)*band*(0.4+0.6*diff);"
         + "   float a = max(inside, band*0.75);"
         + "   if(a < 0.01) discard;"
-        + "   gl_FragColor = vec4(col, a*(0.15+0.85*vD)); }",
+        + "   gl_FragColor = vec4(col, a*(0.15+0.85*vD)*vAge); }",
       transparent: true, depthWrite: false}));
     this.cloud.frustumCulled = false;
     this.cloud.renderOrder = 2;
@@ -126,12 +133,12 @@
                        .replace("clamp(size, u_minpx*0.7",
                                 "clamp(size, u_minpx*1.2"),
       fragmentShader: "varying vec3 vC; varying float vD; varying float vR;"
-        + " uniform vec3 u_light;"
+        + " varying float vAge; uniform vec3 u_light;"
         + " void main(){ vec2 p = gl_PointCoord*2.0-1.0;"
         + "   float r2 = dot(p,p); if(r2 > 1.0) discard;"
         + "   vec3 n = vec3(p.x,-p.y,sqrt(max(0.0,1.0-r2)));"
         + "   float lit = 0.22+0.78*max(dot(n,normalize(u_light)),0.0);"
-        + "   float a = pow(smoothstep(1.0,0.0,sqrt(r2)),2.2)*0.28*vD*lit;"
+        + "   float a = pow(smoothstep(1.0,0.0,sqrt(r2)),2.2)*0.28*vD*lit*vAge;"
         + "   gl_FragColor = vec4(vC, a); }",
       transparent: true, depthWrite: false, blending: THREE.AdditiveBlending}));
     this.halo.frustumCulled = false;
@@ -140,18 +147,21 @@
 
     this.edgeUni = {u_cull: {value: 1e9}, u_cam: {value: new THREE.Vector3()},
                     u_opacity: {value: 1}, u_sweepX: {value: 0},
-                    u_sweepAmp: {value: 0}};
+                    u_sweepAmp: {value: 0}, u_time: {value: 0}};
     this.lgeo = new THREE.BufferGeometry();
     this.lines = new THREE.LineSegments(this.lgeo, new THREE.ShaderMaterial({
       uniforms: this.edgeUni, transparent: true, depthWrite: false,
       vertexShader: "attribute float a_base; attribute float a_dim; attribute vec3 color;"
+        + " attribute float a_birth; attribute float a_t;"
         + " uniform float u_cull; uniform float u_opacity; uniform vec3 u_cam;"
-        + " uniform float u_sweepX; uniform float u_sweepAmp;"
+        + " uniform float u_sweepX; uniform float u_sweepAmp; uniform float u_time;"
         + " varying vec3 vC; varying float vA;"
         + " void main(){ vC=color;"
         + "   float d = distance(position, u_cam);"
         + "   float fade = 1.0 - smoothstep(u_cull*0.55, u_cull, d);"
-        + "   vA = a_base*u_opacity*a_dim*fade;"
+        + "   float age = max(0.0, u_time-a_birth);"
+        + "   float wave = smoothstep(0.0,0.5,age-a_t*0.22);"
+        + "   vA = a_base*u_opacity*a_dim*fade*wave;"
         + "   vA += u_sweepAmp*exp(-abs(position.x-u_sweepX)*0.18)*0.9;"
         + "   gl_Position = projectionMatrix*modelViewMatrix*vec4(position,1.0); }",
       fragmentShader: "varying vec3 vC; varying float vA;"
@@ -293,11 +303,20 @@
       this.nSize = new Float32Array(this.cap);
       this.nDim = new Float32Array(this.cap);
       this.nRing = new Float32Array(this.cap);
+      this.nBirth = new Float32Array(this.cap);
       this.pgeo.setAttribute("position", new THREE.BufferAttribute(this.nPos, 3));
       this.pgeo.setAttribute("color", new THREE.BufferAttribute(this.nCol, 3));
       this.pgeo.setAttribute("a_size", new THREE.BufferAttribute(this.nSize, 1));
       this.pgeo.setAttribute("a_dim", new THREE.BufferAttribute(this.nDim, 1));
       this.pgeo.setAttribute("a_ring", new THREE.BufferAttribute(this.nRing, 1));
+      this.pgeo.setAttribute("a_birth", new THREE.BufferAttribute(this.nBirth, 1));
+      if (this._birthQueue) {
+        for (var q = 0; q < this._birthQueue.length; q++) {
+          var bq = this._birthQueue[q];
+          if (bq[0] >= 0 && bq[0] < this.nBirth.length) this.nBirth[bq[0]] = bq[1];
+        }
+        this._birthQueue = null;
+      }
       this.colorDirty = true;
       this.lastDimVersion = -1;
       this.sceneN = 0;
@@ -308,15 +327,67 @@
       this.eCol = new Float32Array(this.capE * 6);
       this.eBase = new Float32Array(this.capE * 2);
       this.eDim = new Float32Array(this.capE * 2);
+      this.eBirth = new Float32Array(this.capE * 2);
+      this.eT = new Float32Array(this.capE * 2);
+      for (var t = 0; t < this.capE; t++) {
+        this.eT[t * 2] = 0;
+        this.eT[t * 2 + 1] = 1;
+      }
       this._edgeSlots = new Int32Array(this.capE);
       this._edgeSlots.fill(-1);
       this.lgeo.setAttribute("position", new THREE.BufferAttribute(this.ePos, 3));
       this.lgeo.setAttribute("color", new THREE.BufferAttribute(this.eCol, 3));
       this.lgeo.setAttribute("a_base", new THREE.BufferAttribute(this.eBase, 1));
       this.lgeo.setAttribute("a_dim", new THREE.BufferAttribute(this.eDim, 1));
+      this.lgeo.setAttribute("a_birth", new THREE.BufferAttribute(this.eBirth, 1));
+      this.lgeo.setAttribute("a_t", new THREE.BufferAttribute(this.eT, 1));
+      if (this._edgeBirthQueue) {
+        for (var eq = 0; eq < this._edgeBirthQueue.length; eq++) {
+          var eb = this._edgeBirthQueue[eq];
+          if (eb[0] >= 0 && eb[0] < this.capE) {
+            this.eBirth[eb[0] * 2] = eb[1];
+            this.eBirth[eb[0] * 2 + 1] = eb[1];
+          }
+        }
+        this._edgeBirthQueue = null;
+      }
       this.colorDirty = true;
       this.lastDimVersion = -1;
     }
+  };
+
+  Renderer.prototype.markBirth = function (i, t) {
+    if (this.nBirth && i >= 0 && i < this.nBirth.length) {
+      this.nBirth[i] = t;
+      var attr = this.pgeo.getAttribute("a_birth");
+      if (attr) attr.needsUpdate = true;
+    } else {
+      (this._birthQueue || (this._birthQueue = [])).push([i, t]);
+    }
+  };
+
+  Renderer.prototype.markEdgeBirth = function (e, t) {
+    if (this.eBirth && e >= 0 && e < this.capE) {
+      this.eBirth[e * 2] = t;
+      this.eBirth[e * 2 + 1] = t;
+      var attr = this.lgeo.getAttribute("a_birth");
+      if (attr) attr.needsUpdate = true;
+    } else {
+      (this._edgeBirthQueue || (this._edgeBirthQueue = [])).push([e, t]);
+    }
+  };
+
+  /* Everything already on screen is mature: snapshots and preloaded graphs
+     must not replay the build animation as one full-screen flash. */
+  Renderer.prototype.resetBirth = function () {
+    this._birthQueue = null;
+    this._edgeBirthQueue = null;
+    if (this.nBirth) this.nBirth.fill(0);
+    if (this.eBirth) this.eBirth.fill(0);
+    var na = this.nBirth && this.pgeo.getAttribute("a_birth");
+    var ea = this.eBirth && this.lgeo.getAttribute("a_birth");
+    if (na) na.needsUpdate = true;
+    if (ea) ea.needsUpdate = true;
   };
 
   Renderer.prototype._color = function (clusterId) {
@@ -741,6 +812,8 @@
 
   Renderer.prototype.render = function () {
     if (this.contextLost) return;
+    this.nodeUni.u_time.value = this.time || 0;
+    this.edgeUni.u_time.value = this.time || 0;
     var cam = this.camera;
     var targetDist = this.camDistance || cam.position.length() || 1;
     this.edgeUni.u_cull.value = targetDist * 1.15 + this.sceneRadius * 0.95;

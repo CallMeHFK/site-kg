@@ -33,6 +33,9 @@
     this._selectionSet = null;
     this.archive = null;
     this._lodVersion = -1;
+    this._revealedPrev = null;
+    this._eRevealedPrev = null;
+    this.recent = [];
     this.reducedMotion = !!(window.matchMedia &&
       window.matchMedia("(prefers-reduced-motion: reduce)").matches);
   }
@@ -47,6 +50,7 @@
     this.state = "ingesting";
     this.finaleDone = false;
     this._lodVersion = -1;
+    this.recent = [];
     if (this.renderer && this.renderer.resetFinale) this.renderer.resetFinale();
     if (this.ui && this.ui.hideFinale) this.ui.hideFinale();
     if (mode === "archive" && payload) {
@@ -72,6 +76,7 @@
       if (!batches.length) {
         this._revealAll();
         this.layoutSettled = true;
+        this._mature();
       }
       this.state = "settling";
       this.camera.fit(this._sampleAll(6000), {robust: true, duration: 700});
@@ -111,6 +116,25 @@
     for (i = 0; i < live.m; i++) live.eRevealed[i] = 1;
   };
 
+  /* Take the current reveal mask as the baseline, and make everything on it
+     mature, so only later reveals animate. */
+  Director.prototype._mature = function () {
+    var live = this.live;
+    if (this.renderer && this.renderer.resetBirth) this.renderer.resetBirth();
+    this._revealedPrev = new Uint8Array(Math.max(live.cap, 1));
+    this._eRevealedPrev = new Uint8Array(Math.max(live.capE, 1));
+    for (var i = 0; i < live.n; i++) this._revealedPrev[i] = live.revealed[i];
+    for (var e = 0; e < live.m; e++) this._eRevealedPrev[e] = live.eRevealed[e];
+  };
+
+  Director.prototype._noteNode = function (title, id) {
+    var text = String(title == null || title === "" ? (id == null ? "" : id) : title);
+    text = text.replace(/\s+/g, " ").trim();
+    if (!text) return;
+    this.recent.push(text);
+    if (this.recent.length > 12) this.recent.shift();
+  };
+
   Director.prototype._advanceReplay = function () {
     var rp = this.replay;
     if (!rp) return;
@@ -132,6 +156,7 @@
       this._revealAll();
       this.replay = null;
       this.layoutSettled = true;
+      this._mature();
     }
   };
 
@@ -152,6 +177,7 @@
         live.applyBatch([ev]);
         for (var i = n0; i < live.n; i++) live.revealed[i] = 1;
         for (var e = m0; e < live.m; e++) live.eRevealed[e] = 1;
+        if (t === "node_added") this._noteNode(ev.title, ev.id);
         if (live.n && !this._fittedOnce) this._fitNext = true;
       } else if (t === "layout_patch") {
         var rows = ev.rows || ev.patch || [];
@@ -230,6 +256,7 @@
     this.layoutSettled = true;
     this.replay = null;
     this._revealAll();
+    this._mature();
     this.state = "complete";
     if (this.camera && this.camera.settleNow) this.camera.settleNow();
     this._startFinale();
@@ -297,6 +324,9 @@
       self._fittedOnce = false;
       self._fitNext = true;
       self._visKey = "";
+      self.recent = [];
+      if (self._revealedPrev) self._revealedPrev.fill(0);
+      if (self._eRevealedPrev) self._eRevealedPrev.fill(0);
     }
 
     function onFlush(rec) {
@@ -322,6 +352,7 @@
           self.error = String(ev.error || "live run failed");
           self.state = "failed";
         }
+        if (ev.t === "node_added") self._noteNode(ev.title, ev.id);
       }
       var d = rec.dirtyNodes || [0, 0];
       for (var i = d[0]; i < d[1]; i++) live.revealed[i] = 1;
@@ -345,6 +376,9 @@
       self.lastSeq = batcher.lastSeq;
       for (var i = 0; i < live.n; i++) live.revealed[i] = 1;
       for (var e = 0; e < live.m; e++) live.eRevealed[e] = 1;
+      self._mature();
+      var tail = Math.max(0, live.n - 5);
+      for (var t = tail; t < live.n; t++) self._noteNode(live.titles[t], live.ids[t]);
       self._visKey = "";
       if (health && health.state === "complete") {
         self.ingestDone = true;
@@ -460,6 +494,31 @@
     var live = this.live;
     var vis = this._vis || (this._vis = new Uint8Array(live.cap));
     if (vis.length < live.n) vis = this._vis = new Uint8Array(live.cap);
+    /* Stamp first-seen times before anything else: the renderer's shaders grow
+       a node or an edge over 0.45s from its birth, and reads the same clock. */
+    var prev = this._revealedPrev;
+    if (!prev || prev.length < live.cap) {
+      var np = new Uint8Array(Math.max(live.cap, 1));
+      if (prev) np.set(prev);
+      prev = this._revealedPrev = np;
+    }
+    var eprev = this._eRevealedPrev;
+    if (!eprev || eprev.length < live.capE) {
+      var nep = new Uint8Array(Math.max(live.capE, 1));
+      if (eprev) nep.set(eprev);
+      eprev = this._eRevealedPrev = nep;
+    }
+    var r = this.renderer;
+    for (var b = 0; b < live.n; b++) {
+      if (live.revealed[b] && !prev[b] && r && r.markBirth) r.markBirth(b, this.time);
+      prev[b] = live.revealed[b];
+    }
+    for (var be = 0; be < live.m; be++) {
+      if (live.eRevealed[be] && !eprev[be] && r && r.markEdgeBirth) {
+        r.markEdgeBirth(be, this.time);
+      }
+      eprev[be] = live.eRevealed[be];
+    }
     var focus = this.focusIndex;
     var scene = (SK.scenes && SK.scenes[this.renderer.name]) || {};
     if (scene.ego && scene.select) {
@@ -545,6 +604,7 @@
       this._recomputeDims();
     }
     this.camera.update(dt);
+    if (this.renderer) this.renderer.time = this.time;
     this.renderer.sync(this.live);
     if (this._fitNext && this.live.n && !this.camera.tween) {
       this._fitNext = false;
