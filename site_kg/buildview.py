@@ -600,7 +600,10 @@ function camPos() {
 }
 // Frame the bounding sphere: portrait viewports crop width, so fit against
 // whichever half-angle is tighter. Yaw/pitch invariant -- every node stays
-// inside its tangent cone, so nothing clips at any orbit angle.
+// inside its tangent cone, so nothing clips at any orbit angle. The 900 cap
+// is aspect-dependent: it holds the fit only down to aspect ~0.26 at max
+// boundR; below that the orb would shrink to a dot, so we accept edge
+// clipping on extreme sliver viewports instead.
 function fitDist() {
   const halfV = 0.45, aspect = innerWidth / Math.max(innerHeight, 1);
   const half = Math.min(halfV, Math.atan(Math.tan(halfV) * aspect));
