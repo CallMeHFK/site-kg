@@ -5,23 +5,24 @@
   "use strict";
 
   var COPY = {
-    line1: "ANY SITE IS A GRAPH.",
-    line2: "WATCH IT BUILD.",
+    line1: "TURN ANY SITE",
+    line2: "INTO A WORLD.",
     support: "site-kg live crawls any address and grows its knowledge graph in "
-      + "front of you — every page a node, every link an edge.",
+      + "front of you — every page a node, every link an orbit.",
     action: "Build the graph",
     placeholder: "docs.example.com",
     steps: [
       ["Give it an address", "Paste any URL. The crawl starts the moment you launch."],
-      ["Pick a scene", "Two ways to see the same graph: planets or synapses."],
-      ["Watch it build", "Pages arrive as nodes, links as edges, in real time."]
+      ["Pick a world", "Two ways to see the same graph: planets or synapses."],
+      ["Watch it build", "Pages arrive as worlds, links as orbits, in real time."]
     ],
     scenes: {
       neural: "Synapses — links light up as signals between pages.",
-      planets: "Orbits — clusters settle into shells around the core."
+      planets: "Orbits — clusters settle into shells around a core."
     },
-    ctaWord: "Build",
-    ctaNote: "The crawl starts the moment you launch."
+    ctaNote: "Runs on your machine. No account, no upload.",
+    worldIdle: "Switch to this view",
+    worldOn: "Showing now"
   };
 
   function loadArt() {

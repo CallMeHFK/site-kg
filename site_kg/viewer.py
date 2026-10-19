@@ -32,7 +32,9 @@ EXTERNAL_FILES = {"graph": "sk-graph.bin", "layout": "sk-layout.bin",
 # Real render captures shown on the launcher poster (live mode only; archive
 # viewers never show the launcher and stay lean).
 LAUNCH_ART_FILES = {"neural": "asset-neural.jpg",
-                    "planets": "asset-planets.jpg", "hud": "asset-hud.jpg"}
+                    "planets": "asset-planets.jpg",
+                    "hero": "asset-hero.jpg",
+                    "build": "asset-build.jpg"}
 
 _PLACEHOLDER = re.compile(
     r"__(TITLE_JSON|STATS_JSON|DOCS_JSON|RUN_ID_JSON|LIVE_URL_JSON|TITLE|MODE|SCENE|EXTERNAL|PAYLOAD|BUNDLE|LAUNCH_ART)__")

@@ -624,11 +624,12 @@ def test_launcher_copy_deck_constraints():
     src = (ROOT / "site_kg" / "viewer" / "launcher.js").read_text()
     _run(_prelude(LAUNCHER) + """
 const copy = SK.launcher.copy;
-assert.equal(copy.line1, "ANY SITE IS A GRAPH.");
-assert.equal(copy.line2, "WATCH IT BUILD.");
+assert.equal(copy.line1, "TURN ANY SITE");
+assert.equal(copy.line2, "INTO A WORLD.");
 assert.equal(copy.steps.length, 3);
 assert.ok(copy.action && copy.placeholder);
-assert.ok(copy.ctaWord && copy.ctaNote);
+assert.ok(copy.ctaNote);
+assert.ok(copy.worldIdle && copy.worldOn);
 Object.keys(copy.scenes).forEach(function (key) {
   assert.ok(copy.scenes[key].length > 10);
 });

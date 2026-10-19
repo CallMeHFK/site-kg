@@ -475,7 +475,7 @@
         buttons[i].classList.toggle("on", buttons[i].getAttribute("data-scene") === name);
       }
     }
-    var launch = this.launcherEl ? this.launcherEl.querySelectorAll(".scene") : [];
+    var launch = this.launcherEl ? this.launcherEl.querySelectorAll(".world") : [];
     for (var k = 0; k < launch.length; k++) {
       launch[k].classList.toggle("on", launch[k].getAttribute("data-scene") === name);
     }
@@ -657,37 +657,52 @@
     var sceneNotes = copy.scenes || {};
     card.innerHTML = "";
 
-    /* hero: the waterline statement, with the address as its live element */
-    var hero = el("section", "p-hero");
-    hero.appendChild(el("div", "p-field"));
-    hero.appendChild(el("header", "p-wordmark", "site-kg live"));
-    var statement = el("div", "p-statement");
-    var mask1 = el("h1", "p-mask p-mask1");
-    mask1.appendChild(el("span", "p-line", copy.line1 || "ANY SITE IS A GRAPH."));
-    var mask2 = el("p", "p-mask p-mask2");
-    var line2 = el("span", "p-line p-line2");
-    var line2Text = copy.line2 || "WATCH IT BUILD.";
-    /* the lower half of the seam is painted by ::before from --line2, so the
-       words exist once in the document text and once on screen; the visible
-       span is silenced and the mask carries the label so readers say it once */
-    mask2.setAttribute("role", "img");
-    mask2.setAttribute("aria-label", line2Text);
-    line2.setAttribute("aria-hidden", "true");
-    line2.style.setProperty("--line2",
-        "'" + line2Text.replace(/\\/g, "\\\\").replace(/'/g, "\\'") + "'");
-    line2.appendChild(el("span", "p-copy p-copy-a", line2Text));
-    mask2.appendChild(line2);
-    statement.appendChild(mask1);
-    statement.appendChild(mask2);
-    hero.appendChild(statement);
+    function arrow() {
+      var svg = document.createElementNS(SVG_NS, "svg");
+      svg.setAttribute("viewBox", "0 0 18 18");
+      svg.setAttribute("aria-hidden", "true");
+      var shaft = document.createElementNS(SVG_NS, "path");
+      shaft.setAttribute("d", "M2 9h12M9 3l6 6-6 6");
+      shaft.setAttribute("fill", "none");
+      shaft.setAttribute("stroke", "currentColor");
+      shaft.setAttribute("stroke-width", "1.8");
+      shaft.setAttribute("stroke-linecap", "round");
+      shaft.setAttribute("stroke-linejoin", "round");
+      svg.appendChild(shaft);
+      return svg;
+    }
 
-    var launch = el("div", "p-launch");
+    /* hero: a real render fills the frame, the address is its live element */
+    var hero = el("section", "p-hero");
+    var heroArt = art.hero || art.planets;
+    if (heroArt) {
+      var bg = document.createElement("img");
+      bg.className = "p-hero-art";
+      bg.src = heroArt;
+      bg.alt = "";
+      bg.setAttribute("aria-hidden", "true");
+      hero.appendChild(bg);
+      hero.appendChild(el("div", "p-hero-scrim"));
+    }
+    var inner = el("div", "p-hero-in");
+    var head = el("header", "p-head");
+    head.appendChild(el("span", "p-mark"));
+    head.appendChild(el("span", "p-wm", "site-kg live"));
+    inner.appendChild(head);
+
+    var body = el("div", "p-hero-body");
+    var title = el("h1", "p-title reveal");
+    title.style.setProperty("--d", "0ms");
+    title.appendChild(el("span", "p-title-a", copy.line1 || "TURN ANY SITE"));
+    title.appendChild(el("span", "p-title-b", copy.line2 || "INTO A WORLD."));
+    body.appendChild(title);
+
     var support = el("p", "p-support reveal", copy.support || "");
-    support.style.setProperty("--d", "240ms");
-    launch.appendChild(support);
-    var right = el("div", "p-launch-right");
+    support.style.setProperty("--d", "90ms");
+    body.appendChild(support);
+
     var form = el("form", "p-form reveal");
-    form.style.setProperty("--d", "300ms");
+    form.style.setProperty("--d", "180ms");
     form.noValidate = true;
     var input = el("input", "p-url");
     input.type = "text";
@@ -701,14 +716,17 @@
     input.value = prefill;
     var go = el("button", "p-go off", copy.action || "Build the graph");
     go.type = "submit";
-    var err = el("p", "p-err");
-    err.id = "launch-err";
     form.appendChild(input);
     form.appendChild(go);
-    right.appendChild(form);
-    right.appendChild(err);
-    launch.appendChild(right);
-    hero.appendChild(launch);
+    body.appendChild(form);
+    var err = el("p", "p-err");
+    err.id = "launch-err";
+    body.appendChild(err);
+    var note = el("p", "p-note reveal", copy.ctaNote || "");
+    note.style.setProperty("--d", "260ms");
+    body.appendChild(note);
+    inner.appendChild(body);
+    hero.appendChild(inner);
     card.appendChild(hero);
 
     /* live validation lights the action button and feeds back inline */
@@ -740,88 +758,75 @@
     this.errEl = err;
     refresh();
 
-    /* how it works: lines that step across */
-    var stepsSec = el("section", "p-steps");
-    var list = el("ol", "p-step-list");
-    steps.forEach(function (step, i) {
-      var li = el("li", "p-step reveal");
-      li.style.setProperty("--i", String(i));
-      li.style.setProperty("--d", (i * 70) + "ms");
-      li.appendChild(el("h2", "p-step-line", step[0]));
-      li.appendChild(el("p", "p-step-note", step[1]));
-      list.appendChild(li);
-    });
-    stepsSec.appendChild(list);
-    var frag = el("figure", "p-fragment reveal");
-    frag.style.setProperty("--d", "280ms");
-    if (art.hud) {
-      var fimg = document.createElement("img");
-      fimg.src = art.hud;
-      fimg.alt = "The viewer heads-up display counting pages, nodes and edges "
-        + "while a graph builds";
-      fimg.setAttribute("data-ui", "hud-readout");
-      frag.appendChild(fimg);
-    }
-    frag.appendChild(el("figcaption", null,
-      "The heads-up display counts pages, nodes and edges while the graph builds."));
-    stepsSec.appendChild(frag);
-    card.appendChild(stepsSec);
-
-    /* three scene fields, each a real render in the scene's own palette */
-    var scenesSec = el("section", "p-scenes");
-    var grid = el("div", "p-scene-grid");
+    /* two worlds: one real render each, text and image trading sides */
+    var worldsSec = el("section", "p-worlds");
     (SK.sceneOrder || []).forEach(function (name, i) {
       var scene = SK.scenes[name] || {};
-      var tile = el("button", "scene reveal");
+      var tile = el("button", "world reveal");
       tile.type = "button";
       tile.setAttribute("data-scene", name);
-      tile.style.setProperty("--d", (i * 70) + "ms");
-      var shot = el("span", "p-shot");
+      tile.setAttribute("data-ui", "scene-card");
+      tile.style.setProperty("--d", (i * 80) + "ms");
+      var shot = el("span", "world-art");
       var url = art[name];
       if (url) {
         var img = document.createElement("img");
         img.src = url;
-        img.alt = scene.label + " scene: a real render of the " + name + " view";
+        img.alt = (scene.label || name) + " view: a real render of the "
+          + name + " scene";
         shot.appendChild(img);
       }
       tile.appendChild(shot);
-      tile.appendChild(el("span", "p-sname", scene.label || name));
-      tile.appendChild(el("span", "p-sdesc", sceneNotes[name] || scene.hint || ""));
+      var text = el("span", "world-copy");
+      text.appendChild(el("span", "world-name", scene.label || name));
+      text.appendChild(el("span", "world-desc",
+        sceneNotes[name] || scene.hint || ""));
+      var foot = el("span", "world-foot");
+      var idle = el("span", "world-go");
+      idle.appendChild(el("span", null, copy.worldIdle || "Switch to this view"));
+      idle.appendChild(arrow());
+      foot.appendChild(idle);
+      foot.appendChild(el("span", "world-now", copy.worldOn || "Showing now"));
+      text.appendChild(foot);
+      tile.appendChild(text);
       if (name === self._scene) tile.classList.add("on");
       tile.addEventListener("click", function () { self.activateScene(name); });
-      grid.appendChild(tile);
+      worldsSec.appendChild(tile);
     });
-    scenesSec.appendChild(grid);
-    card.appendChild(scenesSec);
+    card.appendChild(worldsSec);
 
-    /* closing band: one word is the button */
-    var cta = el("button", "p-cta reveal");
-    cta.type = "button";
-    cta.style.setProperty("--d", "0ms");
-    cta.appendChild(el("span", "p-cta-note", copy.ctaNote || ""));
-    var arrow = document.createElementNS(SVG_NS, "svg");
-    arrow.setAttribute("class", "p-cta-arrow");
-    arrow.setAttribute("viewBox", "0 0 48 48");
-    arrow.setAttribute("aria-hidden", "true");
-    var shaft = document.createElementNS(SVG_NS, "path");
-    shaft.setAttribute("d", "M6 24h30M24 10l14 14-14 14");
-    shaft.setAttribute("fill", "none");
-    shaft.setAttribute("stroke", "currentColor");
-    shaft.setAttribute("stroke-width", "4");
-    arrow.appendChild(shaft);
-    cta.appendChild(arrow);
-    cta.appendChild(el("span", "p-cta-word", copy.ctaWord || "Build"));
-    cta.addEventListener("click", function () {
-      window.scrollTo({top: 0, behavior: "smooth"});
-      input.focus();
+    /* how it works: a spine of three steps beside a real build capture */
+    var how = el("section", "p-how");
+    var list = el("ol", "p-step-list");
+    steps.forEach(function (step, i) {
+      var li = el("li", "p-step reveal");
+      li.style.setProperty("--d", (i * 80) + "ms");
+      li.appendChild(el("span", "p-step-title", step[0]));
+      li.appendChild(el("p", "p-step-note", step[1]));
+      list.appendChild(li);
     });
-    card.appendChild(cta);
+    how.appendChild(list);
+    if (art.build) {
+      var fig = el("figure", "p-how-shot reveal");
+      fig.style.setProperty("--d", "160ms");
+      var bimg = document.createElement("img");
+      bimg.src = art.build;
+      bimg.alt = "The build panel during a real crawl: phase, progress bar, "
+        + "counts and the pages as they arrive";
+      bimg.setAttribute("data-ui", "build-overlay");
+      fig.appendChild(bimg);
+      how.appendChild(fig);
+    }
+    card.appendChild(how);
 
-    var foot = el("footer", "p-foot reveal");
-    foot.style.setProperty("--d", "0ms");
-    foot.appendChild(el("p", null,
-      "site-kg live. The scene renders above are real captures of this viewer."));
-    card.appendChild(foot);
+    /* closing lockup: the name at full size, nothing to click */
+    var close = el("footer", "p-close");
+    var word = el("p", "p-close-word");
+    word.appendChild(el("span", null, "site-kg"));
+    word.appendChild(el("span", "p-close-dot"));
+    close.appendChild(word);
+    close.appendChild(el("p", "p-close-line", "site-kg live"));
+    card.appendChild(close);
 
     this._wireReveals();
   };
