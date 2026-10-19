@@ -47,20 +47,28 @@
     var THREE = T3.THREE;
     var n = Math.floor(points.length / 3);
     if (!n) return;
-    var cx = 0, cy = 0, cz = 0, i;
+    /* Bounding-box centre, not the centroid: a lopsided cluster must not drag
+       the target away and inflate the radius of the whole scene. */
+    var minX = Infinity, minY = Infinity, minZ = Infinity;
+    var maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+    var cx, cy, cz, i;
     for (i = 0; i < n; i++) {
-      cx += points[i * 3];
-      cy += points[i * 3 + 1];
-      cz += points[i * 3 + 2];
+      var px = points[i * 3], py = points[i * 3 + 1], pz = points[i * 3 + 2];
+      if (px < minX) minX = px;
+      if (py < minY) minY = py;
+      if (pz < minZ) minZ = pz;
+      if (px > maxX) maxX = px;
+      if (py > maxY) maxY = py;
+      if (pz > maxZ) maxZ = pz;
     }
-    cx /= n; cy /= n; cz /= n;
+    cx = (minX + maxX) / 2; cy = (minY + maxY) / 2; cz = (minZ + maxZ) / 2;
     var dists = new Float64Array(n);
     for (i = 0; i < n; i++) {
       dists[i] = Math.hypot(points[i * 3] - cx, points[i * 3 + 1] - cy,
                             points[i * 3 + 2] - cz);
     }
     var radius = 1;
-    if (opts.robust && n > 8) {
+    if (opts.robust && n > 60) {
       var sorted = Array.prototype.slice.call(dists).sort(function (a, b) { return a - b; });
       radius = sorted[Math.floor(sorted.length * 0.92)] * 1.25;
     } else {
@@ -68,7 +76,7 @@
     }
     radius = Math.max(radius, 1);
     var fov = this.camera.fov * Math.PI / 180;
-    var distance = radius / Math.sin(fov / 2) * (opts.zoom || 1);
+    var distance = radius / Math.sin(fov / 2) * (opts.zoom || 1) * 1.2;
     var dir = this._tmp.copy(this.camera.position).sub(this.controls.target);
     if (dir.lengthSq() < 1e-6) dir.set(0, 0, 1);
     dir.normalize();

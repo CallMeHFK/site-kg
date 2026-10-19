@@ -6,12 +6,16 @@
     name: "planets",
     label: "Planets",
     hint: "clusters as worlds",
-    bg: 0x0d1117,
+    bg: 0x05070c,
     palette: [0x58a6ff, 0x3fb950, 0xd29922, 0xf778ba, 0xa371f7, 0x76e3ea,
               0xffa657, 0xff7b72, 0x7ee787, 0xe3b341, 0x79c0ff, 0x56d4bc],
-    nodeScale: 1.0,
-    haloScale: 3.1,
-    edgeOpacity: 0.45,
+    nodeScale: 1.15,
+    haloScale: 2.8,
+    edgeOpacity: 0.38,
+    ringOpacity: 0.26,
+    starfield: true,
+    lightDir: [-0.55, 0.6, 0.75],
+    ringRank: 0.55,
     spin: 0.6,
     nodeMode: "points",
     ego: false,
@@ -20,7 +24,7 @@
     labelBudgetMobile: 12,
     finale: "Orbital alignment",
     shellRadius: function (shell) {
-      return 14 + Math.min(shell, 15) * 2.4;
+      return 13 + 7.0 * Math.sqrt(Math.max(0, shell));
     },
     select: function (live) {
       var out = new Array(live.n);

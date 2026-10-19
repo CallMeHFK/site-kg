@@ -87,6 +87,13 @@
   Director.prototype._sampleAll = function (limit) {
     var live = this.live;
     if (!live.n) return new Float32Array(0);
+    /* The renderer may have re-placed nodes (planet shells); sample what is
+       actually drawn, otherwise the camera frames the raw layout and clips
+       the outermost shells. */
+    if (this.renderer && this.renderer.samplePoints) {
+      var placed = this.renderer.samplePoints(live, limit);
+      if (placed.length) return placed;
+    }
     var stride = Math.max(1, Math.ceil(live.n / limit));
     var out = new Float32Array(Math.ceil(live.n / stride) * 3);
     var k = 0;
@@ -307,6 +314,8 @@
           if (self.camera && self.camera.fitLive) {
             self.camera.fitLive({robust: true, duration: 700});
           }
+          /* Fit again once sync has placed the newest nodes in their shells. */
+          self._fitNext = true;
         } else if (ev.t === "settled") {
           self.layoutSettled = true;
         } else if (ev.t === "error") {
@@ -535,15 +544,13 @@
       this._visKey = key;
       this._recomputeDims();
     }
-    if (this._fitNext && this.live.n) {
-      this._fitNext = false;
-      if (!this.camera.tween) {
-        this.camera.fitLive({robust: true, duration: 500});
-        this._fittedOnce = true;
-      }
-    }
     this.camera.update(dt);
     this.renderer.sync(this.live);
+    if (this._fitNext && this.live.n && !this.camera.tween) {
+      this._fitNext = false;
+      this.camera.fitLive({robust: true, duration: 500});
+      this._fittedOnce = true;
+    }
     if (this.layoutSettled && this.renderer.prepareEdgeLod &&
         this._lodVersion !== this.live.version) {
       this.renderer.prepareEdgeLod();

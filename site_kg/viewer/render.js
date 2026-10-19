@@ -71,22 +71,47 @@
     this.camera = new THREE.PerspectiveCamera(60, 1, 0.1, 1e6);
     this.scene.background = new THREE.Color(0x0d1117);
 
-    this.nodeUni = {u_px: {value: 1}, u_scale: {value: 1}};
+    this.nodeUni = {u_px: {value: 1}, u_scale: {value: 1}, u_minpx: {value: 2},
+                    u_light: {value: new THREE.Vector3(-0.55, 0.6, 0.75).normalize()}};
     this.haloUni = {u_px: this.nodeUni.u_px, u_scale: this.nodeUni.u_scale,
+                    u_minpx: this.nodeUni.u_minpx, u_light: this.nodeUni.u_light,
                     u_halo: {value: 3.1}};
-    var vs = "attribute float a_size; attribute float a_dim; attribute vec3 color;"
-      + " uniform float u_px; uniform float u_scale; varying vec3 vC; varying float vD;"
-      + " void main(){ vC=color; vD=a_dim;"
+    /* Node sprites are shaded as spheres: the point coordinate gives a normal,
+       one directional light gives the terminator, and a fixed view vector gives
+       the specular highlight. */
+    var vs = "attribute float a_size; attribute float a_dim; attribute float a_ring;"
+      + " attribute vec3 color;"
+      + " uniform float u_px; uniform float u_scale; uniform float u_minpx;"
+      + " varying vec3 vC; varying float vD; varying float vR;"
+      + " void main(){ vC=color; vD=a_dim; vR=a_ring;"
       + "   vec4 mv = modelViewMatrix*vec4(position,1.0);"
-      + "   gl_PointSize = a_size*u_scale*u_px*(300.0/max(-mv.z,1.0));"
+      + "   float size = a_size*u_scale*u_px*(300.0/max(-mv.z,1.0));"
+      + "   size *= mix(1.0,1.42,vR);"
+      + "   gl_PointSize = clamp(size, u_minpx*0.7, 220.0*u_px);"
       + "   gl_Position = projectionMatrix*mv; }";
     this.pgeo = new THREE.BufferGeometry();
     this.cloud = new THREE.Points(this.pgeo, new THREE.ShaderMaterial({
       uniforms: this.nodeUni, vertexShader: vs,
-      fragmentShader: "varying vec3 vC; varying float vD;"
-        + " void main(){ float r = length(gl_PointCoord-0.5); if(r>0.5) discard;"
-        + "   float a = smoothstep(0.5,0.32,r);"
-        + "   gl_FragColor = vec4(vC*(0.25+0.75*vD), a*(0.15+0.85*vD)); }",
+      fragmentShader: "varying vec3 vC; varying float vD; varying float vR;"
+        + " uniform vec3 u_light;"
+        + " void main(){ vec2 b = gl_PointCoord*2.0-1.0;"
+        + "   float scale = mix(1.0,1.42,vR); vec2 p = b*scale;"
+        + "   float r2 = dot(p,p);"
+        + "   float inside = 1.0-smoothstep(0.96,1.0,r2);"
+        + "   vec3 n = vec3(p.x,-p.y,sqrt(max(0.0,1.0-r2)));"
+        + "   vec3 L = normalize(u_light);"
+        + "   float diff = max(dot(n,L),0.0);"
+        + "   float spec = pow(max(dot(n,normalize(L+vec3(0.0,0.0,1.0))),0.0),42.0);"
+        + "   float rim = pow(1.0-n.z,2.2);"
+        + "   vec3 col = vC*(0.18+0.82*diff) + vec3(0.85,0.92,1.0)*spec*0.55"
+        + "            + vC*rim*0.55;"
+        + "   float e = abs(length(vec2(b.x,b.y*3.4))-0.86);"
+        + "   float band = (1.0-smoothstep(0.0,0.035,e))*vR;"
+        + "   band *= (b.y < 0.0 ? (1.0-inside) : 1.0);"
+        + "   col += (vC*1.5+0.10)*band*(0.4+0.6*diff);"
+        + "   float a = max(inside, band*0.75);"
+        + "   if(a < 0.01) discard;"
+        + "   gl_FragColor = vec4(col, a*(0.15+0.85*vD)); }",
       transparent: true, depthWrite: false}));
     this.cloud.frustumCulled = false;
     this.cloud.renderOrder = 2;
@@ -94,12 +119,19 @@
 
     this.halo = new THREE.Points(this.pgeo, new THREE.ShaderMaterial({
       uniforms: this.haloUni,
-      vertexShader: vs.replace("uniform float u_scale;",
-                               "uniform float u_scale; uniform float u_halo;")
-                       .replace("a_size*u_scale*u_px", "a_size*u_scale*u_px*u_halo"),
-      fragmentShader: "varying vec3 vC; varying float vD;"
-        + " void main(){ float r = length(gl_PointCoord-0.5); if(r>0.5) discard;"
-        + "   float a = pow(smoothstep(0.5,0.0,r),2.2)*0.30*vD;"
+      vertexShader: vs.replace("uniform float u_minpx;",
+                               "uniform float u_minpx; uniform float u_halo;")
+                       .replace("a_size*u_scale*u_px",
+                                "a_size*u_scale*u_px*u_halo")
+                       .replace("clamp(size, u_minpx*0.7",
+                                "clamp(size, u_minpx*1.2"),
+      fragmentShader: "varying vec3 vC; varying float vD; varying float vR;"
+        + " uniform vec3 u_light;"
+        + " void main(){ vec2 p = gl_PointCoord*2.0-1.0;"
+        + "   float r2 = dot(p,p); if(r2 > 1.0) discard;"
+        + "   vec3 n = vec3(p.x,-p.y,sqrt(max(0.0,1.0-r2)));"
+        + "   float lit = 0.22+0.78*max(dot(n,normalize(u_light)),0.0);"
+        + "   float a = pow(smoothstep(1.0,0.0,sqrt(r2)),2.2)*0.28*vD*lit;"
         + "   gl_FragColor = vec4(vC, a); }",
       transparent: true, depthWrite: false, blending: THREE.AdditiveBlending}));
     this.halo.frustumCulled = false;
@@ -144,12 +176,93 @@
     return this;
   };
 
+  /* A flat background image built in-page: a few thousand stars in three
+     brightness classes plus low-alpha nebula blooms. It is drawn once, used as
+     scene.background, and never becomes a draw call of its own. */
+  Renderer.prototype._makeStarfield = function () {
+    var w = 1024, h = 512;
+    var started = (typeof performance !== "undefined" && performance.now)
+      ? performance.now() : 0;
+    for (var attempt = 0; attempt < 2; attempt++) {
+      var canvas = document.createElement("canvas");
+      canvas.width = w;
+      canvas.height = h;
+      var ctx = canvas.getContext("2d");
+      if (!ctx) return null;
+      ctx.fillStyle = "#05070c";
+      ctx.fillRect(0, 0, w, h);
+      var seed = 20261019;
+      var rnd = function () {
+        seed = (seed * 1664525 + 1013904223) >>> 0;
+        return seed / 4294967296;
+      };
+      var blooms = [[0.24, 0.38, 0.30], [0.71, 0.26, 0.24], [0.55, 0.78, 0.22]];
+      for (var b = 0; b < blooms.length; b++) {
+        var bx = blooms[b][0] * w, by = blooms[b][1] * h;
+        var br = blooms[b][2] * Math.min(w, h);
+        var grad = ctx.createRadialGradient(bx, by, 0, bx, by, br);
+        grad.addColorStop(0, b === 1 ? "rgba(56,84,160,0.16)"
+                                     : "rgba(40,120,140,0.10)");
+        grad.addColorStop(0.55, "rgba(12,24,49,0.05)");
+        grad.addColorStop(1, "rgba(5,7,12,0)");
+        ctx.fillStyle = grad;
+        ctx.fillRect(bx - br, by - br, br * 2, br * 2);
+      }
+      for (var i = 0; i < 2200; i++) {
+        var x = rnd() * w, y = rnd() * h;
+        var roll = rnd();
+        var r = roll > 0.99 ? 1.7 + rnd() * 1.0
+              : (roll > 0.88 ? 0.9 + rnd() * 0.55 : 0.35 + rnd() * 0.45);
+        var alpha = 0.25 + rnd() * 0.65;
+        var tint = rnd();
+        ctx.fillStyle = tint > 0.9 ? "rgba(255,226,190," + alpha + ")"
+          : (tint > 0.6 ? "rgba(178,206,255," + alpha + ")"
+                        : "rgba(236,242,255," + alpha + ")");
+        ctx.beginPath();
+        ctx.arc(x, y, r, 0, Math.PI * 2);
+        ctx.fill();
+        if (r > 1.6) {
+          var halo = ctx.createRadialGradient(x, y, 0, x, y, r * 4);
+          halo.addColorStop(0, "rgba(210,228,255,0.22)");
+          halo.addColorStop(1, "rgba(210,228,255,0)");
+          ctx.fillStyle = halo;
+          ctx.fillRect(x - r * 4, y - r * 4, r * 8, r * 8);
+        }
+      }
+      var cost = started && performance.now ? performance.now() - started : 0;
+      /* a slow first bake falls back to half resolution rather than paying the
+         cost on every launch */
+      if (attempt === 0 && cost > 50 && w > 512) {
+        w = 512;
+        h = 256;
+        started = performance.now();
+        continue;
+      }
+      var tex = new T3.THREE.CanvasTexture(canvas);
+      if ("colorSpace" in tex && T3.THREE.SRGBColorSpace) {
+        tex.colorSpace = T3.THREE.SRGBColorSpace;
+      }
+      tex.needsUpdate = true;
+      return tex;
+    }
+    return null;
+  };
+
   Renderer.prototype.setScene = function (name) {
     var cfg = (SK.scenes && SK.scenes[name]) || (SK.scenes && SK.scenes.planets);
     if (!cfg) return;
     this.name = name;
     this.cfg = cfg;
-    this.scene.background = new T3.THREE.Color(cfg.bg);
+    if (cfg.starfield) {
+      if (!this._starTex) this._starTex = this._makeStarfield();
+      this.scene.background = this._starTex ||
+        new T3.THREE.Color(cfg.bg);
+    } else {
+      this.scene.background = new T3.THREE.Color(cfg.bg);
+    }
+    this._ringThreshold = cfg.ringRank == null ? 2 : cfg.ringRank;
+    var ld = cfg.lightDir || [-0.55, 0.6, 0.75];
+    this.nodeUni.u_light.value.set(ld[0], ld[1], ld[2]).normalize();
     this.haloUni.u_halo.value = cfg.haloScale;
     this.edgeUni.u_opacity.value = cfg.edgeOpacity;
     this.nodeUni.u_scale.value = cfg.nodeScale;
@@ -179,10 +292,12 @@
       this.nCol = new Float32Array(this.cap * 3);
       this.nSize = new Float32Array(this.cap);
       this.nDim = new Float32Array(this.cap);
+      this.nRing = new Float32Array(this.cap);
       this.pgeo.setAttribute("position", new THREE.BufferAttribute(this.nPos, 3));
       this.pgeo.setAttribute("color", new THREE.BufferAttribute(this.nCol, 3));
       this.pgeo.setAttribute("a_size", new THREE.BufferAttribute(this.nSize, 1));
       this.pgeo.setAttribute("a_dim", new THREE.BufferAttribute(this.nDim, 1));
+      this.pgeo.setAttribute("a_ring", new THREE.BufferAttribute(this.nRing, 1));
       this.colorDirty = true;
       this.lastDimVersion = -1;
       this.sceneN = 0;
@@ -214,7 +329,9 @@
 
   Renderer.prototype._shellRadius = function (clusterId) {
     if (this.cfg && this.cfg.shellRadius) return this.cfg.shellRadius(clusterId);
-    return 14 + Math.min(clusterId, 15) * 2.4;
+    /* increasing radius with a shrinking gap, so every cluster gets its own
+       shell instead of piling onto a cap at shell 15 */
+    return 12 + 4.2 * Math.sqrt(Math.max(0, clusterId));
   };
 
   Renderer.prototype._selectionKey = function () {
@@ -278,9 +395,12 @@
         this.nCol[i * 3 + 2] = c.b;
         var degPart = Math.sqrt((live.degree[i] || 0) / gmax);
         var rankPart = rmax > 0 ? Math.sqrt((live.rank[i] || 0) / rmax) : 0;
-        if (shells) this.nSize[i] = 1.6 + 5.6 * rankPart + 1.0 * degPart;
+        if (shells) this.nSize[i] = 2.0 + 6.4 * rankPart + 1.4 * degPart;
         else if (neural) this.nSize[i] = 1.0 + 1.9 * degPart;
         else this.nSize[i] = 2.2 + 3.4 * degPart;
+        /* giant worlds carry a visible band; leaves stay smooth spheres */
+        this.nRing[i] = shells && (0.7 * rankPart + 0.3 * degPart) >=
+          this._ringThreshold ? 1 : 0;
         var wr = Math.hypot(x, y, z);
         if (wr > maxR) maxR = wr;
       }
@@ -318,6 +438,7 @@
       this._mark("position", this.nPos, this.pgeo);
       this._mark("color", this.nCol, this.pgeo);
       this._mark("a_size", this.nSize, this.pgeo);
+      this._mark("a_ring", this.nRing, this.pgeo);
       this._mark("position", this.ePos, this.lgeo);
       this._mark("color", this.eCol, this.lgeo);
       this._mark("a_base", this.eBase, this.lgeo);
@@ -407,32 +528,44 @@
           var radius = this._shellRadius(s);
           var phase = s * 0.37;
           var cosP = Math.cos(phase), sinP = Math.sin(phase);
+          /* each orbit sits on its own plane: inclination grows with the shell,
+             roll keeps neighbouring rings from reading as one flat target */
+          var inc = 0.18 + s * 0.115;
+          var roll = 0.35 + s * 0.53;
+          var cosI = Math.cos(inc), sinI = Math.sin(inc);
+          var cosR = Math.cos(roll), sinR = Math.sin(roll);
           c.setHex(palette[s % palette.length]);
           for (var q = 0; q < segs; q++) {
             var a0 = q / segs * Math.PI * 2;
             var a1 = (q + 1) / segs * Math.PI * 2;
             var x0 = Math.cos(a0) * radius, z0 = Math.sin(a0) * radius;
             var x1 = Math.cos(a1) * radius, z1 = Math.sin(a1) * radius;
-            pts[at * 3] = x0 * cosP - z0 * sinP;
-            pts[at * 3 + 1] = 0;
-            pts[at * 3 + 2] = x0 * sinP + z0 * cosP;
+            var y0 = -z0 * sinI, zz0 = z0 * cosI;
+            var y1 = -z1 * sinI, zz1 = z1 * cosI;
+            pts[at * 3] = x0 * cosR - y0 * sinR;
+            pts[at * 3 + 1] = x0 * sinR + y0 * cosR;
+            pts[at * 3 + 2] = zz0;
             col[at * 3] = c.r; col[at * 3 + 1] = c.g; col[at * 3 + 2] = c.b;
             at++;
-            pts[at * 3] = x1 * cosP - z1 * sinP;
-            pts[at * 3 + 1] = 0;
-            pts[at * 3 + 2] = x1 * sinP + z1 * cosP;
+            pts[at * 3] = x1 * cosR - y1 * sinR;
+            pts[at * 3 + 1] = x1 * sinR + y1 * cosR;
+            pts[at * 3 + 2] = zz1;
             col[at * 3] = c.r; col[at * 3 + 1] = c.g; col[at * 3 + 2] = c.b;
             at++;
           }
           var tick = radius + Math.max(1.2, radius * 0.05);
-          pts[at * 3] = radius * cosP;
-          pts[at * 3 + 1] = 0;
-          pts[at * 3 + 2] = radius * sinP;
+          var tx = radius * cosP, tz = radius * sinP;
+          var ty = -tz * sinI, tzz = tz * cosI;
+          pts[at * 3] = tx * cosR - ty * sinR;
+          pts[at * 3 + 1] = tx * sinR + ty * cosR;
+          pts[at * 3 + 2] = tzz;
           col[at * 3] = c.r; col[at * 3 + 1] = c.g; col[at * 3 + 2] = c.b;
           at++;
-          pts[at * 3] = tick * cosP;
-          pts[at * 3 + 1] = 0;
-          pts[at * 3 + 2] = tick * sinP;
+          var ux = tick * cosP, uz = tick * sinP;
+          var uy = -uz * sinI, uzz = uz * cosI;
+          pts[at * 3] = ux * cosR - uy * sinR;
+          pts[at * 3 + 1] = ux * sinR + uy * cosR;
+          pts[at * 3 + 2] = uzz;
           col[at * 3] = c.r; col[at * 3 + 1] = c.g; col[at * 3 + 2] = c.b;
           at++;
         }
@@ -440,7 +573,8 @@
         geo.setAttribute("position", new THREE.BufferAttribute(pts, 3));
         geo.setAttribute("color", new THREE.BufferAttribute(col, 3));
         var mat = new THREE.LineBasicMaterial({vertexColors: true, transparent: true,
-                                                opacity: 0.16, depthWrite: false});
+                                                opacity: (this.cfg && this.cfg.ringOpacity) || 0.18,
+                                                depthWrite: false});
         this.ringMesh = new THREE.LineSegments(geo, mat);
         this.ringMesh.frustumCulled = false;
         this.scene.add(this.ringMesh);
@@ -632,6 +766,7 @@
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
     this.nodeUni.u_px.value = this.renderer.getPixelRatio();
+    this.nodeUni.u_minpx.value = 1.6 * this.renderer.getPixelRatio();
   };
 
   Renderer.prototype.pick = function (x, y) {
@@ -697,6 +832,10 @@
       }
     }
     this._disposeRings();
+    if (this._starTex) {
+      this._starTex.dispose();
+      this._starTex = null;
+    }
     this.pgeo.dispose();
     this.lgeo.dispose();
     this.egoMesh.geometry.dispose();
