@@ -1,5 +1,7 @@
 """JS-shell detection and Playwright fallback tests. The SPA fixture runs a
 loopback http.server -- no external network."""
+import math
+import re
 from pathlib import Path
 
 import pytest
@@ -135,18 +137,78 @@ def test_bfs_records_render_skip_when_renderer_missing(tmp_path: Path, monkeypat
 
 
 def test_viewer_file_is_self_contained(tmp_path: Path):
-    import json
-
+    from site_kg import payload
     from site_kg.viewer import render_viewer
+
     g = {"nodes": [{"i": "a", "c": "c1", "t": "A", "u": "http://x/a", "g": 1},
                    {"i": "b", "c": "c2", "t": "B", "u": "http://x/b", "g": 0}],
          "edges": [{"s": "a", "t": "b", "k": "ref"}]}
     out = render_viewer(g, {"url": "http://x/", "docs": 2, "verdict": "READY"},
-                        tmp_path / "viewer.html")
+                        tmp_path / "viewer.html", scene="neural")
     s = out.read_text(encoding="utf-8")
-    assert "T3" in s and "const G = " in s  # bundle + graph embedded
-    data = s.split("const G = ", 1)[1].split(";", 1)[0]
-    parsed = json.loads(data)
-    assert parsed["nodes"][0]["i"] == "a"
-    assert all("z" in n for n in parsed["nodes"])  # 3D layout computed
+    for marker in ("SK.LiveGraph", "SK.Renderer", "SK.Camera",
+                   "SK.Director", "SK.UI"):
+        assert marker in s  # modules assembled into the bundle
+    assert '"scene":"neural"' in s
+    assert "T3" in s  # vendor bundle embedded
     assert "<script src" not in s and "<link" not in s  # no external resources
+
+    m = re.search(r'<script[^>]*id="sk-payload"[^>]*>([^<]+)</script>', s)
+    assert m, "embedded payload missing"
+    parts = payload.unpack_archive_payload(m.group(1).strip())
+    graph = payload.decode_graph(parts["graph"])
+    layout = payload.decode_layout(parts["layout"])
+    timeline = payload.decode_timeline(parts["timeline"])
+    assert [n["i"] for n in graph["nodes"]] == ["a", "b"]
+    assert graph["nodes"][0]["t"] == "A"
+    assert len(layout["nodes"]) == 2 and len(timeline["nodes"]) == 2
+    assert all(math.isfinite(n[k]) for n in layout["nodes"] for k in ("x", "y", "z"))
+    assert max(abs(n[k]) for n in layout["nodes"] for k in ("x", "y", "z")) <= 1.0
+    assert timeline["run_id"]
+
+
+def test_live_viewer_carries_no_baked_stats(tmp_path: Path):
+    """Live graphs are empty at page load, so cfg.stats would bake
+    '0 pages · 0 edges · verdict ?' into the finale forever. The live
+    shell must ship no stats string; the finale reads director status."""
+    from site_kg.viewer import render_viewer
+
+    out = render_viewer({"nodes": [], "edges": []}, {"url": "http://x/"},
+                        tmp_path / "live.html", scene="neural", mode="live")
+    s = out.read_text(encoding="utf-8")
+    assert '"stats":""' in s
+    assert "0 pages" not in s and "verdict ?" not in s
+
+
+def test_launcher_art_is_live_only(tmp_path: Path):
+    """The poster's captures are base64 JPEGs inlined only for live shells;
+    archive shells never show the launcher and must stay lean."""
+    from site_kg.viewer import render_viewer
+
+    g = {"nodes": [{"i": "a", "c": "c1", "t": "A", "u": "http://x/a", "g": 1}],
+         "edges": []}
+    live = render_viewer(g, {"url": "http://x/"}, tmp_path / "live.html",
+                         mode="live").read_text(encoding="utf-8")
+    archive = render_viewer(g, {"url": "http://x/"}, tmp_path / "archive.html",
+                            mode="archive").read_text(encoding="utf-8")
+    assert "data:image/jpeg;base64," in live
+    assert "data:image/jpeg;base64," not in archive
+    assert ('<script type="application/json" id="sk-launch-art">{}</script>'
+            in archive)
+
+
+def test_archive_cfg_carries_real_doc_count(tmp_path: Path):
+    """The HUD's pages field is the crawled doc count (meta.docs), not the
+    node count after max_nodes trimming; live shells have no doc count."""
+    from site_kg.viewer import render_viewer
+
+    g = {"nodes": [{"i": "a", "c": "c1", "t": "A", "u": "http://x/a", "g": 1},
+                   {"i": "b", "c": "c2", "t": "B", "u": "http://x/b", "g": 0}],
+         "edges": [{"s": "a", "t": "b", "k": "ref"}]}
+    archive = render_viewer(g, {"url": "http://x/", "docs": 60},
+                            tmp_path / "archive.html", max_nodes=1,
+                            mode="archive").read_text(encoding="utf-8")
+    live = render_viewer(g, {"url": "http://x/"}, tmp_path / "live.html",
+                         mode="live").read_text(encoding="utf-8")
+    assert '"docs":60' in archive
+    assert '"docs":null' in live

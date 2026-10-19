@@ -60,9 +60,11 @@ def _robots(base: str) -> RobotFileParser:
 
 
 async def fetch_pages(urls: list[str], base: str, concurrency: int = 4, delay: float = 0.2,
-                      respect_robots: bool = True) -> tuple[dict[str, str], dict]:
+                      respect_robots: bool = True,
+                      on_page=None) -> tuple[dict[str, str], dict]:
     """Returns (pages, stats). stats surfaces why pages are missing instead of
-    silently producing an empty corpus."""
+    silently producing an empty corpus. on_page(url, page_or_none, reason) fires
+    exactly once per URL as its fetch settles; reason is None on success."""
     rp = _robots(base) if respect_robots else None
     sem = asyncio.Semaphore(concurrency)
     out: dict[str, str] = {}
@@ -71,20 +73,29 @@ async def fetch_pages(urls: list[str], base: str, concurrency: int = 4, delay: f
     async def one(client: httpx.AsyncClient, url: str) -> None:
         if rp and not rp.can_fetch(UA["User-Agent"], url):
             stats["robots_blocked"] += 1
+            if on_page is not None:
+                on_page(url, None, "robots")
             return
         async with sem:
+            page, reason = None, None
             try:
                 r = await client.get(url, follow_redirects=True)
                 if r.status_code == 200 and "text/html" in r.headers.get("content-type", ""):
-                    out[url] = r.text
+                    page = r.text
+                    out[url] = page
                 elif r.status_code == 200:
                     stats["skipped"] += 1
+                    reason = "not-html"
                 else:
                     code = str(r.status_code)
                     stats["errors"][code] = stats["errors"].get(code, 0) + 1
+                    reason = f"status:{r.status_code}"
             except Exception as e:
                 key = type(e).__name__
                 stats["errors"][key] = stats["errors"].get(key, 0) + 1
+                reason = key
+            if on_page is not None:
+                on_page(url, page, reason)
             await asyncio.sleep(delay)
 
     async with httpx.AsyncClient(headers=UA, timeout=30) as client:
@@ -154,7 +165,8 @@ def esc(s: str) -> str:
     return s.replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ")
 
 
-def write_corpus(pages: dict[str, str], base: str, out_dir: Path) -> list[dict]:
+def write_corpus(pages: dict[str, str], base: str, out_dir: Path,
+                 events=None) -> list[dict]:
     import json
 
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -167,6 +179,9 @@ def write_corpus(pages: dict[str, str], base: str, out_dir: Path) -> list[dict]:
         link_map[d["id"]] = d["links"]
         docs.append({"id": d["id"], "title": d["title"], "links": d["links"],
                      "url": url, "chapter": chapter})
+        if events is not None:
+            events({"t": "node_added", "id": d["id"], "title": d["title"],
+                    "url": url, "c": chapter})
     # sidecar: ids resolved against page URLs at crawl time; markdown hrefs are
     # page-relative and cannot be re-resolved from the corpus tree alone
     (out_dir / "_links.json").write_text(json.dumps(link_map, indent=0, sort_keys=True))

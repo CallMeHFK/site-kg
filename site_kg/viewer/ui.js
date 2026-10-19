@@ -1,0 +1,952 @@
+/* HUD, search, chapters, launcher poster, pointer/keyboard wiring. */
+(function (SK) {
+  "use strict";
+
+  function byId(id) { return document.getElementById(id); }
+
+  function el(tag, cls, text) {
+    var node = document.createElement(tag);
+    if (cls) node.className = cls;
+    if (text != null) node.textContent = text;
+    return node;
+  }
+
+  var SVG_NS = "http://www.w3.org/2000/svg";
+
+  function UI() {
+    this.ctx = null;
+    this.hoverIndex = -1;
+    this._hoverRaf = 0;
+    this._scene = "planets";
+    this.es = null;
+    this.token = "";
+  }
+
+  UI.prototype.mount = function (root, ctx) {
+    this.ctx = ctx;
+    this.cfg = ctx.cfg;
+    this.live = ctx.live;
+    this.renderer = ctx.renderer;
+    this.camera = ctx.camera;
+    this.director = ctx.director;
+    this.root = root;
+    this._scene = this.cfg.scene || "planets";
+    this.infoEl = byId("info");
+    this.tipEl = byId("tip");
+    this.legendEl = byId("legend");
+    this.launcherEl = byId("launcher");
+    if (SK.launcher) SK.launcher.art = SK.launcher.loadArt();
+    if (document.documentElement) document.documentElement.classList.add("sk-anim");
+    this._buildBar();
+    this._buildLegend();
+    this._wirePointer();
+    this._wireKeys();
+    this._buildFinale();
+    this._wireBarResize();
+    this._wireReveals();
+    this.setSceneActive(this._scene);
+    this._updateCount();
+    return this;
+  };
+
+  UI.prototype._buildFinale = function () {
+    var box = el("div", "panel");
+    box.id = "finale";
+    box.style.cssText = "position:fixed;left:50%;bottom:34px;transform:translateX(-50%);"
+      + "padding:10px 16px;z-index:7;display:none;pointer-events:none;"
+      + "text-align:center;max-width:80vw";
+    document.body.appendChild(box);
+    this.finaleEl = box;
+  };
+
+  /* The bar wraps at narrow widths; the canvas is offset by --bar, so keep the
+     custom property in sync with the bar's natural height. #bar's min-height is
+     a constant design floor, not var(--bar), or the floor would equal the
+     measured height and the property would feed itself. min-height is still
+     suspended while measuring so the natural height can fall below the floor. */
+  UI.prototype._wireBarResize = function () {
+    var bar = byId("bar");
+    if (!bar) return;
+    var sync = function () {
+      bar.style.minHeight = "0px";
+      var h = Math.ceil(bar.getBoundingClientRect().height);
+      bar.style.minHeight = "";
+      if (h > 0) {
+        document.documentElement.style.setProperty("--bar", Math.max(h, 52) + "px");
+      }
+    };
+    this._barSync = sync;
+    if (typeof ResizeObserver !== "undefined") {
+      if (this._barRO) { try { this._barRO.disconnect(); } catch (ignored) {} }
+      this._barRO = new ResizeObserver(sync);
+      this._barRO.observe(bar);
+    }
+    window.addEventListener("resize", sync);
+    sync();
+  };
+
+  /* Scroll reveals: hidden only once JS is alive (the sk-anim class), always
+     ending visible, with a no-IntersectionObserver fallback. */
+  UI.prototype._wireReveals = function () {
+    var nodes = document.querySelectorAll(".reveal");
+    if (!nodes.length) return;
+    var i;
+    if (typeof IntersectionObserver === "undefined") {
+      for (i = 0; i < nodes.length; i++) nodes[i].classList.add("in");
+      return;
+    }
+    if (!this._io) {
+      var self = this;
+      this._io = new IntersectionObserver(function (entries) {
+        for (var k = 0; k < entries.length; k++) {
+          if (!entries[k].isIntersecting) continue;
+          entries[k].target.classList.add("in");
+          self._io.unobserve(entries[k].target);
+        }
+      }, {rootMargin: "0px 0px -6% 0%", threshold: 0.05});
+    }
+    for (i = 0; i < nodes.length; i++) {
+      if (!nodes[i].classList.contains("in")) this._io.observe(nodes[i]);
+    }
+  };
+
+  UI.prototype._buildBar = function () {
+    var bar = this.root.querySelector ? this.root.querySelector("#bar") : null;
+    if (!bar) bar = this.root;
+    bar.innerHTML = "";
+    var self = this;
+
+    var title = el("b", null, this.cfg.title || "site-kg graph");
+    title.id = "title";
+    bar.appendChild(title);
+
+    var target = el("span");
+    target.id = "live-target";
+    bar.appendChild(target);
+    this.targetEl = target;
+
+    var readout = el("span", null, "");
+    readout.id = "readout";
+    bar.appendChild(readout);
+    this.readoutEl = readout;
+
+    var phase = el("span", null, "ingesting");
+    phase.id = "phase";
+    bar.appendChild(phase);
+    this.phaseEl = phase;
+
+    var scenes = el("span", "t-scenes");
+    (SK.sceneOrder || ["planets"]).forEach(function (name) {
+      var b = el("button", "mb", (SK.scenes[name] && SK.scenes[name].label) || name);
+      b.type = "button";
+      b.setAttribute("data-scene", name);
+      b.title = "scene " + name;
+      b.addEventListener("click", function () { self.activateScene(name); });
+      scenes.appendChild(b);
+    });
+    bar.appendChild(scenes);
+
+    var wrap = el("span", "swrap");
+    var input = el("input");
+    input.id = "q";
+    input.type = "search";
+    input.autocomplete = "off";
+    input.placeholder = "filter / search title\u2026 (/)";
+    input.setAttribute("aria-label", "search pages");
+    var res = el("div");
+    res.id = "sres";
+    res.setAttribute("role", "listbox");
+    res.setAttribute("aria-label", "search results");
+    wrap.appendChild(input);
+    wrap.appendChild(res);
+    bar.appendChild(wrap);
+    this.input = input;
+    this.results = res;
+
+    var chap = el("button", "mb", "chapters");
+    chap.type = "button";
+    chap.title = "keyboard and pointer help";
+    chap.setAttribute("aria-label", "keyboard and pointer help");
+    chap.addEventListener("click", function () {
+      self.legendEl.classList.toggle("on");
+      if (self.legendEl.classList.contains("on")) self._buildLegend();
+    });
+    bar.appendChild(chap);
+
+    var cnt = el("span", null, "");
+    cnt.id = "cnt";
+    bar.appendChild(cnt);
+    this.cntEl = cnt;
+
+    input.addEventListener("input", function () {
+      self.director.setQuery(input.value);
+      self._buildSearch(input.value);
+      self._updateCount();
+    });
+    document.addEventListener("click", function (e) {
+      if (!wrap.contains(e.target)) self._closeResults();
+    });
+    return bar;
+  };
+
+  UI.prototype._buildSearch = function (raw) {
+    var res = this.results;
+    res.innerHTML = "";
+    var q = String(raw || "").trim().toLowerCase();
+    if (q.length < 2) {
+      this._closeResults();
+      return;
+    }
+    var live = this.live, hits = [], i;
+    for (i = 0; i < live.n; i++) {
+      if (!live.revealed[i]) continue;
+      if ((live.titles[i] || "").toLowerCase().indexOf(q) >= 0) hits.push(i);
+    }
+    hits.sort(function (a, b) { return (live.degree[b] || 0) - (live.degree[a] || 0); });
+    hits = hits.slice(0, 8);
+    var self = this;
+    hits.forEach(function (idx) {
+      var row = el("div", "sr", live.titles[idx] || live.ids[idx]);
+      row.setAttribute("role", "option");
+      var meta = el("span", "m",
+                    (live.clusters[live._nodeCluster[idx]] || "(root)") +
+                    " \u00b7 deg " + (live.degree[idx] || 0));
+      row.appendChild(meta);
+      row.addEventListener("click", function () {
+        self._closeResults();
+        self.input.value = "";
+        self.director.setQuery("");
+        var focus = self.director.focus(idx);
+        self.showInfo(focus);
+        self._updateCount();
+      });
+      res.appendChild(row);
+    });
+    if (hits.length) res.classList.add("open");
+    else res.classList.remove("open");
+  };
+
+  UI.prototype._closeResults = function () {
+    if (this.results) {
+      this.results.classList.remove("open");
+      this.results.innerHTML = "";
+    }
+  };
+
+  UI.prototype._buildLegend = function () {
+    var live = this.live, legend = this.legendEl;
+    if (!legend) return;
+    legend.innerHTML = "";
+    var counts = {}, order = [];
+    for (var i = 0; i < live.n; i++) {
+      var c = live.clusters[live._nodeCluster[i]] || "(root)";
+      if (counts[c] === undefined) {
+        counts[c] = 0;
+        order.push(c);
+      }
+      counts[c]++;
+    }
+    order.sort(function (a, b) { return counts[b] - counts[a]; });
+    legend.appendChild(el("h4", null, "chapters"));
+    var palette = (this.renderer.cfg && this.renderer.cfg.palette) || SK.PALETTE;
+    var self = this;
+    if (!order.length) {
+      legend.appendChild(el("div", "muted", "no chapters yet"));
+    } else {
+      order.slice(0, 60).forEach(function (name) {
+        var row = el("div", "ch");
+        row.setAttribute("data-ch", name);
+        if (self.director.chapter === name) row.classList.add("on");
+        var dot = el("span", "dot");
+        var cid = live.clusterIndex[name] === undefined ? 0 : live.clusterIndex[name];
+        dot.style.background = "#" + ("000000" + palette[cid % palette.length].toString(16)).slice(-6);
+        row.appendChild(dot);
+        row.appendChild(el("span", null, name));
+        row.appendChild(el("span", "n", String(counts[name])));
+        row.addEventListener("click", function () {
+          var active = self.director.setChapter(name);
+          var rows = legend.querySelectorAll(".ch[data-ch]");
+          for (var k = 0; k < rows.length; k++) {
+            rows[k].classList.toggle("on", rows[k].getAttribute("data-ch") === active);
+          }
+          self._updateCount();
+        });
+        legend.appendChild(row);
+      });
+    }
+
+    var kindCounts = {}, kindOrder = [];
+    for (var e = 0; e < live.m; e++) {
+      var kind = live.kinds[live.eKind[e]] || "ref";
+      if (kindCounts[kind] === undefined) {
+        kindCounts[kind] = 0;
+        kindOrder.push(kind);
+      }
+      kindCounts[kind]++;
+    }
+    legend.appendChild(el("h4", null, "edge kinds"));
+    SK.kindLegend(kindOrder, this.director.hiddenKinds).forEach(function (entry) {
+      var row = el("div", "ch");
+      row.setAttribute("data-kind", entry.kind);
+      row.title = entry.derived ? "derived relation" : "structural link";
+      var dot = el("span", "dot");
+      dot.style.background = entry.derived ? "#8b949e" : "#58a6ff";
+      row.appendChild(dot);
+      row.appendChild(el("span", null, entry.kind));
+      row.appendChild(el("span", "n", String(kindCounts[entry.kind] || 0)));
+      row.style.opacity = entry.on ? "1" : "0.4";
+      row.addEventListener("click", function () {
+        var hidden = self.director.toggleKind(entry.kind);
+        row.style.opacity = hidden ? "0.4" : "1";
+        self._updateCount();
+      });
+      legend.appendChild(row);
+    });
+
+    var keys = el("div", "keys",
+                  "drag rotate \u00b7 wheel zoom \u00b7 click a node to focus \u00b7 "
+                  + "1\u20133 scenes \u00b7 F finale \u00b7 shift+F fit \u00b7 "
+                  + "space replay \u00b7 / search");
+    legend.appendChild(keys);
+  };
+
+  UI.prototype._updateCount = function () {
+    if (!this.cntEl) return;
+    var live = this.live, visible = 0, i;
+    for (i = 0; i < live.n; i++) if (live.dim[i] > 0.5) visible++;
+    var d = this.director;
+    var filtered = !!(d && ((d.query && String(d.query).trim()) || d.chapter
+                            || (d.selection && d.selection.length)));
+    this.cntEl.classList.toggle("on", filtered);
+    if (!filtered) {
+      this.cntEl.textContent = "";
+      return;
+    }
+    var text = visible + "/" + live.n;
+    var selection = d && d.selection;
+    if (selection && selection.length) text += " \u00b7 ego " + selection.length;
+    this.cntEl.textContent = text;
+  };
+
+  /* Live build readings: pages/nodes/edges prominent while ingesting, calm at
+     rest; the phase chip carries the ingest state machine. */
+  UI.prototype.updateStatus = function (s) {
+    var L = SK.launcher;
+    if (this.readoutEl && L) {
+      var opts = null;
+      if (this.cfg && this.cfg.mode === "archive") {
+        /* archive pages are the crawled document count, not the node count
+           (which max_nodes may have trimmed); with no real doc count, omit
+           pages rather than printing nodes twice */
+        opts = {pages: this.cfg.docs == null ? false : this.cfg.docs};
+      }
+      var r = L.readout(s, opts);
+      this.readoutEl.textContent = r.label;
+      this.readoutEl.classList.toggle("calm", !r.building);
+    }
+    if (this.phaseEl && L) {
+      this.phaseEl.textContent = L.phaseLabel(s.state);
+      this.phaseEl.classList.toggle("done", s.state === "complete");
+    }
+    this._updateCount();
+  };
+
+  UI.prototype.setLiveTarget = function (url) {
+    if (!this.targetEl) return;
+    var host = SK.launcher ? SK.launcher.hostLabel(url) : String(url || "");
+    this.targetEl.textContent = host;
+    this.targetEl.title = host;
+  };
+
+  UI.finaleParts = function (cfg, status) {
+    var parts = [];
+    if (cfg && cfg.mode === "live" && status) {
+      parts.push((status.pages || 0) + " pages \u00b7 " + (status.nodes || 0)
+        + " nodes \u00b7 " + (status.edges || 0) + " edges");
+    } else if (cfg && cfg.stats) {
+      parts.push(cfg.stats);
+    }
+    if (status && status.ego) parts.push("ego " + status.ego);
+    else if (status && status.visible) parts.push(status.visible + " visible");
+    return parts;
+  };
+
+  UI.prototype.showFinale = function (sceneName, status) {
+    var box = this.finaleEl;
+    if (!box) return;
+    var scene = (SK.scenes && SK.scenes[sceneName]) || {};
+    var parts = UI.finaleParts(this.cfg, status);
+    box.innerHTML = "";
+    box.appendChild(el("b", null, scene.finale || "Finale"));
+    if (parts.length) box.appendChild(el("div", "muted", parts.join(" \u00b7 ")));
+    box.style.display = "block";
+  };
+
+  UI.prototype.hideFinale = function () {
+    if (this.finaleEl) this.finaleEl.style.display = "none";
+  };
+
+  UI.prototype.setSceneActive = function (name) {
+    this._scene = name;
+    var bar = this.root.querySelector ? this.root.querySelector("#bar") : null;
+    if (bar) {
+      var buttons = bar.querySelectorAll("[data-scene]");
+      for (var i = 0; i < buttons.length; i++) {
+        buttons[i].classList.toggle("on", buttons[i].getAttribute("data-scene") === name);
+      }
+    }
+    var launch = this.launcherEl ? this.launcherEl.querySelectorAll(".scene") : [];
+    for (var k = 0; k < launch.length; k++) {
+      launch[k].classList.toggle("on", launch[k].getAttribute("data-scene") === name);
+    }
+  };
+
+  UI.prototype.activateScene = function (name) {
+    if (!SK.scenes || !SK.scenes[name]) return;
+    this.director.switchScene(name);
+    this.setSceneActive(name);
+    this._buildLegend();
+  };
+
+  UI.prototype.showInfo = function (index) {
+    var live = this.live, info = this.infoEl;
+    if (!info) return;
+    if (index < 0 || index >= live.n) {
+      info.classList.remove("on");
+      info.innerHTML = "";
+      return;
+    }
+    info.innerHTML = "";
+    info.appendChild(el("b", null, live.titles[index] || live.ids[index]));
+    info.appendChild(el("div", "muted", live.ids[index]));
+    info.appendChild(el("div", "muted",
+      "chapter: " + (live.clusters[live._nodeCluster[index]] || "(root)") +
+      " \u00b7 in-degree: " + (live.degree[index] || 0)));
+    var url = live.urls[index] || "";
+    if (/^https?:\/\//i.test(url)) {
+      var a = el("a", null, "source \u2197");
+      a.href = url;
+      a.target = "_blank";
+      a.rel = "noopener noreferrer";
+      info.appendChild(a);
+    }
+    info.classList.add("on");
+  };
+
+  UI.prototype._wirePointer = function () {
+    var canvas = this.renderer.canvas, self = this;
+    canvas.addEventListener("pointermove", function (e) {
+      var rect = canvas.getBoundingClientRect();
+      self._mouse = {x: e.clientX - rect.left, y: e.clientY - rect.top,
+                     cx: e.clientX, cy: e.clientY};
+      if (!self._hoverRaf) {
+        self._hoverRaf = requestAnimationFrame(function () {
+          self._hoverRaf = 0;
+          self._doHover();
+        });
+      }
+    });
+    canvas.addEventListener("pointerleave", function () {
+      self._setHover(-1);
+    });
+    var down = null;
+    canvas.addEventListener("pointerdown", function (e) {
+      down = {x: e.clientX, y: e.clientY};
+    });
+    canvas.addEventListener("pointerup", function (e) {
+      if (!down) return;
+      var moved = Math.hypot(e.clientX - down.x, e.clientY - down.y);
+      down = null;
+      if (moved > 6) return;
+      var rect = canvas.getBoundingClientRect();
+      var idx = self.renderer.pick(e.clientX - rect.left, e.clientY - rect.top);
+      var focus = self.director.focus(idx);
+      self.showInfo(focus);
+    });
+  };
+
+  UI.prototype._doHover = function () {
+    var m = this._mouse;
+    if (!m) return;
+    var idx = this.renderer.pick(m.x, m.y);
+    this._setHover(idx);
+  };
+
+  UI.prototype._setHover = function (idx) {
+    this.hoverIndex = idx;
+    var tip = this.tipEl, live = this.live;
+    if (!tip) return;
+    if (idx < 0 || idx >= live.n) {
+      tip.classList.remove("on");
+      this.renderer.canvas.style.cursor = "";
+      return;
+    }
+    tip.textContent = (live.titles[idx] || live.ids[idx]) + " \u00b7 " +
+      (live.clusters[live._nodeCluster[idx]] || "(root)") +
+      " \u00b7 deg " + (live.degree[idx] || 0);
+    tip.classList.add("on");
+    var m = this._mouse || {cx: 0, cy: 0};
+    var x = Math.min(m.cx + 14, window.innerWidth - 380);
+    var y = Math.min(m.cy + 12, window.innerHeight - 40);
+    tip.style.left = Math.max(8, x) + "px";
+    tip.style.top = Math.max(8, y) + "px";
+    this.renderer.canvas.style.cursor = "pointer";
+  };
+
+  UI.prototype._wireKeys = function () {
+    var self = this;
+    document.addEventListener("keydown", function (e) {
+      /* While the poster is up it owns the keyboard. */
+      if (self.launcherEl && self.launcherEl.classList.contains("on")) return;
+      var tag = (e.target && e.target.tagName) || "";
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") {
+        if (e.key === "Escape" && e.target === self.input) {
+          self.director.clear();
+          self.input.value = "";
+          self._closeResults();
+          self.showInfo(-1);
+          self._updateCount();
+          e.target.blur();
+        }
+        return;
+      }
+      if (e.key === "/") {
+        e.preventDefault();
+        self.input.focus();
+        return;
+      }
+      if (e.key === "Escape") {
+        self.director.clear();
+        self.input.value = "";
+        self._closeResults();
+        self.showInfo(-1);
+        self._updateCount();
+        return;
+      }
+      if (e.key === "f" || e.key === "F") {
+        if (e.shiftKey) self.director.fit();
+        else if (self.director.skipToFinale) self.director.skipToFinale();
+        return;
+      }
+      if (e.key === " ") {
+        e.preventDefault();
+        if (!self.director.replayArchive()) {
+          self.camera.setAutoRotate(!self.camera.controls.autoRotate);
+        }
+        return;
+      }
+      if (e.key >= "1" && e.key <= "3") {
+        var n = parseInt(e.key, 10) - 1;
+        var names = SK.sceneOrder || [];
+        if (names[n]) self.activateScene(names[n]);
+      }
+    });
+  };
+
+  /* ---- launcher poster ------------------------------------------------- */
+
+  /* Cancel a pending hide: its timer and any animationend handler registered
+     by an earlier hideLauncher call, so retry loops cannot accumulate them. */
+  UI.prototype._dropLauncherHide = function () {
+    if (this._launcherHideTimer) {
+      clearTimeout(this._launcherHideTimer);
+      this._launcherHideTimer = 0;
+    }
+    if (this.launcherEl && this._launcherAnimEnd) {
+      this.launcherEl.removeEventListener("animationend", this._launcherAnimEnd);
+      this._launcherAnimEnd = 0;
+    }
+  };
+
+  UI.prototype.showLauncher = function () {
+    if (!this.launcherEl) return;
+    this._dropLauncherHide();
+    var card = this.launcherEl.querySelector("#launch-card");
+    if (!card) return;
+    this.launcherEl.classList.remove("leave");
+    this.launcherEl.classList.add("on");
+    if (!card.firstChild) this._buildLauncher(card);
+  };
+
+  UI.prototype._buildLauncher = function (card) {
+    var self = this;
+    var L = SK.launcher;
+    var copy = (L && L.copy) || {};
+    var art = (L && L.art) || {};
+    var steps = copy.steps || [];
+    var sceneNotes = copy.scenes || {};
+    card.innerHTML = "";
+
+    /* hero: the waterline statement, with the address as its live element */
+    var hero = el("section", "p-hero");
+    hero.appendChild(el("div", "p-field"));
+    hero.appendChild(el("header", "p-wordmark", "site-kg live"));
+    var statement = el("div", "p-statement");
+    var mask1 = el("h1", "p-mask p-mask1");
+    mask1.appendChild(el("span", "p-line", copy.line1 || "ANY SITE IS A GRAPH."));
+    var mask2 = el("p", "p-mask p-mask2");
+    var line2 = el("span", "p-line p-line2");
+    var line2Text = copy.line2 || "WATCH IT BUILD.";
+    /* the lower half of the seam is painted by ::before from --line2, so the
+       words exist once in the document text and once on screen; the visible
+       span is silenced and the mask carries the label so readers say it once */
+    mask2.setAttribute("role", "img");
+    mask2.setAttribute("aria-label", line2Text);
+    line2.setAttribute("aria-hidden", "true");
+    line2.style.setProperty("--line2",
+        "'" + line2Text.replace(/\\/g, "\\\\").replace(/'/g, "\\'") + "'");
+    line2.appendChild(el("span", "p-copy p-copy-a", line2Text));
+    mask2.appendChild(line2);
+    statement.appendChild(mask1);
+    statement.appendChild(mask2);
+    hero.appendChild(statement);
+
+    var launch = el("div", "p-launch");
+    var support = el("p", "p-support reveal", copy.support || "");
+    support.style.setProperty("--d", "240ms");
+    launch.appendChild(support);
+    var right = el("div", "p-launch-right");
+    var form = el("form", "p-form reveal");
+    form.style.setProperty("--d", "300ms");
+    form.noValidate = true;
+    var input = el("input", "p-url");
+    input.type = "text";
+    input.placeholder = copy.placeholder || "docs.example.com";
+    input.autocomplete = "url";
+    input.spellcheck = false;
+    input.setAttribute("inputmode", "url");
+    input.setAttribute("aria-label", "site address");
+    var prefill = "";
+    if (/^https?:\/\//i.test(this.cfg.title || "")) prefill = this.cfg.title;
+    input.value = prefill;
+    var go = el("button", "p-go off", copy.action || "Build the graph");
+    go.type = "submit";
+    var err = el("p", "p-err");
+    err.id = "launch-err";
+    form.appendChild(input);
+    form.appendChild(go);
+    right.appendChild(form);
+    right.appendChild(err);
+    launch.appendChild(right);
+    hero.appendChild(launch);
+    card.appendChild(hero);
+
+    /* live validation lights the action button and feeds back inline */
+    function refresh() {
+      var res = L.normalizeTarget(input.value);
+      if (!res.ok) {
+        go.className = "p-go off";
+        err.classList.remove("ok");
+        err.textContent = input.value.trim() ? res.error : "";
+      } else {
+        go.className = "p-go on";
+        err.classList.add("ok");
+        err.textContent = L.hostLabel(res.url);
+      }
+    }
+    input.addEventListener("input", refresh);
+    form.addEventListener("submit", function (e) {
+      e.preventDefault();
+      var res = L.normalizeTarget(input.value);
+      if (!res.ok) {
+        refresh();
+        input.focus();
+        return;
+      }
+      self.launchLive(res.url, self._scene);
+    });
+    this.urlInput = input;
+    this.goEl = go;
+    this.errEl = err;
+    refresh();
+
+    /* how it works: lines that step across */
+    var stepsSec = el("section", "p-steps");
+    var list = el("ol", "p-step-list");
+    steps.forEach(function (step, i) {
+      var li = el("li", "p-step reveal");
+      li.style.setProperty("--i", String(i));
+      li.style.setProperty("--d", (i * 70) + "ms");
+      li.appendChild(el("h2", "p-step-line", step[0]));
+      li.appendChild(el("p", "p-step-note", step[1]));
+      list.appendChild(li);
+    });
+    stepsSec.appendChild(list);
+    var frag = el("figure", "p-fragment reveal");
+    frag.style.setProperty("--d", "280ms");
+    if (art.hud) {
+      var fimg = document.createElement("img");
+      fimg.src = art.hud;
+      fimg.alt = "The viewer heads-up display counting pages, nodes and edges "
+        + "while a graph builds";
+      fimg.setAttribute("data-ui", "hud-readout");
+      frag.appendChild(fimg);
+    }
+    frag.appendChild(el("figcaption", null,
+      "The heads-up display counts pages, nodes and edges while the graph builds."));
+    stepsSec.appendChild(frag);
+    card.appendChild(stepsSec);
+
+    /* three scene fields, each a real render in the scene's own palette */
+    var scenesSec = el("section", "p-scenes");
+    var grid = el("div", "p-scene-grid");
+    (SK.sceneOrder || []).forEach(function (name, i) {
+      var scene = SK.scenes[name] || {};
+      var tile = el("button", "scene reveal");
+      tile.type = "button";
+      tile.setAttribute("data-scene", name);
+      tile.style.setProperty("--d", (i * 70) + "ms");
+      var shot = el("span", "p-shot");
+      var url = art[name];
+      if (url) {
+        var img = document.createElement("img");
+        img.src = url;
+        img.alt = scene.label + " scene: a real render of the " + name + " view";
+        shot.appendChild(img);
+      }
+      tile.appendChild(shot);
+      tile.appendChild(el("span", "p-sname", scene.label || name));
+      tile.appendChild(el("span", "p-sdesc", sceneNotes[name] || scene.hint || ""));
+      if (name === self._scene) tile.classList.add("on");
+      tile.addEventListener("click", function () { self.activateScene(name); });
+      grid.appendChild(tile);
+    });
+    scenesSec.appendChild(grid);
+    card.appendChild(scenesSec);
+
+    /* closing band: one word is the button */
+    var cta = el("button", "p-cta reveal");
+    cta.type = "button";
+    cta.style.setProperty("--d", "0ms");
+    cta.appendChild(el("span", "p-cta-note", copy.ctaNote || ""));
+    var arrow = document.createElementNS(SVG_NS, "svg");
+    arrow.setAttribute("class", "p-cta-arrow");
+    arrow.setAttribute("viewBox", "0 0 48 48");
+    arrow.setAttribute("aria-hidden", "true");
+    var shaft = document.createElementNS(SVG_NS, "path");
+    shaft.setAttribute("d", "M6 24h30M24 10l14 14-14 14");
+    shaft.setAttribute("fill", "none");
+    shaft.setAttribute("stroke", "currentColor");
+    shaft.setAttribute("stroke-width", "4");
+    arrow.appendChild(shaft);
+    cta.appendChild(arrow);
+    cta.appendChild(el("span", "p-cta-word", copy.ctaWord || "Build"));
+    cta.addEventListener("click", function () {
+      window.scrollTo({top: 0, behavior: "smooth"});
+      input.focus();
+    });
+    card.appendChild(cta);
+
+    var foot = el("footer", "p-foot reveal");
+    foot.style.setProperty("--d", "0ms");
+    foot.appendChild(el("p", null,
+      "site-kg live. The scene renders above are real captures of this viewer."));
+    card.appendChild(foot);
+
+    this._wireReveals();
+  };
+
+  UI.prototype.showScenes = function () {
+    if (this.cfg.mode === "live") this.showLauncher();
+  };
+
+  UI.prototype.hideLauncher = function () {
+    var launcher = this.launcherEl;
+    if (!launcher || !launcher.classList.contains("on")) return;
+    var reduce = window.matchMedia
+      && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    var self = this;
+    var finished = false;
+    /* a previous hide may still be pending; drop its timer and listener
+       before registering this one (never stack handlers) */
+    this._dropLauncherHide();
+    var done = function () {
+      if (finished) return;
+      finished = true;
+      self._dropLauncherHide();
+      launcher.classList.remove("on", "leave");
+    };
+    /* only the poster's own leave animation may end the hide; children's
+       entrance animations bubble here and would cut it short */
+    this._launcherAnimEnd = function (ev) {
+      if (ev.target === launcher && ev.animationName === "posterLeave") done();
+    };
+    if (reduce) {
+      done();
+      return;
+    }
+    launcher.addEventListener("animationend", this._launcherAnimEnd);
+    this._launcherHideTimer = setTimeout(done, 800); /* failure-safe: never leave the poster up */
+    launcher.classList.add("leave");
+  };
+
+  UI.prototype.connectLive = function (base, scene) {
+    if (scene) this.activateScene(scene);
+    this.hideLauncher();
+    if (this.cfg.liveUrl) this.setLiveTarget(this.cfg.liveUrl);
+    this.director.connectEvents("", 0, {base: base || "", token: this.token});
+  };
+
+  UI.prototype.launchLive = function (target, scene) {
+    var self = this;
+    var res = SK.launcher.normalizeTarget(target);
+    if (!res.ok) {
+      var box = byId("launch-err");
+      if (box) {
+        box.textContent = res.error;
+        box.classList.remove("ok");
+      }
+      if (this.urlInput) this.urlInput.focus();
+      return null;
+    }
+    var url = res.url;
+    if (scene) this.activateScene(scene);
+    /* the status line sits under the poster; the launcher's own error line
+       is the feedback the user can actually see while the request runs */
+    var ebox = this.errEl || byId("launch-err");
+    if (ebox) {
+      ebox.textContent = "starting live ingest \u2026";
+      ebox.classList.add("ok");
+    }
+    var headers = {"Content-Type": "application/json"};
+    if (this.token) headers["X-Site-KG-Token"] = this.token;
+    var request = typeof fetch === "function"
+      ? fetch("/api/start", {
+          method: "POST",
+          headers: headers,
+          body: JSON.stringify({target: url, scene: scene})
+        })
+      : Promise.reject(new Error("fetch is not available"));
+    return request.then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (body) {
+        if (!r.ok || !body.ok) {
+          throw new Error(body.error || ("start failed: " + r.status));
+        }
+        if (ebox) ebox.textContent = "";
+        self.setLiveTarget(url);
+        self.hideLauncher();
+        self.director.start("live", null);
+        self.director.connectEvents(body.run_id || "", body.last_seq || 0,
+                                    {base: "", token: self.token});
+        return body;
+      });
+    }).catch(function (err) {
+      self.showLauncher();
+      var failbox = self.errEl || byId("launch-err");
+      if (failbox) {
+        failbox.textContent = (err && err.message) ? err.message : String(err);
+        failbox.classList.remove("ok");
+      }
+      return null;
+    });
+  };
+
+  UI.prototype.fatal = function (err) {
+    var box = byId("fatal");
+    if (!box) return;
+    box.textContent = "viewer failed: " + (err && err.message ? err.message : err);
+    box.classList.add("on");
+  };
+
+  SK.UI = UI;
+
+  function loadArchive(cfg) {
+    if (cfg.external) {
+      var names = ["sk-graph.bin", "sk-layout.bin", "sk-timeline.bin"];
+      return Promise.all(names.map(function (name) {
+        return fetch(name).then(function (res) {
+          if (!res.ok) throw new Error("cannot fetch " + name + " (" + res.status + ")");
+          return res.arrayBuffer();
+        });
+      })).then(function (parts) {
+        return SK.decodeArchiveParts(new Uint8Array(parts[0]), new Uint8Array(parts[1]),
+                                     new Uint8Array(parts[2]));
+      });
+    }
+    var text = byId("sk-payload");
+    return SK.inflateBase64(text ? text.textContent : "").then(SK.decodeArchiveBuffer);
+  }
+
+  SK.boot = function () {
+    var cfg = {};
+    var token = "";
+    try {
+      token = new URLSearchParams(window.location.search).get("token") || "";
+    } catch (queryErr) {
+      token = "";
+    }
+    try {
+      cfg = JSON.parse(byId("sk-config").textContent);
+    } catch (err) {
+      var box = byId("fatal");
+      if (box) {
+        box.textContent = "viewer config is not valid JSON";
+        box.classList.add("on");
+      }
+      return;
+    }
+    try {
+      var live = new SK.LiveGraph(cfg.mode === "archive" ? 4096 : 1024);
+      var canvas = byId("sk-canvas");
+      var renderer;
+      if (SK.Fallback2D && SK.hasWebGL2 && !SK.hasWebGL2()) {
+        renderer = new SK.Fallback2D(canvas);
+        renderer.setScene(cfg.scene || "planets");
+      } else {
+        renderer = new SK.Renderer();
+        try {
+          renderer.mount(canvas, live);
+          renderer.setScene(cfg.scene || "planets");
+        } catch (mountErr) {
+          try { if (renderer.dispose) renderer.dispose(); } catch (ignored) {}
+          if (!SK.Fallback2D) throw mountErr;
+          renderer = new SK.Fallback2D(canvas);
+          renderer.setScene(cfg.scene || "planets");
+        }
+      }
+      var camera = new SK.Camera(renderer);
+      camera.attach(live);
+      var labels = new SK.Labels(byId("sk-labels"), renderer);
+      var director = new SK.Director(live, renderer, camera, labels);
+      var ui = new SK.UI();
+      ui.token = token;
+      ui.mount(byId("hud"), {cfg: cfg, live: live, renderer: renderer,
+                             camera: camera, director: director});
+      director.attach(ui);
+      if (cfg.title) document.title = cfg.title;
+
+      if (cfg.mode === "archive") {
+        loadArchive(cfg).then(function (payload) {
+          director.start("archive", payload);
+          ui.hideLauncher();
+        }).catch(function (err) {
+          ui.fatal(err);
+        });
+      } else {
+        director.start("live", null);
+        if (cfg.liveUrl) ui.connectLive(cfg.liveUrl, cfg.scene);
+        else ui.showLauncher();
+      }
+
+      window.addEventListener("resize", function () {
+        renderer.resize();
+        labels.resize();
+      });
+      var last = performance.now();
+      function frame(now) {
+        requestAnimationFrame(frame);
+        var dt = Math.min(0.1, Math.max(0, (now - last) / 1000));
+        last = now;
+        director.tick(dt);
+      }
+      requestAnimationFrame(frame);
+    } catch (err) {
+      var fatal = byId("fatal");
+      if (fatal) {
+        fatal.textContent = "viewer failed: " + (err && err.message ? err.message : err);
+        fatal.classList.add("on");
+      }
+      throw err;
+    }
+  };
+})(window.SK = window.SK || {});

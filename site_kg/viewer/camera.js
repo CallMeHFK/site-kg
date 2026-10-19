@@ -1,0 +1,165 @@
+/* Camera rig: OrbitControls plus scripted fit/focus/push-in tweens. */
+(function (SK) {
+  "use strict";
+
+  function Camera(renderer) {
+    var THREE = T3.THREE;
+    this.renderer = renderer;
+    this.camera = renderer.camera;
+    this.live = null;
+    this.tween = null;
+    this.settled = true;
+    this.userInteracting = false;
+    this.reduced = !!(window.matchMedia &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+    this.controls = new T3.OrbitControls(this.camera, renderer.canvas);
+    this.controls.enableDamping = true;
+    this.controls.dampingFactor = 0.08;
+    this.controls.rotateSpeed = 0.7;
+    this.controls.zoomSpeed = 0.9;
+    this.controls.autoRotate = !this.reduced;
+    this.controls.autoRotateSpeed = (renderer.cfg && renderer.cfg.spin) || 0.6;
+    this.controls.target.set(0, 0, 0);
+    var self = this;
+    this.controls.addEventListener("start", function () {
+      self.userInteracting = true;
+      self.controls.autoRotate = false;
+      self.tween = null;
+      self.settled = true;
+    });
+    this.controls.addEventListener("end", function () {
+      self.userInteracting = false;
+    });
+    this._tmp = new THREE.Vector3();
+  }
+
+  Camera.prototype.attach = function (live) {
+    this.live = live;
+    return this;
+  };
+
+  Camera.prototype.setAutoRotate = function (on) {
+    this.controls.autoRotate = !!on && !this.userInteracting && !this.reduced;
+  };
+
+  Camera.prototype.fit = function (points, opts) {
+    opts = opts || {};
+    var THREE = T3.THREE;
+    var n = Math.floor(points.length / 3);
+    if (!n) return;
+    var cx = 0, cy = 0, cz = 0, i;
+    for (i = 0; i < n; i++) {
+      cx += points[i * 3];
+      cy += points[i * 3 + 1];
+      cz += points[i * 3 + 2];
+    }
+    cx /= n; cy /= n; cz /= n;
+    var dists = new Float64Array(n);
+    for (i = 0; i < n; i++) {
+      dists[i] = Math.hypot(points[i * 3] - cx, points[i * 3 + 1] - cy,
+                            points[i * 3 + 2] - cz);
+    }
+    var radius = 1;
+    if (opts.robust && n > 8) {
+      var sorted = Array.prototype.slice.call(dists).sort(function (a, b) { return a - b; });
+      radius = sorted[Math.floor(sorted.length * 0.92)] * 1.25;
+    } else {
+      for (i = 0; i < n; i++) if (dists[i] > radius) radius = dists[i];
+    }
+    radius = Math.max(radius, 1);
+    var fov = this.camera.fov * Math.PI / 180;
+    var distance = radius / Math.sin(fov / 2) * (opts.zoom || 1);
+    var dir = this._tmp.copy(this.camera.position).sub(this.controls.target);
+    if (dir.lengthSq() < 1e-6) dir.set(0, 0, 1);
+    dir.normalize();
+    this._to(new THREE.Vector3(cx, cy, cz).add(dir.multiplyScalar(distance)),
+             new THREE.Vector3(cx, cy, cz), opts.duration || 650);
+  };
+
+  Camera.prototype.fitLive = function (opts) {
+    if (!this.live) return;
+    this.fit(this.renderer.samplePoints(this.live, 6000), opts || {robust: true});
+  };
+
+  Camera.prototype.focus = function (index) {
+    var live = this.live;
+    if (!live || index < 0 || index >= live.n) return;
+    var THREE = T3.THREE;
+    var target = new THREE.Vector3();
+    this.renderer.nodeWorld(index, target);
+    var dir = this._tmp.copy(this.camera.position).sub(this.controls.target);
+    if (dir.lengthSq() < 1e-6) dir.set(0, 0, 1);
+    dir.normalize();
+    var distance = Math.max(this.renderer.sceneRadius * 0.22, 12);
+    this._to(target.clone().add(dir.multiplyScalar(distance)), target, 620);
+  };
+
+  Camera.prototype.pushIn = function (scale) {
+    var THREE = T3.THREE;
+    var target = this.controls.target.clone();
+    var offset = new THREE.Vector3().copy(this.camera.position).sub(target);
+    offset.multiplyScalar(scale || 0.82);
+    if (offset.length() < 4) offset.setLength(4);
+    this._to(target.clone().add(offset), target, 900);
+  };
+
+  Camera.prototype._to = function (pos, target, duration) {
+    if (this.reduced) {
+      this.camera.position.copy(pos);
+      this.controls.target.copy(target);
+      this.tween = null;
+      this.settled = true;
+      this.controls.autoRotate = false;
+      return;
+    }
+    this.tween = {
+      p0: this.camera.position.clone(), p1: pos,
+      t0: this.controls.target.clone(), t1: target,
+      t: 0, dur: duration || 600
+    };
+    this.settled = false;
+    this.controls.autoRotate = false;
+  };
+
+  Camera.prototype.settleNow = function () {
+    var tw = this.tween;
+    if (tw) {
+      this.camera.position.copy(tw.p1);
+      this.controls.target.copy(tw.t1);
+      this.tween = null;
+    }
+    this.settled = true;
+  };
+
+  Camera.prototype.setUserInteracting = function (flag) {
+    this.userInteracting = !!flag;
+    if (flag) {
+      this.tween = null;
+      this.settled = true;
+      this.controls.autoRotate = false;
+    }
+  };
+
+  Camera.prototype.update = function (dt) {
+    var tw = this.tween;
+    if (tw) {
+      tw.t += dt * 1000;
+      var k = Math.min(1, tw.t / tw.dur);
+      var e = 1 - Math.pow(1 - k, 3);
+      this.camera.position.lerpVectors(tw.p0, tw.p1, e);
+      this.controls.target.lerpVectors(tw.t0, tw.t1, e);
+      if (k >= 1) {
+        this.tween = null;
+        this.settled = true;
+        if (!this.userInteracting && !this.reduced) {
+          this.controls.autoRotateSpeed = (this.renderer.cfg && this.renderer.cfg.spin) || 0.6;
+          this.controls.autoRotate = true;
+        }
+      }
+    }
+    this.controls.update();
+    this.renderer.camDistance = this.camera.position.distanceTo(this.controls.target);
+  };
+
+  SK.Camera = Camera;
+})(window.SK = window.SK || {});

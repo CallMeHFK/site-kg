@@ -63,6 +63,7 @@ MCP 客户端配置（streamable HTTP）：
 | `neighbors(site_id, page_id, depth)` | 子图扩展（多跳上下文） |
 | `ask(site_id, question)` | LLM 带引用问答（需配置 LLM） |
 | `render_site(site_id)` | 自包含 **3D** Three.js 图谱查看器（人工巡检） |
+| `render_build(site_id)` | 自包含 **WebGPU** 构建回放查看器：图谱现场"生长"——节点按语料顺序降生到章环上，随后证据边（ref/imports/contains），再按每个派生关系维度各飞来一波；每条边从源节点射出并绑定到目标节点（带脉冲），HUD 实时计数节点/边/各维度边。倍速 0.25×–16×、重播/暂停/跳过。需支持 WebGPU 的浏览器 |
 
 资源：`site://<site_id>/graph` —— 完整图 JSON。
 
@@ -90,6 +91,35 @@ MCP 客户端配置（streamable HTTP）：
 实测（2026-10-09，自举本仓库）：22 个文件（7 文档 + 15 代码）→ 30 条 `imports` + 2 条 `ref` + 2 条 `contains`，判定 `READY`；按标识符检索（`pagerank`、`gitignore`）命中正确源文件。
 
 实测（2026-10-13，语料规模级：DriveOS SDK 源码树 115,598 文档 / 7 站）：逐站重摄入，报告数字与摄入前完全一致；最大站（75,415 文档）`get_page` 冷读约 12ms（单文件格式同一页面需 8.3s）。分片/meta 缓存以文件 mtime+size 为键，任何进程（cli、爬虫任务、另一个 agent）重摄入后下一次读到的就是新数据，无需失效钩子；所有写入走临时文件 + `os.replace`，重摄入期间 4 线程并发读零撕裂。
+
+## 实时查看器
+
+`site-kg live` 启动本地"地址优先"的实时会话：先给地址，再在浏览器里选场景。
+
+```bash
+# URL：打印回环地址，启动器已预填该地址
+python -m site_kg.cli live https://docs.example.com
+
+# 带场景跳过启动器：爬取 -> 流式建图 -> 沉降一次完成
+python -m site_kg.cli live https://docs.example.com --scene people
+
+# 本地文档/代码目录
+python -m site_kg.cli live --local ./docs --scene planets
+
+# 回放已摄入站点的存储图
+python -m site_kg.cli live my-site --replay
+```
+
+页面通过 SSE 实时接收构建过程，服务端边爬取边做增量布局：节点按语料顺序到达，边随页面解析绑定；派生关系维度默认隐藏且从不参与布局弹簧，因此不会扭曲构图。场景：**Planets**（1）章节轨道环、**People**（2）围绕焦点节点的 ego 邻域、**Neural**（3）密集场视图。`#scene=`、localStorage 里上次选择、MCP 的 `scene=` 都只是"已选过场景"之后的预设，不会取代地址优先的启动流程。
+
+规模与兜底：
+
+- 规模下限是实测的 75,415 节点 / 61,615 边；布局全部在服务端完成（该规模下浏览器不做力导向布局）。`--max-nodes` 只裁剪预览。
+- 标签有预算（章节 ≤40 / 刻度 ≤12），场景是一张合并点云加合并线批——没有逐节点对象或 DOM 标签。
+- 没有 WebGL2 时自动退回 canvas 2D，最多画 5,000 个节点，并提示用离线归档查看全图；WebGL 上下文丢失会原地恢复。
+- 归档查看器（`site-kg render <site_id>`）是单个离线 HTML（默认内嵌二进制载荷；`--external-data` 则在旁边写 `sk-*.bin`），同样支持这套场景回放。
+
+安全：服务只绑定 `127.0.0.1`，不发 CORS 头，拒绝非回环 `Host`、拒绝路径穿越、不提供语料文件，并可选共享令牌（`--token`）。带令牌时打印的 URL 自带 `?token=…`，页面会在 snapshot、SSE 与 start 请求上转发它。Three.js r186 bundle 已提交并锁定；日常开发与离线使用都不需要 npm——需要刻意升级时见 `tools/build_viewer_bundle.mjs`。
 
 ## 关系维度
 
@@ -160,7 +190,7 @@ WantedBy=default.target
 - 语义增强（可选）：配置 `SITE_KG_LLM_KEY` 后用 cognee `cognify` 在结构边之上叠加实体/关系边。
 - 本地代码摄入的 tree-sitter 符号/引用边（aider 式 tags），作为正则层之上的可选 extra。
 - 壳页兜底失效的 JS 站点（无限滚动、重反爬）走 Crawl4AI 深爬，经 `.[crawl]` extra 启用。
-- 可视化已完成：`render_site` 产出自包含 3D Three.js 查看器（bundle 内嵌可离线，布局在渲染期用固定种子计算）。
+- 可视化已完成：`render_site` 产出自包含 3D Three.js 查看器（bundle 内嵌可离线，布局在渲染期用固定种子计算）；`render_build` 再用 WebGPU 回放构建过程本身——节点与各维度边波次动态落上章环，HUD 实时计数。
 
 ## 许可
 

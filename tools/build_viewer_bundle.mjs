@@ -1,8 +1,12 @@
 #!/usr/bin/env node
 // Rebuild site_kg/vendor/three-viewer.min.js:
-//   npm install three esbuild   (in a scratch dir)
+//   npm install three@0.186.0 esbuild   (in a scratch dir)
 //   node tools/build_viewer_bundle.mjs <scratch-dir-with-node_modules>
-// Output is committed; contributors do not need node for normal development.
+//
+// The output is committed and pinned to three r186. Archives and the live
+// viewer load it inline, so they stay offline (file://, single file, no CDN).
+// Contributors do not need npm for normal development; only rerun this script
+// when deliberately upgrading the pinned three.js release.
 import { execFileSync } from "node:child_process";
 import { writeFileSync, rmSync } from "node:fs";
 import { join, dirname } from "node:path";

@@ -63,6 +63,7 @@ MCP client config (streamable HTTP):
 | `neighbors(site_id, page_id, depth)` | subgraph expansion (multi-hop context) |
 | `ask(site_id, question)` | LLM Q&A with citations (needs LLM config) |
 | `render_site(site_id)` | self-contained **3D** Three.js graph viewer (human inspection): degree-sized glowing nodes, hover tooltip, click-to-focus neighbourhood, chapters aggregate view (click a sphere to isolate), instant search with focus, live status bar (nodes/edges/view%/FPS) |
+| `render_build(site_id)` | self-contained **WebGPU** build-replay viewer: the graph constructs itself live — nodes born in corpus order onto chapter rings, then evidence edges (ref/imports/contains), then one flying wave per derived relation dimension; every edge shoots out of its source node and binds to the target with a pulse while a HUD counts nodes/edges/per-dimension edges. Speed controls 0.25×–16×, replay/pause/skip. Needs a WebGPU-capable browser |
 
 Resource: `site://<site_id>/graph` — the full graph JSON.
 
@@ -93,6 +94,35 @@ Design choices, after surveying the field (aider, Serena, CocoIndex, gitingest; 
 Measured (2026-10-09, dogfooding this repo): 22 files (7 docs + 15 code) → 30 `imports` + 2 `ref` + 2 `contains` edges, verdict `READY`; identifier search (`pagerank`, `gitignore`) lands on the right source file.
 
 Measured at corpus scale (2026-10-13, a 115,598-doc / 7-site DriveOS SDK source tree): re-ingest and report parity verified site-by-site; `get_page` on the largest site (75,415 docs) reads one ~3.8 MB shard in ~12 ms where the single-file format needed 8.3 s for the same page. Shard/meta caches are keyed by file mtime+size, so a re-ingest from any process (cli, crawl job, another agent) is served fresh with no invalidation hook; all writes are tmp-file + `os.replace`, and a 4-thread read hammer during repeated re-ingest saw zero torn reads.
+
+## Live viewer
+
+`site-kg live` starts a local, address-first live session: give it the address first; the browser then asks which scene to build in.
+
+```bash
+# URL: prints a loopback URL; the launcher is prefilled with the address
+python -m site_kg.cli live https://docs.example.com
+
+# skip the launcher with a scene: crawl -> stream -> settle in one view
+python -m site_kg.cli live https://docs.example.com --scene people
+
+# local docs/code directory
+python -m site_kg.cli live --local ./docs --scene planets
+
+# replay an ingested site from its stored graph
+python -m site_kg.cli live my-site --replay
+```
+
+The page streams the build over SSE while the server crawls and lays the graph out incrementally: nodes arrive in corpus order, edges bind as pages are parsed, and derived relation dimensions stay hidden by default and never participate in layout springs, so they cannot distort the picture. Scenes: **Planets** (1) chapters as orbital rings, **People** (2) an ego neighbourhood around the focus node, **Neural** (3) a dense field view. `#scene=`, the last-picked scene in localStorage, and the MCP `scene=` argument are presets once a scene has been chosen — they never replace the address-first start.
+
+Limits and fallbacks:
+
+- The scale floor is the measured 75,415-node / 61,615-edge corpus; layout runs on the server (no browser-side force layout at that size). `--max-nodes` trims the preview only.
+- Labels are budgeted at most 40 chapter / 12 tick labels, and the scene is merged point/line batches — no per-node objects or DOM labels.
+- Without WebGL2 the page falls back to a canvas-2D view capped at 5,000 nodes and points at the offline archive for the full graph. WebGL context loss is restored in place.
+- The archive viewer (`site-kg render <site_id>`) is a single offline HTML file (binary payloads embedded by default; `--external-data` writes `sk-*.bin` beside it) and replays the same scenes.
+
+Security: the server binds `127.0.0.1` only, sends no CORS headers, rejects non-loopback `Host` values, refuses path traversal, serves no corpus files, and offers an optional shared token (`--token`). With a token, the printed URL carries `?token=…` and the page forwards it on snapshot, SSE and start calls. The Three.js r186 bundle is committed and pinned; normal development and offline use need no npm — see `tools/build_viewer_bundle.mjs` for the deliberate upgrade path.
 
 ## Relation dimensions
 
@@ -183,7 +213,7 @@ WantedBy=default.target
 - Semantic enrichment (optional): cognee `cognify` over the crawled corpus when `SITE_KG_LLM_KEY` is present — entity/relation edges alongside the structural ones.
 - ~~Cross-file symbol edges~~ done: `mentions_symbol` (regex layer, keyless). tree-sitter symbol/reference edges (aider-style tags) remain an optional extra for precision.
 - Crawl4AI deep-crawl for JS sites that defeat the Playwright shell-fallback (infinite scroll, heavy anti-bot), via the `.[crawl]` extra.
-- ~~Static graph visualization~~ done: `render_site` emits a self-contained 3D Three.js viewer per site (bundle embedded, works offline; seeded layout computed at render time).
+- ~~Static graph visualization~~ done: `render_site` emits a self-contained 3D Three.js viewer per site (bundle embedded, works offline; seeded layout computed at render time). `render_build` adds a WebGPU replay of the construction itself — nodes and per-dimension edge waves animating onto the rings with a live HUD.
 
 ## License
 
