@@ -1,7 +1,7 @@
 (function (SK) {
   "use strict";
   SK.scenes = SK.scenes || {};
-  SK.sceneOrder = SK.sceneOrder || ["planets", "people", "neural"];
+  SK.sceneOrder = SK.sceneOrder || ["planets", "neural"];
   SK.scenes.planets = {
     name: "planets",
     label: "Planets",

@@ -12,7 +12,6 @@
   --panel:#232323;
   --on-surface:#f1f1ef;
   --on-surface-muted:#b3b4ae;
-  --field-people:#ffa657;  --field-people-ink:#1a1206;
   --field-neural:#79c0ff;  --field-neural-ink:#0a2537;
   --field-planets:#0d1117; --field-planets-ink:#e6edf3;
   --display:"Arial Narrow","Liberation Sans Narrow",sans-serif;
@@ -190,9 +189,10 @@
 
  /* ---- scene fields ---- */
  .p-scenes{padding:92px var(--margin) 96px;background:var(--paper)}
- .p-scene-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:18px}
+ .p-scene-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:18px}
  .scene{display:block;border:0;padding:0;text-align:left;cursor:pointer;
-        font:inherit;color:var(--field-people-ink);background:var(--field-people);
+        font:inherit;color:var(--field-planets-ink);
+        background:var(--field-planets);
         transition:transform .18s ease-out}
  .scene[data-scene="neural"]{color:var(--field-neural-ink);background:var(--field-neural)}
  .scene[data-scene="planets"]{color:var(--field-planets-ink);background:var(--field-planets)}
@@ -207,7 +207,7 @@
           font-weight:800;font-stretch:condensed;text-transform:uppercase;
           letter-spacing:-.01em;line-height:1;font-size:clamp(26px,2.6vw,38px)}
 .scene.on .p-sname{display:inline-block;padding:2px 10px;
-                   background:var(--field-people-ink);color:var(--field-people)}
+                   background:var(--field-planets-ink);color:var(--field-planets)}
 .scene.on[data-scene="neural"] .p-sname{background:var(--field-neural-ink);
                                         color:var(--field-neural)}
 .scene.on[data-scene="planets"] .p-sname{background:var(--field-planets-ink);
@@ -216,12 +216,10 @@
           max-width:34ch}
 @media (max-width:900px){
  .p-scenes{padding:64px var(--margin) 72px}
- .p-scene-grid{grid-template-columns:repeat(2,1fr);gap:22px}
- .scene:last-child{grid-column:1 / -1}
+ .p-scene-grid{gap:22px}
 }
 @media (max-width:600px){
  .p-scene-grid{grid-template-columns:1fr}
- .scene:last-child{grid-column:auto}
 }
 
  /* ---- cta band: one word is the button ---- */

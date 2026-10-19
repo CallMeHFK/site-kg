@@ -104,7 +104,7 @@ Measured at corpus scale (2026-10-13, a 115,598-doc / 7-site DriveOS SDK source 
 python -m site_kg.cli live https://docs.example.com
 
 # skip the launcher with a scene: crawl -> stream -> settle in one view
-python -m site_kg.cli live https://docs.example.com --scene people
+python -m site_kg.cli live https://docs.example.com --scene neural
 
 # local docs/code directory
 python -m site_kg.cli live --local ./docs --scene planets
@@ -113,7 +113,7 @@ python -m site_kg.cli live --local ./docs --scene planets
 python -m site_kg.cli live my-site --replay
 ```
 
-The page streams the build over SSE while the server crawls and lays the graph out incrementally: nodes arrive in corpus order, edges bind as pages are parsed, and derived relation dimensions stay hidden by default and never participate in layout springs, so they cannot distort the picture. Scenes: **Planets** (1) chapters as orbital rings, **People** (2) an ego neighbourhood around the focus node, **Neural** (3) a dense field view. `#scene=`, the last-picked scene in localStorage, and the MCP `scene=` argument are presets once a scene has been chosen — they never replace the address-first start.
+The page streams the build over SSE while the server crawls and lays the graph out incrementally: nodes arrive in corpus order, edges bind as pages are parsed, and derived relation dimensions stay hidden by default and never participate in layout springs, so they cannot distort the picture. Scenes: **Planets** (1) chapters as worlds in orbit, **Neural** (2) a dense field of synapses. `#scene=`, the last-picked scene in localStorage, and the MCP `scene=` argument are presets once a scene has been chosen — they never replace the address-first start.
 
 Limits and fallbacks:
 

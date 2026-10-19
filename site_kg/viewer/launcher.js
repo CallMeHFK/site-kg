@@ -13,11 +13,10 @@
     placeholder: "docs.example.com",
     steps: [
       ["Give it an address", "Paste any URL. The crawl starts the moment you launch."],
-      ["Pick a scene", "Three ways to see the same graph: people, synapses, or orbits."],
+      ["Pick a scene", "Two ways to see the same graph: planets or synapses."],
       ["Watch it build", "Pages arrive as nodes, links as edges, in real time."]
     ],
     scenes: {
-      people: "An ego network — the pages that link each other, closest first.",
       neural: "Synapses — links light up as signals between pages.",
       planets: "Orbits — clusters settle into shells around the core."
     },

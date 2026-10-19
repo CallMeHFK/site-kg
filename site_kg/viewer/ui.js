@@ -306,7 +306,7 @@
 
     var keys = el("div", "keys",
                   "drag rotate \u00b7 wheel zoom \u00b7 click a node to focus \u00b7 "
-                  + "1\u20133 scenes \u00b7 F finale \u00b7 shift+F fit \u00b7 "
+                  + "1\u20132 scenes \u00b7 F finale \u00b7 shift+F fit \u00b7 "
                   + "space replay \u00b7 / search");
     legend.appendChild(keys);
   };
@@ -542,7 +542,7 @@
         }
         return;
       }
-      if (e.key >= "1" && e.key <= "3") {
+      if (e.key >= "1" && e.key <= "2") {
         var n = parseInt(e.key, 10) - 1;
         var names = SK.sceneOrder || [];
         if (names[n]) self.activateScene(names[n]);

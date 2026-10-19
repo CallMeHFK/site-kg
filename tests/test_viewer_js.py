@@ -13,7 +13,6 @@ CORE = ROOT / "site_kg" / "viewer" / "core.js"
 DIRECTOR = ROOT / "site_kg" / "viewer" / "director.js"
 LAUNCHER = ROOT / "site_kg" / "viewer" / "launcher.js"
 PLANETS = ROOT / "site_kg" / "viewer" / "scenes" / "planets.js"
-PEOPLE = ROOT / "site_kg" / "viewer" / "scenes" / "people.js"
 NEURAL = ROOT / "site_kg" / "viewer" / "scenes" / "neural.js"
 UI = ROOT / "site_kg" / "viewer" / "ui.js"
 
@@ -234,7 +233,7 @@ assert.equal(g.dangling, 1);
 
 
 def test_scene_selection_and_derived_edge_visibility():
-    _run(_prelude(CORE, DIRECTOR, PLANETS, PEOPLE, NEURAL) + """
+    _run(_prelude(CORE, DIRECTOR, PLANETS, NEURAL) + """
 const g = new SK.LiveGraph(256);
 for (let i = 0; i < 160; i++) {
   g.nodeAdded("n" + i, {t: "N" + i, c: i % 4, g: i === 0 ? 150 : 1,
@@ -243,14 +242,9 @@ for (let i = 0; i < 160; i++) {
 for (let i = 1; i <= 150; i++) g.edgeAdded("n0", "n" + i, "ref");
 assert.equal(SK.scenes.planets.select(g, -1).length, 160);
 assert.equal(SK.scenes.neural.select(g, 5).length, 160);
-const focused = SK.scenes.people.select(g, 5);
-assert.equal(focused.length, 120);
-assert.equal(focused[0], 5);
-assert.ok(focused.indexOf(0) >= 0);
-const hub = SK.scenes.people.select(g, -1);
-assert.equal(hub.length, 120);
-assert.equal(hub[0], 0);
-assert.deepEqual(SK.scenes.people.select(g, 5), focused);
+assert.equal(SK.scenes.planets.ego, false);
+assert.equal(SK.scenes.neural.ego, false);
+assert.deepEqual(SK.sceneOrder, ["planets", "neural"]);
 
 g.edgeAdded("n1", "n2", "mentions_symbol");
 const derivedEdge = g.m - 1;
@@ -611,13 +605,13 @@ global.document = {
   getElementById: function (id) {
     if (id !== "sk-launch-art") return null;
     return {textContent: JSON.stringify({
-      people: "data:image/jpeg;base64,AAAA",
+      neural: "data:image/jpeg;base64,AAAA",
       hud: "data:image/jpeg;base64,BBBB"
     })};
   }
 };
 const art = SK.launcher.loadArt();
-assert.equal(art.people, "data:image/jpeg;base64,AAAA");
+assert.equal(art.neural, "data:image/jpeg;base64,AAAA");
 assert.equal(art.hud, "data:image/jpeg;base64,BBBB");
 global.document = {getElementById: function () { return null; }};
 assert.deepEqual(SK.launcher.loadArt(), {});

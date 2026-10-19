@@ -101,7 +101,7 @@ MCP 客户端配置（streamable HTTP）：
 python -m site_kg.cli live https://docs.example.com
 
 # 带场景跳过启动器：爬取 -> 流式建图 -> 沉降一次完成
-python -m site_kg.cli live https://docs.example.com --scene people
+python -m site_kg.cli live https://docs.example.com --scene neural
 
 # 本地文档/代码目录
 python -m site_kg.cli live --local ./docs --scene planets
@@ -110,7 +110,7 @@ python -m site_kg.cli live --local ./docs --scene planets
 python -m site_kg.cli live my-site --replay
 ```
 
-页面通过 SSE 实时接收构建过程，服务端边爬取边做增量布局：节点按语料顺序到达，边随页面解析绑定；派生关系维度默认隐藏且从不参与布局弹簧，因此不会扭曲构图。场景：**Planets**（1）章节轨道环、**People**（2）围绕焦点节点的 ego 邻域、**Neural**（3）密集场视图。`#scene=`、localStorage 里上次选择、MCP 的 `scene=` 都只是"已选过场景"之后的预设，不会取代地址优先的启动流程。
+页面通过 SSE 实时接收构建过程，服务端边爬取边做增量布局：节点按语料顺序到达，边随页面解析绑定；派生关系维度默认隐藏且从不参与布局弹簧，因此不会扭曲构图。场景：**Planets**（1）章节化作轨道上的星球、**Neural**（2）密集的突触场视图。`#scene=`、localStorage 里上次选择、MCP 的 `scene=` 都只是"已选过场景"之后的预设，不会取代地址优先的启动流程。
 
 规模与兜底：
 
