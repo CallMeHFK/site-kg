@@ -870,3 +870,124 @@ let p2 = 0, v2 = 0;
 const first = SK.springStep(p2, v2, 1, stiff, damp, dt);
 assert.ok(first[0] > 0 && first[0] < 0.4, "first frame trails, got " + first[0]);
 """)
+
+
+def test_brain_sequence_is_deterministic_and_on_the_unit_sphere():
+    """R2 has to be a pure function of the index: the head is cached per node
+    count, but a rebuild after the graph grows must not move the cells that
+    were already there."""
+    _run(_prelude(CORE) + """
+function close(a, b, eps) { return Math.abs(a - b) <= eps; }
+for (let i = 0; i < 500; i++) {
+  const d = SK.brainSequence(i);
+  assert.equal(d.length, 3);
+  assert.ok(d.every(Number.isFinite), "finite at " + i);
+  const len = Math.hypot(d[0], d[1], d[2]);
+  assert.ok(close(len, 1, 1e-9), "unit at " + i + ", got " + len);
+  const again = SK.brainSequence(i);
+  assert.deepEqual(again, d, "deterministic at " + i);
+  // copies, not aliases: an in-place nudge by the renderer must not leak
+  again[0] += 1;
+  assert.notEqual(SK.brainSequence(i)[0], again[0], "fresh array each call");
+}
+// the first few directions are distinct, not a degenerate point
+assert.notDeepEqual(SK.brainSequence(0), SK.brainSequence(1));
+""")
+
+
+def test_brain_jitter_is_deterministic_and_stays_unit_length():
+    """The jitter nudges a direction along two tangents; it must stay on the
+    unit sphere, or cells float off the cortex and the soma stand-off becomes
+    meaningless."""
+    _run(_prelude(CORE) + """
+const base = SK.brainSequence(37);
+const a = SK.brainJitter(base[0], base[1], base[2], 37 * 0.618 + 1.7);
+const b = SK.brainJitter(base[0], base[1], base[2], 37 * 0.618 + 1.7);
+assert.deepEqual(a, b, "same seed, same direction");
+const c = SK.brainJitter(base[0], base[1], base[2], 38 * 0.618 + 1.7);
+assert.notDeepEqual(a, c, "a different seed moves the cell");
+assert.ok(Math.abs(Math.hypot(a[0], a[1], a[2]) - 1) < 1e-9, "unit length");
+assert.ok(Math.abs(a[0] * base[0] + a[1] * base[1] + a[2] * base[2]) > 0.99,
+          "still on the same patch of cortex");
+
+// a zero vector must not produce NaN: it falls back to the pole
+const z = SK.brainJitter(0, 0, 0, 1);
+assert.ok(z.every(Number.isFinite), "degenerate input stays finite");
+assert.ok(Math.abs(Math.hypot(z[0], z[1], z[2]) - 1) < 1e-9);
+
+// the poles are the one place a naive tangent basis degenerates
+for (let i = 0; i < 64; i++) {
+  const d = SK.brainJitter(0, i % 2 ? 1 : -1, 0, i + 0.5);
+  assert.ok(Math.abs(Math.hypot(d[0], d[1], d[2]) - 1) < 1e-9, "pole " + i);
+  assert.ok(d.every(Number.isFinite), "pole finite " + i);
+}
+""")
+
+
+def test_brain_patch_returns_finite_radius_fold_age():
+    """Every direction must resolve to a radius on the skin, a fold offset and
+    an age. A NaN in any of them poisons a whole vertex or a whole cell."""
+    _run(_prelude(CORE) + """
+const out = [0, 0, 0];
+for (let i = 0; i < 2000; i++) {
+  const d = SK.brainSequence(i);
+  const p = SK.brainPatch(d[0], d[1], d[2], out);
+  assert.equal(p.length, 3);
+  assert.ok(p.every(Number.isFinite), "finite at " + i);
+  assert.ok(p[0] > 0.4 && p[0] < 0.9, "radius in bounds at " + i + ": " + p[0]);
+  assert.ok(p[1] > -0.25 && p[1] < 0.15, "fold in bounds at " + i + ": " + p[1]);
+  assert.ok(p[2] >= 0 && p[2] <= 1, "age in [0,1] at " + i + ": " + p[2]);
+  // the caller's buffer is reused, not replaced
+  assert.equal(p, out);
+}
+// age really does order the build: the brainstem is younger tissue than the
+// frontal pole, so the two ends must not collapse to the same value
+const stem = SK.brainPatch(0, -0.97, -0.24, [0, 0, 0])[2];
+const front = SK.brainPatch(0, 0, 1, [0, 0, 0])[2];
+assert.ok(stem < front, "stem forms before the frontal pole: " + stem + " < " + front);
+""")
+
+
+def test_brain_mesh_indices_normals_and_max_radius():
+    """The cortex is uploaded as Uint16 indices, so every index must stay under
+    the vertex count and under 65536; the normals must be unit length or the
+    gyri catch no light; the head must be the size the renderer scales to."""
+    _run(_prelude(CORE) + """
+const rows = 96, cols = 192;
+const m = SK.brainMesh(rows, cols);
+assert.equal(m.rows, rows);
+assert.equal(m.cols, cols);
+assert.equal(m.count, rows * cols);
+assert.equal(m.positions.length, m.count * 3);
+assert.equal(m.normals.length, m.count * 3);
+assert.equal(m.indices.length, (rows - 1) * cols * 6);
+assert.ok(m.count < 65536, "Uint16 indices can address the grid");
+
+let maxIdx = -1, maxR = 0, badNormal = 0;
+for (let i = 0; i < m.positions.length; i++) {
+  if (!Number.isFinite(m.positions[i])) throw new Error("non-finite position " + i);
+}
+for (let i = 0; i < m.indices.length; i++) {
+  const idx = m.indices[i];
+  if (!Number.isInteger(idx) || idx < 0 || idx >= m.count) {
+    throw new Error("index out of bounds at " + i + ": " + idx);
+  }
+  if (idx > maxIdx) maxIdx = idx;
+}
+assert.equal(maxIdx, m.count - 1, "the last vertex is referenced");
+for (let i = 0; i < m.count; i++) {
+  const x = m.normals[i * 3], y = m.normals[i * 3 + 1], z = m.normals[i * 3 + 2];
+  if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
+    throw new Error("non-finite normal at " + i);
+  }
+  const len = Math.hypot(x, y, z);
+  if (Math.abs(len - 1) > 1e-4) badNormal++;
+  const r = Math.hypot(m.positions[i * 3], m.positions[i * 3 + 1],
+                       m.positions[i * 3 + 2]);
+  if (!Number.isFinite(r)) throw new Error("non-finite radius at " + i);
+  if (r > maxR) maxR = r;
+}
+assert.equal(badNormal, 0, "every normal is unit length");
+assert.ok(Math.abs(maxR - 0.8706) < 1e-3, "head max radius, got " + maxR);
+assert.ok(m.dev.length === m.count && m.fold.length === m.count);
+""")

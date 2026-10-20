@@ -533,8 +533,30 @@
       eprev = this._eRevealedPrev = nep;
     }
     var r = this.renderer;
+    /* Development waves: a scene can ask for its neurons to mature in waves
+       instead of all at once, so a loaded archive keeps sprouting tissue
+       instead of arriving finished. */
+    var sceneCfg = (SK.scenes && SK.scenes[this.renderer.name]) || {};
+    var gap = sceneCfg.developGap || 0;
+    var waves = sceneCfg.developWaves || 0;
+    /* Development order: the brain builds from the brainstem outward, so a
+       cell waits for the tissue under it to be ready. The scene says how
+       long the whole development takes. */
+    var span = sceneCfg.developSpan || 0;
+    var tissue = (r && r.brainAge) ? r.brainAge : null;
     for (var b = 0; b < live.n; b++) {
-      if (live.revealed[b] && !prev[b] && r && r.markBirth) r.markBirth(b, this.time);
+      if (live.revealed[b] && !prev[b] && r && r.markBirth) {
+        var born = this.time;
+        if (gap > 0 && waves > 0) {
+          var id = live.ids && live.ids[b] ? live.ids[b] : String(b);
+          var h = SK.hashString ? SK.hashString(id) : (b % waves) / waves;
+          born += Math.floor(h * waves) * gap;
+        }
+        if (span > 0 && tissue && b < tissue.length) {
+          born += tissue[b] * span;
+        }
+        r.markBirth(b, born);
+      }
       prev[b] = live.revealed[b];
     }
     for (var be = 0; be < live.m; be++) {
@@ -617,6 +639,9 @@
   Director.prototype.tick = function (dt) {
     this.time += dt;
     if (dt > 0) this.fps += (1 / dt - this.fps) * 0.05;
+    /* The brain has to know where every cell sits before the first one is
+       born, because the tissue decides how long a cell waits to sprout. */
+    if (this.renderer && this.renderer.ensureBrain) this.renderer.ensureBrain(this.live);
     if (this.replay) {
       this.replay.elapsed += dt * 1000;
       this._advanceReplay();

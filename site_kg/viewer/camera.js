@@ -91,8 +91,12 @@
        wide; fitting to those dives the camera into the first planet and the
        rest of the build happens inside it. The floor keeps the opening shot
        wide enough to read as space, and the later fit (once the layout is
-       real) pulls back from there. */
-    if (opts.minRadius == null) opts.minRadius = 21;
+       real) pulls back from there. A scene may override the floor: the brain
+       is a 17-unit head, and the open-cloud default frames it too small. */
+    if (opts.minRadius == null) {
+      var cfg = this.renderer && this.renderer.cfg;
+      opts.minRadius = (cfg && cfg.fitMinRadius != null) ? cfg.fitMinRadius : 21;
+    }
     this.fit(this.renderer.samplePoints(this.live, 6000), opts);
   };
 

@@ -748,6 +748,364 @@
      cell overshoots on release and rings out. */
   SK.DRAG_SPRING = {stiff: 190, damping: 0.62, followStiff: 120, followDamping: 0.54};
 
+  /* Deterministic [0,1) noise, no WebGL needed so the shape can be unit
+     tested in node. hashSeed takes a number, hashString takes an id, and
+     hash3i is the lattice hash the value noise is built on. */
+  SK.hashSeed = function (n) {
+    var x = Math.imul(Math.round(n * 1000) | 0, 374761393);
+    x = Math.imul(x ^ (x >>> 13), 1274126177);
+    x = x ^ (x >>> 16);
+    return (x >>> 0) / 4294967296;
+  };
+
+  SK.hashString = function (s) {
+    var h = 2166136261;
+    for (var i = 0; i < s.length; i++) {
+      h ^= s.charCodeAt(i);
+      h = Math.imul(h, 16777619);
+    }
+    return (h >>> 0) / 4294967296;
+  };
+
+  SK.hash3i = function (x, y, z) {
+    var n = Math.imul(x | 0, 374761393) + Math.imul(y | 0, 668265263) +
+            Math.imul(z | 0, 1274126177);
+    n = Math.imul(n ^ (n >>> 13), 1274126177);
+    n = n ^ (n >>> 16);
+    return (n >>> 0) / 4294967296;
+  };
+
+  /* Value noise on a unit lattice, smoothstepped so the folds bend instead of
+     stepping. Returns [0,1]. */
+  SK.noise3 = function (x, y, z) {
+    var xi = Math.floor(x), yi = Math.floor(y), zi = Math.floor(z);
+    var xf = x - xi, yf = y - yi, zf = z - zi;
+    var u = xf * xf * (3 - 2 * xf), v = yf * yf * (3 - 2 * yf),
+        w = zf * zf * (3 - 2 * zf);
+    var c000 = SK.hash3i(xi, yi, zi), c100 = SK.hash3i(xi + 1, yi, zi);
+    var c010 = SK.hash3i(xi, yi + 1, zi), c110 = SK.hash3i(xi + 1, yi + 1, zi);
+    var c001 = SK.hash3i(xi, yi, zi + 1), c101 = SK.hash3i(xi + 1, yi, zi + 1);
+    var c011 = SK.hash3i(xi, yi + 1, zi + 1), c111 = SK.hash3i(xi + 1, yi + 1, zi + 1);
+    var x00 = c000 + (c100 - c000) * u, x10 = c010 + (c110 - c010) * u;
+    var x01 = c001 + (c101 - c001) * u, x11 = c011 + (c111 - c011) * u;
+    var y0 = x00 + (x10 - x00) * v, y1 = x01 + (x11 - x01) * v;
+    return y0 + (y1 - y0) * w;
+  };
+
+  /* Fractal noise, normalised back to [0,1]. Two or three octaves are enough
+     for gyri; more only costs time in the rebuild loop. */
+  SK.fbm3 = function (x, y, z, oct) {
+    var sum = 0, amp = 0.5, freq = 1, norm = 0;
+    var n = oct || 3;
+    for (var o = 0; o < n; o++) {
+      sum += amp * SK.noise3(x * freq, y * freq, z * freq);
+      norm += amp;
+      amp *= 0.5;
+      freq *= 2.07;
+    }
+    return sum / norm;
+  };
+
+  /* ---- the brain -------------------------------------------------------------
+     The neural scene is tissue, not a constellation. The graph's nodes are
+     neurons, and neurons do not float in space: they sit on a cortex, and the
+     cortex has the shape of a head.
+
+     The head is a radial function: for a direction, the distance to the skin.
+     A sheared ellipsoid gives the cerebrum, tilted so the frontal pole sits
+     lower than the back of the head the way a real one does. Three smooth
+     bumps grow out of it: the cerebellum under the back of the skull, the
+     brainstem below that, and the temporal lobe at the lower front of each
+     side. Bumps are added to the radius rather than unioned as separate
+     solids, because a union leaves a crease where two solids meet and a
+     crease reads as a crack in the tissue from every angle.
+
+     The folds are carved into the same radius. Two families of noise make
+     the gyri: the zero contour of a smooth field is the sulcus, and the
+     ground between two of them is the gyrus. A valley down the midline is
+     the longitudinal fissure, and two grooves running the way the central
+     and Sylvian fissures do divide the lobes. Every carve is radial, so the
+     surface stays star-shaped and can never fold inside out.
+
+     Each patch of the head also has an age. The brainstem and the back of
+     the head mature first, the frontal pole last, and the tissue forms in
+     that order, so the scene grows the way a brain does.
+
+     Canonical units: the cerebrum is about 1.5 long, 1.2 wide and 1.0 high,
+     roughly the proportions of a human head. */
+  var BRAIN_AX = 0.60, BRAIN_AY = 0.52, BRAIN_AZ = 0.78;
+  /* The head tips forward: the frontal pole hangs lower than the back. */
+  var BRAIN_TILT = 0.17;
+  var _brainProf = [0, 0, 0, 0, 0];
+  var _brainFrame = [0, 0, 0];
+  var _brainGyri = [0, 0];
+  /* How the gyri are cut. The cortex is a folded sheet, and the folds are the
+     zero set of a smooth field: a sulcus is where the field crosses zero,
+     and the ground between two of them is a gyrus. So the field is read
+     twice. How close it is to zero says how deep the cleft is, and how far
+     from zero says how high the crown stands. The two widths are the scale
+     of the cleft and the scale of the crown, in the same units as the
+     field, so the fold is always centred: sulci below zero, crowns above. */
+  var GYRI_FREQ1 = 3.4, GYRI_FREQ2 = 7.6;
+  var GYRI_CLEFT1 = 0.075, GYRI_CLEFT2 = 0.045;
+  var GYRI_CROWN1 = 0.170, GYRI_CROWN2 = 0.090;
+  var GYRI_UP1 = 0.070, GYRI_UP2 = 0.014;
+  var GYRI_DOWN1 = 0.084, GYRI_DOWN2 = 0.026;
+
+  function brainSmooth(x, a, b) {
+    var t = (x - a) / (b - a);
+    if (t < 0) t = 0; else if (t > 1) t = 1;
+    return t * t * (3 - 2 * t);
+  }
+
+  /* A smooth bump of angular radius ``width`` (radians) around an axis. */
+  function brainBump(dx, dy, dz, ax, ay, az, width, amp) {
+    var al = Math.sqrt(ax * ax + ay * ay + az * az);
+    if (!(al > 1e-9)) return 0;
+    var c = (dx * ax + dy * ay + dz * az) / al;
+    var cosw = Math.cos(width);
+    if (c <= cosw) return 0;
+    var t = (c - cosw) / (1 - cosw);
+    return amp * t * t * (3 - 2 * t);
+  }
+
+  /* The radius of the bare cerebrum along a unit direction, in the tilted
+     frame of the head. */
+  function brainBase(dx, dy, dz) {
+    var bx = dx, by = dy + BRAIN_TILT * dz, bz = dz;
+    return 1 / Math.sqrt((bx * bx) / (BRAIN_AX * BRAIN_AX) +
+                          (by * by) / (BRAIN_AY * BRAIN_AY) +
+                          (bz * bz) / (BRAIN_AZ * BRAIN_AZ));
+  }
+
+  /* The position of the surface point in the head's own frame, used to carve
+     the sulci where the brain's anatomy lives. */
+  function brainFrame(dx, dy, dz, r, out) {
+    out[0] = dx * r;
+    out[1] = dy * r + BRAIN_TILT * dz * r;
+    out[2] = dz * r;
+    return out;
+  }
+
+  /* Distance from a point to a segment, in the head's sagittal plane. */
+  function brainSeg(px, py, ax, ay, bx, by) {
+    var vx = bx - ax, vy = by - ay;
+    var wx = px - ax, wy = py - ay;
+    var den = vx * vx + vy * vy;
+    var t = den > 1e-9 ? (vx * wx + vy * wy) / den : 0;
+    if (t < 0) t = 0; else if (t > 1) t = 1;
+    var ex = wx - vx * t, ey = wy - vy * t;
+    return Math.sqrt(ex * ex + ey * ey);
+  }
+
+  /* How old a patch of the head is: 0 is the brainstem, 1 the frontal pole.
+     Cheap enough to ask about every node the director reveals. */
+  function brainAge(bx, by, bz) {
+    var front = brainSmooth(bz, -0.45, 0.85);
+    var low = brainSmooth(by, 0.15, -0.55);
+    var age = 0.28 + 0.58 * front - 0.22 * low;
+    if (age < 0) age = 0; else if (age > 1) age = 1;
+    return age;
+  }
+
+  /* out = [radius, fold, age] for a unit direction: the distance to the skin,
+     how far the folds push the surface in or out, and the age of the patch. */
+  function brainProfile(dx, dy, dz, out) {
+    var r = brainBase(dx, dy, dz);
+    /* Cerebellum: the ridged mass under the back of the brain. It only shows
+       where it reaches past the cerebrum, which is what makes the back of the
+       head look like a head. */
+    var cerebellum = brainBump(dx, dy, dz, 0.0, -0.62, -0.78, 0.40, 0.17);
+    /* Brainstem: the stalk under the middle. */
+    var stem = brainBump(dx, dy, dz, 0.0, -0.97, -0.24, 0.20, 0.24);
+    /* Temporal lobes: the lower front of each side, under the Sylvian
+       fissure. */
+    var temporal = brainBump(dx, dy, dz, 0.66, -0.58, 0.48, 0.46, 0.11) +
+                   brainBump(dx, dy, dz, -0.66, -0.58, 0.48, 0.46, 0.11);
+    r += cerebellum + stem + temporal;
+    var f = _brainFrame;
+    brainFrame(dx, dy, dz, r, f);
+    var fx = f[0], fy = f[1], fz = f[2];
+    /* Gyri. The cortex is a folded sheet, and the folds are the zero set of
+       a smooth field: a sulcus is where the field crosses zero, and the
+       ground between two sulci is a gyrus. So the field is read twice. How
+       close it is to zero says how deep the cleft is, and how far from zero
+       says how high the crown stands. A ridge transform cannot do this: it
+       is one-sided, so the folds all lean the same way and the sulci never
+       read as clefts at all. */
+    var w1 = SK.fbm3(fx * GYRI_FREQ1, fy * GYRI_FREQ1, fz * GYRI_FREQ1, 3) - 0.5;
+    var w2 = SK.fbm3(fx * GYRI_FREQ2 + 7.0, fy * GYRI_FREQ2, fz * GYRI_FREQ2, 2) - 0.5;
+    var cleft1 = Math.exp(-(w1 * w1) / (GYRI_CLEFT1 * GYRI_CLEFT1));
+    var cleft2 = Math.exp(-(w2 * w2) / (GYRI_CLEFT2 * GYRI_CLEFT2));
+    var crown1 = 1 - Math.exp(-(w1 * w1) / (GYRI_CROWN1 * GYRI_CROWN1));
+    var crown2 = 1 - Math.exp(-(w2 * w2) / (GYRI_CROWN2 * GYRI_CROWN2));
+    var cortex = 1 - Math.min(1, (cerebellum + stem) / 0.22);
+    var fold = (GYRI_UP1 * crown1 + GYRI_UP2 * crown2 -
+                GYRI_DOWN1 * cleft1 - GYRI_DOWN2 * cleft2) * cortex;
+    /* The cerebellum has fine horizontal folia instead of gyri. */
+    fold += cerebellum * 0.010 * Math.sin(fy * 150.0 + fz * 16.0);
+    /* The longitudinal fissure: a valley down the midline of the top. It is
+       soft, not a cut, so it reads as a groove and not as a crack. */
+    var top = brainSmooth(fy, 0.05, 0.42);
+    fold -= Math.exp(-(fx * fx) / 0.010) * top * 0.062;
+    /* The Sylvian fissure: the groove that separates the temporal lobe from
+       the frontal and parietal lobes. */
+    var sylv = brainSeg(fz, fy, 0.44, -0.06, -0.24, -0.22);
+    var sylvMask = brainSmooth(Math.abs(fx), 0.16, 0.30) *
+                   (1 - brainSmooth(fy, 0.10, 0.34));
+    fold -= Math.exp(-(sylv * sylv) / 0.0032) * sylvMask * 0.062;
+    /* The central sulcus: the groove that divides the frontal lobe from the
+       parietal one. */
+    var centr = brainSeg(fz, fy, 0.06, 0.50, 0.34, -0.04);
+    var centrMask = brainSmooth(Math.abs(fx), 0.10, 0.24) +
+                    brainSmooth(fy, 0.26, 0.40);
+    fold -= Math.exp(-(centr * centr) / 0.0026) * Math.min(1, centrMask) * 0.054;
+    out[0] = r;
+    out[1] = fold;
+    out[2] = brainAge(fx, fy, fz);
+    return out;
+  }
+
+  /* A direction on the scalp, nudged along two tangents so cells do not line
+     up on a gyrus. Returns a unit vector. */
+  SK.brainJitter = function (dx, dy, dz, seed) {
+    var len = Math.sqrt(dx * dx + dy * dy + dz * dz);
+    if (!(len > 1e-6)) { dx = 0; dy = 1; dz = 0; len = 1; }
+    dx /= len; dy /= len; dz /= len;
+    var s = seed == null ? 0.5 : seed;
+    var a1 = SK.hashSeed(s * 131 + 3.7) - 0.5;
+    var a2 = SK.hashSeed(s * 977 + 11.3) - 0.5;
+    /* Any vector not parallel to the direction gives a tangent seed. */
+    var tx = 0, ty = 1, tz = 0;
+    if (Math.abs(dy) > 0.9) { tx = 1; ty = 0; tz = 0; }
+    var ex = dy * tz - dz * ty, ey = dz * tx - dx * tz, ez = dx * ty - dy * tx;
+    var el = Math.sqrt(ex * ex + ey * ey + ez * ez) || 1;
+    ex /= el; ey /= el; ez /= el;
+    var fx = dy * ez - dz * ey, fy = dz * ex - dx * ez, fz = dx * ey - dy * ex;
+    dx += ex * a1 * 0.07 + fx * a2 * 0.07;
+    dy += ey * a1 * 0.07 + fy * a2 * 0.07;
+    dz += ez * a1 * 0.07 + fz * a2 * 0.07;
+    var l2 = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1;
+    return [dx / l2, dy / l2, dz / l2];
+  };
+
+  /* The skin under a direction: the distance to it, how far the folds push it
+     in or out, and how mature that patch of cortex is. */
+  SK.brainPatch = function (dx, dy, dz, out) {
+    var o = out || [0, 0, 0];
+    var prof = brainProfile(dx, dy, dz, _brainProf);
+    o[0] = prof[0]; o[1] = prof[1]; o[2] = prof[2];
+    return o;
+  };
+
+  /* The R2 low-discrepancy sequence. Any prefix of it is spread evenly over
+     the sphere, so the cells that arrive first do not pile up on one patch of
+     cortex: the coat thickens evenly as the graph is built. The site layout
+     cannot do this job, because a settled layout leaves whole directions
+     empty and others with five cells in them, and a head with bare patches of
+     scalp does not read as a head. */
+  var BRAIN_R2 = [0.7548776662466927, 0.5698402909980532, 0.6180339887498949];
+  SK.brainSequence = function (i) {
+    var a = i * BRAIN_R2[0], b = i * BRAIN_R2[1], c = i * BRAIN_R2[2];
+    var x = 2 * (a - Math.floor(a)) - 1;
+    var y = 2 * (b - Math.floor(b)) - 1;
+    var z = 2 * (c - Math.floor(c)) - 1;
+    var l = Math.sqrt(x * x + y * y + z * z) || 1;
+    return [x / l, y / l, z / l];
+  };
+
+  /* Normals from the grid itself, so the gyri catch the light instead of the
+     skin looking like a smooth egg. */
+  function brainGridNormals(pts, rows, cols, out) {
+    var i, j;
+    for (i = 0; i < rows; i++) {
+      var ip = i > 0 ? i - 1 : 0, inx = i < rows - 1 ? i + 1 : rows - 1;
+      var sy = Math.cos(Math.PI * i / (rows - 1));
+      var sr = Math.sin(Math.PI * i / (rows - 1));
+      for (j = 0; j < cols; j++) {
+        var jp = (j + cols - 1) % cols, jn = (j + 1) % cols;
+        var a = (ip * cols + j) * 3, b = (inx * cols + j) * 3;
+        var c = (i * cols + jp) * 3, d = (i * cols + jn) * 3;
+        var t1x = pts[b] - pts[a], t1y = pts[b + 1] - pts[a + 1],
+            t1z = pts[b + 2] - pts[a + 2];
+        var t2x = pts[d] - pts[c], t2y = pts[d + 1] - pts[c + 1],
+            t2z = pts[d + 2] - pts[c + 2];
+        var nx = t1y * t2z - t1z * t2y;
+        var ny = t1z * t2x - t1x * t2z;
+        var nz = t1x * t2y - t1y * t2x;
+        var nl = Math.sqrt(nx * nx + ny * ny + nz * nz);
+        var ux = sr * Math.cos(2 * Math.PI * j / cols), uy = sy,
+            uz = sr * Math.sin(2 * Math.PI * j / cols);
+        if (nl < 1e-9) { nx = ux; ny = uy; nz = uz; nl = 1; }
+        nx /= nl; ny /= nl; nz /= nl;
+        if (nx * ux + ny * uy + nz * uz < 0) { nx = -nx; ny = -ny; nz = -nz; }
+        var k = (i * cols + j) * 3;
+        out[k] = nx; out[k + 1] = ny; out[k + 2] = nz;
+      }
+    }
+    return out;
+  }
+
+  /* The cortex as a lat/long grid. The renderer turns this into the tissue
+     the neurons grow on; keeping it here means the shape can be checked in
+     node, without a WebGL context.
+
+     ``flat`` is the same surface without the folds, so the renderer can grow
+     the gyri in: a young brain is smooth, an old one is folded. ``dev`` is how
+     mature each patch is and ``fold`` is how far the folds push it in or out,
+     so the shader can darken the sulci and fold the gyri in developmental
+     order.
+
+     Returns {positions, normals, flat, flatNormals, dev, fold, indices,
+     rows, cols, count}. */
+  SK.brainMesh = function (rows, cols) {
+    rows = Math.max(8, rows | 0);
+    cols = Math.max(8, cols | 0);
+    var count = rows * cols;
+    var positions = new Float32Array(count * 3);
+    var normals = new Float32Array(count * 3);
+    var flat = new Float32Array(count * 3);
+    var flatNormals = new Float32Array(count * 3);
+    var dev = new Float32Array(count);
+    var fold = new Float32Array(count);
+    var indices = new Uint32Array((rows - 1) * cols * 6);
+    var prof = [0, 0, 0], i, j;
+    for (i = 0; i < rows; i++) {
+      var th = Math.PI * i / (rows - 1);
+      var st = Math.sin(th), ct = Math.cos(th);
+      for (j = 0; j < cols; j++) {
+        var ph = 2 * Math.PI * j / cols;
+        var dx = st * Math.cos(ph), dy = ct, dz = st * Math.sin(ph);
+        brainProfile(dx, dy, dz, prof);
+        var k = (i * cols + j) * 3;
+        flat[k] = dx * prof[0];
+        flat[k + 1] = dy * prof[0];
+        flat[k + 2] = dz * prof[0];
+        var rr = prof[0] + prof[1];
+        positions[k] = dx * rr;
+        positions[k + 1] = dy * rr;
+        positions[k + 2] = dz * rr;
+        dev[i * cols + j] = prof[2];
+        fold[i * cols + j] = prof[1];
+      }
+    }
+    brainGridNormals(positions, rows, cols, normals);
+    brainGridNormals(flat, rows, cols, flatNormals);
+    var ia = 0;
+    for (i = 0; i < rows - 1; i++) {
+      for (j = 0; j < cols; j++) {
+        var jn = (j + 1) % cols;
+        var a = i * cols + j, b = i * cols + jn;
+        var c = (i + 1) * cols + j, d = (i + 1) * cols + jn;
+        indices[ia++] = a; indices[ia++] = b; indices[ia++] = c;
+        indices[ia++] = b; indices[ia++] = d; indices[ia++] = c;
+      }
+    }
+    return {positions: positions, normals: normals, flat: flat,
+            flatNormals: flatNormals, dev: dev, fold: fold,
+            indices: indices, rows: rows, cols: cols, count: count};
+  };
+
   /* One step of a damped spring, shared by the per-node drag. Kept here so the
      feel is testable without a WebGL context: callers own position/velocity
      and get the next [position, velocity]. Underdamped by default, so a
