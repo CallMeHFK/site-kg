@@ -113,10 +113,12 @@ def test_settle_graph_75k_is_finite_and_under_60s(graph75k):
         assert abs(x) <= 1.0 and abs(y) <= 1.0 and abs(z) <= 1.0
 
 
-# applyBatch(10k) takes well under a millisecond on a laptop, but shared CI
-# runners are several times slower. A quadratic path would land in the tens of
-# milliseconds, so this still catches a real regression without flaking.
-BATCH_BUDGET_MS = 3.0
+# applyBatch(10k) takes ~0.4 ms on a laptop, but shared CI runners have been
+# measured at 3-8x that. This is an algorithmic smoke gate, not a micro
+# benchmark: an accidental linear scan per event over the 75k-node graph would
+# land in the hundreds of milliseconds, so 10 ms still catches the regression
+# that matters while surviving a busy runner.
+BATCH_BUDGET_MS = 10.0
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
