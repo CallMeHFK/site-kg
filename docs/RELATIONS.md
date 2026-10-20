@@ -62,8 +62,8 @@ such in `report.dimensions`.
 - a stub (`prose_len < 220`) gets **no** `similar_to` — there is no lexical
   signature to compare, and comparing it produces noise;
 - a prose page gets **no** `mentions_symbol` — it is not code;
-- a code file gets `mentions_symbol` and, if its directory holds ≤ 12 files,
-  `sibling_of`;
+- a code file gets `mentions_symbol` and, if its directory holds ≤ 13 files
+  (1–12 dir-mates), `sibling_of`;
 - a page whose id or URL carries a version (`release-v2`) gets `supersedes` if
   another node shares its base name;
 - a page with ≥ 3 headings gets `shares_heading`: API references from the same
@@ -127,18 +127,21 @@ the dimension, so removing a dimension from a pair means narrowing both nodes.
    only for directories of 2–13 files; `mentions_symbol` ≤ 5 per file;
    `shares_heading` ≤ 5 per node above Jaccard 0.35 (headings shared by more
    than the relative df ceiling are treated as boilerplate); `shares_term` ≤ 5
-   per node above ≥ 2 shared curated terms; `duplicate_of` ≤ 3 per node
-   (chained, never cliqued); `coupled_with`/`co_cited_with` ≤ 5 per node above
-   a resource-allocation score of 0.25 (a shared neighbour contributes
+   per node above ≥ 2 shared curated terms; `duplicate_of` ≤ 2 per node
+   (chained, never cliqued: a 400-copy page would fan out 79 800 edges, the
+   chain keeps incident degree at 2); `coupled_with`/`co_cited_with` ≤ 5 per
+   node above a resource-allocation score of 0.25 (a shared neighbour contributes
    1/deg(z), and a page with > 24 out-links is a table of contents: excluded
    from cohort *membership*). The guard is asymmetric by design: an
    over-24-out hub never becomes a candidate itself, but a source with ≤ 24
    out-links still contributes its RA-damped weight when it is the shared
    neighbour linking two other pages.
 5. **Bounded cost.** Above 8,000 docs the quadratic passes (`similar_to`,
-   `mentions_symbol`) are skipped with a note; the LLM entity budget defaults
-   to 120 pages (`SITE_KG_RELATION_ENTITY_PAGES`), the router pages budget to
-   120 (`SITE_KG_RELATION_ROUTE_PAGES`), and the embedding budget to
+   `mentions_symbol`) are skipped with a note; `mentions_symbol` has a second,
+   tighter limit — above 4,000 code files the symbol scan returns nothing
+   (silently, so the note is the only way to notice). The LLM entity budget
+   defaults to 120 pages (`SITE_KG_RELATION_ENTITY_PAGES`), the router pages
+   budget to 120 (`SITE_KG_RELATION_ROUTE_PAGES`), and the embedding budget to
    300 (`SITE_KG_RELATION_EMBED_PAGES`). The remaining pair passes are
    sub-quadratic by construction: inverted indices with relative df windows
    and per-term posting truncation (64 for the cosine pass, 64 for headings,
@@ -146,25 +149,39 @@ the dimension, so removing a dimension from a pair means narrowing both nodes.
 
 ## Measured
 
-Numbers below predate the 2026-10-20 relative-df-window change; the window
-shifts edge counts (boilerplate terms near the old ceiling drop out, in-window
-terms on large corpora come back), so treat them as the pre-fix baseline.
+Re-measured 2026-10-20 with the relative-df window and the six new dimensions
+(current code, `--relations auto`). Both corpora are offline and reproducible
+by path; the 2026-10-14 figures (28 docs / 132 evidence edges) came from
+earlier snapshots of this repo and a different SDK slice, so they are replaced
+here rather than compared against.
 
-Dogfooding this repo (`--relations auto`, 2026-10-14): 28 docs, 47 `imports` +
-3 `ref` + 3 `contains` evidence edges → +3 `mentions_symbol`, +18 `similar_to`,
-+29 `sibling_of`. `mentions_symbol` is deliberately small: cross-module symbol
-use in this codebase coincides with an `imports` edge, and duplicates are
-dropped by invariant 1 — the 3 are the genuine residue (a symbol used without
-an import).
+**This repo, dogfooded** (`ingest-local .`): 58 docs (11 markdown + 47 code)
+→ 93 `imports` + 5 `ref` + 3 `contains` = 101 evidence edges → +36
+`mentions_symbol`, +36 `similar_to`, +80 `sibling_of`, +19 `coupled_with`,
++13 `co_cited_with`, +2 `shares_term`. Verdict READY, ~4 s end-to-end.
+`mentions_symbol` stays small on purpose: cross-module symbol use in this
+codebase mostly coincides with an `imports` edge, and invariant 1 drops the
+duplicates — the 36 are the residue (a symbol used without an import).
 
-A 2,000-file slice of a DriveOS SDK tree: 132 evidence edges → +142
-`mentions_symbol`, +3,560 `similar_to`, +427 `sibling_of`, 4.1 s end-to-end for
-the whole ingest. Sampled `similar_to` pairs are the ones a reader would want
-and no link statement provides: `…/profile/cpu_assign.mk` (linux-qnx ↔ l4t-qnx
-variants), `tegra234-mb1-bct-p3710-0012-a03-…-gpio-default.dtsi` ↔ its `-0020-`
-sibling, a `…storage-gos1.dtsi` ↔ its `tegra_virt_storage.yaml` schema. That
-corpus has almost no cross-references and is still, structurally, a pile of
-files; the derived layer is what makes traversal useful on it.
+**A 2,000-file DriveOS SDK slice** (`sdk-src/sdk`, `--max-files 2000`):
+2,000 docs (220 doc + 1,780 code) → 1,280 `imports` + 297 `contains` +
+1 `ref` = 1,578 evidence edges → +3,430 `similar_to`, +915 `sibling_of`,
++765 `mentions_symbol`, +305 `coupled_with`, +246 `co_cited_with`,
++169 `shares_heading`, +157 `shares_term`, +8 `duplicate_of`. 3.5 s
+end-to-end. Sampled pairs are the ones a reader would want and no link
+statement provides: `build_fs.py` ↔ `copytarget.py`; NVIDIA SIPL headers that
+co-cite the same includers (`IMX390_CUST1_V2_CustomData.h` ↔
+`NvSIPLCommon.hpp` — both are included by the same sources); byte-identical
+`orin`/`thor` copytarget manifests as `duplicate_of`.
+
+Effect of the df-window change on that same corpus and file set (pre-change
+code at `48227b5` vs current): `similar_to` 2,570 → 3,430 (+33% — the
+pure-ratio ceiling admits terms the old absolute `df > 25` cap amputated,
+while posting truncation keeps the pass bounded), `mentions_symbol` 760 → 765,
+`sibling_of` 1,042 → 915. The `sibling_of` drop is claim order, not fewer
+cohorts: `similar_to`/`coupled_with`/`co_cited_with` are claimed first and
+re-label part of the sibling inventory — the pair survives, its label
+changes.
 
 ## Research update (2026-10-20)
 
