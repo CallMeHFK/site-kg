@@ -61,14 +61,22 @@ def _robots(base: str) -> RobotFileParser:
 
 async def fetch_pages(urls: list[str], base: str, concurrency: int = 4, delay: float = 0.2,
                       respect_robots: bool = True,
-                      on_page=None) -> tuple[dict[str, str], dict]:
+                      on_page=None, dev: bool = False) -> tuple[dict[str, str], dict]:
     """Returns (pages, stats). stats surfaces why pages are missing instead of
     silently producing an empty corpus. on_page(url, page_or_none, reason) fires
-    exactly once per URL as its fetch settles; reason is None on success."""
+    exactly once per URL as its fetch settles; reason is None on success.
+
+    dev=True is the development/testing mode for sites you own or are
+    authorized to test: it forces robots.txt off and drops the politeness
+    delay, so authorized deep crawls finish in a fraction of the time."""
+    if dev:
+        respect_robots, delay = False, 0.0
     rp = _robots(base) if respect_robots else None
     sem = asyncio.Semaphore(concurrency)
     out: dict[str, str] = {}
-    stats = {"robots_blocked": 0, "errors": {}, "skipped": 0}
+    stats: dict = {"robots_blocked": 0, "errors": {}, "skipped": 0}
+    if dev:
+        stats["dev"] = True
 
     async def one(client: httpx.AsyncClient, url: str) -> None:
         if rp and not rp.can_fetch(UA["User-Agent"], url):
@@ -145,8 +153,33 @@ def _internal_links(soup: BeautifulSoup, page_url: str, base: str, own_id: str) 
     return sorted(ids)
 
 
+def _headings(el) -> list[str]:
+    """Section headings inside the main content (h1-h4): the page's document
+    skeleton, stored in the corpus frontmatter and consumed by the
+    shares_heading relation dimension. Sphinx headerlinks render as a
+    trailing '#'."""
+    out: list[str] = []
+    for h in el.find_all(["h1", "h2", "h3", "h4"]):
+        t = h.get_text(" ", strip=True).removesuffix("#").strip()
+        if t and t not in out:
+            out.append(t)
+        if len(out) >= 12:
+            break
+    return out
+
+
+def _description(soup: BeautifulSoup) -> str:
+    for probe in (soup.find("meta", attrs={"name": "description"}),
+                  soup.find("meta", attrs={"property": "og:description"})):
+        if probe and (probe.get("content") or "").strip():
+            return re.sub(r"\s+", " ", probe["content"]).strip()[:200]
+    return ""
+
+
 def to_markdown(html: str, url: str, base: str) -> dict:
-    """Returns {id, title, md, links}: md has frontmatter; links are resolved same-site page ids."""
+    """Returns {id, title, md, links}: md has frontmatter (title, source_url,
+    sha256, plus description/headings when the page has them); links are
+    resolved same-site page ids."""
     soup = BeautifulSoup(html, "html.parser")
     title = _title(soup, url.rsplit("/", 1)[-1])
     pid = page_id(base, url)
@@ -156,8 +189,15 @@ def to_markdown(html: str, url: str, base: str) -> dict:
     conv.body_width = 0
     md_body = conv.handle(str(main))
     raw = md_body.encode()
+    desc = _description(soup)
+    heads = _headings(main)
     fm = (f"---\ntitle: {esc(title)}\nsource_url: {url}\n"
-          f"sha256: {hashlib.sha256(raw).hexdigest()}\n---\n\n")
+          f"sha256: {hashlib.sha256(raw).hexdigest()}\n"
+          + (f"description: {esc(desc)}\n" if desc else "")
+          # ' | ' is the list separator; a heading containing it is ambiguous
+          # to split back -- acceptable for a display field
+          + (f"headings: {' | '.join(esc(h) for h in heads)}\n" if heads else "")
+          + "---\n\n")
     return {"id": pid, "title": title, "md": fm + md_body, "links": links}
 
 

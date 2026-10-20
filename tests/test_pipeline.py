@@ -100,6 +100,23 @@ def test_sitemap_index_child_pages_are_flattened():
     assert urls == ["https://s.example/docs/a/", "https://s.example/docs/b/"]
 
 
+def test_to_markdown_frontmatter_gains_headings_and_description(tmp_path: Path):
+    html = ('<html><head><meta name="description" content="Install  and '
+            'configure the tool"></head><body><main><h1>Guide</h1>'
+            '<h2>Install</h2><p>steps</p>'
+            '<h2>Configure</h2><p>config steps</p>'
+            '<h2>Install</h2><p>duplicate heading is dropped</p>'
+            '<script>var x = 1;</script>'
+            '</main></body></html>')
+    d = ingest.to_markdown(html, "https://s.example/guide/", "https://s.example/guide/")
+    f = tmp_path / "guide.md"
+    f.write_text(d["md"], encoding="utf-8")
+    meta = graph._parse(f)["meta"]
+    assert meta["description"] == "Install and configure the tool"
+    # h1 first, then h2s in order; the duplicate is skipped
+    assert meta["headings"].split(" | ") == ["Guide", "Install", "Configure"]
+
+
 def test_robots_blocked_is_surfaced_not_silent():
     # unit level: fetch_pages must report robots_blocked rather than returning {} quietly
     import asyncio

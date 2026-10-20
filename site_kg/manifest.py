@@ -112,15 +112,21 @@ async def from_doxygen_navtree(client: httpx.AsyncClient, base: str) -> list[str
 
 
 async def bfs(client: httpx.AsyncClient, base: str, max_pages: int, max_depth: int,
-              stats: dict) -> list[str]:
+              stats: dict, respect_robots: bool = True) -> list[str]:
     """Same-site BFS over <a href>. Pages that fetch as client-side shells are
     re-rendered headlessly so their links are discoverable. Renderer failures
-    degrade to the static HTML and are counted in stats."""
+    degrade to the static HTML and are counted in stats. Honours robots.txt
+    (pass respect_robots=False only for sites you are authorized to test)."""
+    from .ingest import _robots
     from .render import ambient_proxy, internal_links, is_js_shell, try_render_urls
 
+    rp = _robots(base) if respect_robots else None
     seen, queue, out = {base}, [(base, 0)], []
     while queue and len(out) < max_pages:
         url, depth = queue.pop(0)
+        if rp and not rp.can_fetch(UA["User-Agent"], url):
+            stats["robots_blocked"] = stats.get("robots_blocked", 0) + 1
+            continue
         try:
             r = await client.get(url, follow_redirects=True)
         except Exception:
@@ -147,9 +153,11 @@ async def bfs(client: httpx.AsyncClient, base: str, max_pages: int, max_depth: i
 
 
 async def page_inventory(base: str, max_pages: int = 500,
-                         max_depth: int = 4) -> tuple[list[str], str, dict]:
+                         max_depth: int = 4, dev: bool = False
+                         ) -> tuple[list[str], str, dict]:
     """Returns (urls, source, stats) where source is objects_inv|navtree|sitemap|bfs.
-    stats carries renderer-degradation counters from the BFS probe."""
+    stats carries renderer-degradation counters from the BFS probe.
+    dev=True (authorized testing only) skips the BFS robots.txt check."""
     stats: dict = {"errors": {}}
     async with httpx.AsyncClient(headers=UA, timeout=30, follow_redirects=True) as client:
         inv = await from_objects_inv(client, base)
@@ -161,5 +169,6 @@ async def page_inventory(base: str, max_pages: int = 500,
         sm = await from_sitemap(client, base)
         if sm:
             return sm[:max_pages], "sitemap", stats
-        urls = await bfs(client, base, max_pages, max_depth, stats)
+        urls = await bfs(client, base, max_pages, max_depth, stats,
+                         respect_robots=not dev)
         return urls, "bfs", stats

@@ -111,12 +111,14 @@ def _state_event(ev: dict) -> dict:
 
 class LiveHub:
     def __init__(self, *, site_id: str = "", scene: str = "planets",
-                 max_nodes: int | None = None, block_private: bool = False):
+                 max_nodes: int | None = None, block_private: bool = False,
+                 dev_crawl: bool = False):
         if scene not in SCENES:
             raise ValueError(f"unknown scene {scene!r}; choose from {', '.join(SCENES)}")
         self.site_id = site_id
         self.max_nodes = max_nodes
         self.block_private = bool(block_private)
+        self.dev_crawl = bool(dev_crawl)
         self.log = EventLog()
         self.state = LiveState()
         self.layout = LiveLayout()
@@ -292,11 +294,16 @@ class LiveHub:
             self.emit({"t": "progress", "pages": fetched, "bytes": nbytes})
 
         async def crawl():
-            urls, _source, _inv = await manifest.page_inventory(
-                target, max_pages=200, max_depth=4)
+            urls, _source, inv = await manifest.page_inventory(
+                target, max_pages=2000 if self.dev_crawl else 200,
+                max_depth=8 if self.dev_crawl else 4, dev=self.dev_crawl)
             if not urls:
+                if inv.get("robots_blocked"):
+                    raise RuntimeError("blocked by robots.txt (discovery phase)")
                 raise RuntimeError("no pages discovered")
-            return await ingestmod.fetch_pages(urls, target, concurrency=4,
+            return await ingestmod.fetch_pages(urls, target,
+                                               concurrency=8 if self.dev_crawl else 4,
+                                               dev=self.dev_crawl,
                                                on_page=on_page)
 
         pages, stats = asyncio.run(crawl())
@@ -678,11 +685,11 @@ def serve_hub(hub: LiveHub, *, port: int = 0, token: str | None = None,
 def serve_live(site_id: str, *, source: str | None = None, scene: str = "planets",
                max_nodes: int | None = None, port: int = 0, replay: bool = False,
                token: str | None = None, title: str | None = None,
-               block_private: bool = False) -> LiveHandle:
+               block_private: bool = False, dev_crawl: bool = False) -> LiveHandle:
     if scene not in SCENES:
         raise ValueError(f"unknown scene {scene!r}; choose from {', '.join(SCENES)}")
     hub = LiveHub(site_id=site_id, scene=scene, max_nodes=max_nodes,
-                  block_private=block_private)
+                  block_private=block_private, dev_crawl=dev_crawl)
     server = serve_hub(hub, port=port, token=token, scene=scene,
                        connect=bool(source or replay), title=title or "")
     server.start()
