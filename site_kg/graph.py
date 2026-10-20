@@ -3,10 +3,11 @@ resolved against the crawled corpus only; zero cross-references (ref/imports)
 => NOT-READY, never invent links.
 
 On top of those evidence edges, `relations` (see relations.py) may add derived
-dimensions -- symbol references, lexical similarity, directory cohorts, version
-lineage, optional LLM/embedding similarity -- selected per node. Derived edges
-only run when the corpus already has structural evidence, so a corpus with no
-cross-references still reports zero edges instead of gaining a hairball."""
+dimensions -- symbol references, lexical similarity, heading skeletons, directory
+cohorts, version lineage, optional LLM/embedding similarity -- selected per node
+and fan-out capped. Content-derived dimensions run even when the corpus has no
+cross-references (that is the point: content is the only signal there), but the
+verdict keeps reporting NOT-READY so "no link structure" stays honest."""
 from __future__ import annotations
 
 import json
@@ -138,21 +139,22 @@ def build_graph(corpus_dir: Path, relations: str | None = None, events=None, *,
                 etype = ("hub" if d["id"] == "index" else "contains") if is_hub else "ref"
                 edges.setdefault((d["id"], t), etype)
 
-    # Derived dimensions enrich -- never substitute for -- structural evidence:
-    # a corpus with no resolvable cross-references gets no derived edges at all,
-    # so NOT-READY still means "this is a pile of files", not "look, a hairball".
-    structural = sum(1 for k in edges.values() if k in ("ref", "imports"))
+    # Derived dimensions enrich -- never substitute for -- structural evidence.
+    # They are per-node gated and fan-out capped, so they are safe to run even
+    # on a corpus with zero cross-references: content (tf-idf, heading
+    # skeletons, cohorts) is the only signal such a corpus has, and a stub
+    # corpus still gates to zero edges. NOT-READY keeps meaning "no links".
     relation_report: dict = {"relationMode": "off", "dimensions": {}, "relationNotes": []}
     derived_edges: list[dict] = []
-    if structural:
-        from . import relations as relmod
-        derived, relation_report = relmod.build_relations(docs, mode=relations,
-                                                          have=set(edges))
-        for e in derived:
-            key = (e["s"], e["t"])
-            if key not in edges:
-                edges[key] = e["k"]
-                derived_edges.append(e)
+    from . import relations as relmod
+    derived, relation_report = relmod.build_relations(
+        docs, mode=relations, have=set(edges),
+        link_pairs={pair for pair, k in edges.items() if k in ("ref", "imports")})
+    for e in derived:
+        key = (e["s"], e["t"])
+        if key not in edges:
+            edges[key] = e["k"]
+            derived_edges.append(e)
 
     # inverted index over prose
     df: Counter = Counter()
@@ -207,6 +209,7 @@ def build_graph(corpus_dir: Path, relations: str | None = None, events=None, *,
 
     # hub/contains fan-out is a table of contents, not a graph; only real
     # cross-references (ref from prose links, imports from code) make it READY
+    structural = sum(1 for k in edges.values() if k in ("ref", "imports"))
     verdict = "READY" if structural > 0 else "NOT-READY"
     report = {
         "docs": len(docs),
@@ -216,8 +219,10 @@ def build_graph(corpus_dir: Path, relations: str | None = None, events=None, *,
         "verdict": verdict,
         **relation_report,
         "verdictNote": "link structure present" if structural else
-            "zero resolvable cross-references: this corpus is a pile of files, not a graph. "
-            "Serve search+outline, or enable the semantic layer (LLM extraction).",
+            (f"zero resolvable cross-references; {len(derived_edges)} "
+             f"content-derived {'edge' if len(derived_edges) == 1 else 'edges'} "
+             f"({', '.join(sorted({e['k'] for e in derived_edges})) or 'none'}) add "
+             "content-only signal -- search still beats traversal on this graph."),
     }
     return {
         "graph": {"nodes": nodes, "edges": edge_list},

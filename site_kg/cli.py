@@ -59,9 +59,16 @@ def main(argv: list[str] | None = None) -> None:
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("ingest")
     p.add_argument("url")
-    p.add_argument("--max-pages", type=int, default=200)
-    p.add_argument("--max-depth", type=int, default=4)
+    p.add_argument("--max-pages", type=int, default=None,
+                   help="page cap (default: 200, or 2000 with --dev-crawl)")
+    p.add_argument("--max-depth", type=int, default=None,
+                   help="BFS depth cap (default: 4, or 8 with --dev-crawl)")
     p.add_argument("--no-robots", action="store_true")
+    p.add_argument("--dev-crawl", action="store_true",
+                   help="DEVELOPMENT/TESTING mode for sites you own or are "
+                        "authorized to test: ignores robots.txt and politeness "
+                        "delays, higher concurrency, deeper defaults "
+                        "(--max-pages 2000 --max-depth 8 unless overridden)")
     p.add_argument("--relations", default=None,
                    help="derived relation dimensions, selected per node: auto | llm | all "
                         "| off | comma list (default: $SITE_KG_RELATIONS or auto)")
@@ -92,6 +99,10 @@ def main(argv: list[str] | None = None) -> None:
                          "domains that resolve there (or fail to resolve). "
                          "Default off so local dev servers and intranets stay "
                          "crawlable; use on untrusted networks")
+    lv.add_argument("--dev-crawl", action="store_true",
+                    help="DEVELOPMENT/TESTING mode for sites you own or are "
+                         "authorized to test: ignores robots.txt and politeness "
+                         "delays, deeper crawl defaults")
     t = sub.add_parser("stats")
     t.add_argument("site_id", nargs="?")
     v = sub.add_parser("render")
@@ -106,9 +117,13 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.cmd == "ingest":
         from .mcp_server import ingest_url
+        dev = args.dev_crawl
+        max_pages = args.max_pages if args.max_pages is not None else (2000 if dev else 200)
+        max_depth = args.max_depth if args.max_depth is not None else (8 if dev else 4)
         print(json.dumps(asyncio.run(ingest_url(
-            args.url, max_pages=args.max_pages, max_depth=args.max_depth,
-            respect_robots=not args.no_robots, relations=args.relations)),
+            args.url, max_pages=max_pages, max_depth=max_depth,
+            concurrency=8 if dev else 4,
+            respect_robots=not args.no_robots, relations=args.relations, dev=dev)),
             indent=1, ensure_ascii=False))
     elif args.cmd == "ingest-local":
         from .mcp_server import ingest_local
@@ -126,7 +141,7 @@ def main(argv: list[str] | None = None) -> None:
                                             replay=args.replay)
         opts = {"scene": args.scene or "planets", "max_nodes": args.max_nodes,
                 "port": args.port, "token": args.token,
-                "block_private": args.block_private}
+                "block_private": args.block_private, "dev_crawl": args.dev_crawl}
         if kind == "url":
             site_id = store.site_id_for(target)
             if args.scene:

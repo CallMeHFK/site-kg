@@ -134,9 +134,14 @@ node** from that node's own content — not one fixed extractor over everything:
 | kind | needs | meaning |
 |---|---|---|
 | `mentions_symbol` | code | this file mentions an identifier defined in another file |
-| `similar_to` | prose ≥ 220 chars | sparse tf-idf cosine: same topic, no explicit link |
+| `similar_to` | prose ≥ 220 chars | sparse tf-idf cosine over prose + title tokens: same topic, no explicit link |
 | `sibling_of` | 1–12 dir mates | same source directory / URL folder cohort |
 | `supersedes` | version in id/URL | 2.0 supersedes 1.4 of the same page family |
+| `shares_heading` | ≥ 3 headings | document-skeleton overlap (Jaccard ≥ 0.35 over heading sets): same-generator API pages |
+| `shares_term` | ≥ 2 curated terms | shared writer-marked vocabulary: inline code spans, headings, declared symbols |
+| `duplicate_of` | frontmatter sha256 | identical content (exact-hash tier, chained) |
+| `coupled_with` | evidence links | bibliographic coupling: both pages cite the same targets |
+| `co_cited_with` | evidence links | co-citation: the same sources cite both pages (relates stubs) |
 | `shares_entity` | chat model | pages share ≥ 2 LLM-extracted named entities |
 | `semantic_similar` | embed model | embedding cosine over title + body head |
 
@@ -147,11 +152,12 @@ node's set, plus the two model-backed dimensions), `all`, `off`, or an explicit
 comma list.
 
 Two invariants keep this from becoming a hairball generator: a pair the corpus
-already links is never re-labelled with a derived kind, and derived dimensions
-run **only** when the corpus already has `ref`/`imports` edges — a corpus with
-zero cross-references still reports `NOT-READY` with zero edges. No LLM or
-embedding model is required; without one those dimensions are skipped with a
-note.
+already links is never re-labelled with a derived kind, and everything is
+per-node gated and fan-out capped. Content-derived dimensions run **even on a
+corpus with zero cross-references** — content is the only signal such a corpus
+has — but the verdict still reports `NOT-READY` (no link structure), and a stub
+corpus still gates to zero edges. No LLM or embedding model is required; without
+one those dimensions are skipped with a note.
 
 Design and the literature it rests on (AutoSchemaKG arXiv:2505.23628, KGGen
 arXiv:2502.09956, EDC arXiv:2404.03868, Adaptive-RAG arXiv:2403.14403):
@@ -188,10 +194,10 @@ Client-rendered SPAs: pages that fetch as empty framework shells are detected (e
 
 ## FAQ
 
-- **The ingest says `blocked by robots.txt`.** The site disallows this crawler's user agent. Ask the owner, or pass `respect_robots=false` only if you are authorized to crawl it.
+- **The ingest says `blocked by robots.txt`.** The site disallows this crawler's user agent. Ask the owner, or pass `respect_robots=false` only if you are authorized to crawl it. For deep crawls of sites you own or are authorized to test, use `--dev-crawl` (CLI) / `dev=true` (MCP): robots.txt and politeness delays are skipped and the defaults deepen (`--max-pages 2000 --max-depth 8`, concurrency 8).
 - **It found only 1-2 pages.** Your seed URL is probably a section leaf; re-ingest with the docs root (the `seed_hint` field says so). If the site is a client-rendered SPA, the Playwright fallback handles shell pages automatically.
 - **Do I need an LLM?** No for crawl/search/graph/neighbors. Only `ask` needs `SITE_KG_LLM_BASE` + `SITE_KG_LLM_KEY` (any OpenAI-compatible gateway; vLLM/new-api verified).
-- **NOT-READY verdict.** The site has no internal cross-references — it is a directory tree, not a graph. You still get full-text search and page bodies; graph traversal is honestly disabled instead of drawing noise.
+- **NOT-READY verdict.** The site has no internal cross-references — it is a directory tree, not a graph. You still get full-text search, page bodies (with extracted headings and description in the frontmatter), and the keyless content dimensions (`similar_to`, `shares_heading`, …) still connect pages that share substance; what you do not get is a link-structure claim.
 
 ## Deployment
 

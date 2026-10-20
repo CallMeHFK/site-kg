@@ -128,15 +128,20 @@ python -m site_kg.cli live my-site --replay
 | 维度 | 条件 | 含义 |
 |---|---|---|
 | `mentions_symbol` | 代码 | 本文件引用了另一个文件定义的标识符 |
-| `similar_to` | 正文 ≥ 220 字符 | 稀疏 tf-idf 余弦：同主题但无显式链接 |
+| `similar_to` | 正文 ≥ 220 字符 | 稀疏 tf-idf 余弦（正文 + 标题词元）：同主题但无显式链接 |
 | `sibling_of` | 同目录 1–12 个同伴 | 同一源码目录 / URL 目录的同伴 |
 | `supersedes` | id/URL 含版本号 | 2.0 取代 1.4（同一页面族） |
+| `shares_heading` | ≥ 3 个标题 | 文档骨架重叠（标题集合 Jaccard ≥ 0.35）：同一生成器产出的 API 页 |
+| `shares_term` | ≥ 2 个策展词元 | 共享作者标注的词汇：行内代码、标题、声明的符号 |
+| `duplicate_of` | frontmatter sha256 | 内容完全相同（精确哈希层，链式连接） |
+| `coupled_with` | 证据链接 | 文献耦合：两页引用了相同的目标 |
+| `co_cited_with` | 证据链接 | 共引：相同的来源同时引用两页（可关联stub页） |
 | `shares_entity` | 需 chat 模型 | 两页共享 ≥ 2 个 LLM 抽取的命名实体 |
 | `semantic_similar` | 需 embed 模型 | 标题 + 正文头部的嵌入余弦 |
 
 存根页不参与词汇相似，正文页不参与符号引用，发布说明得到版本沿革，源码文件得到符号引用。模式：`auto`（无 LLM，默认）、`llm`（`auto` + LLM 路由只可*收窄*每节点维度集，并启用两个模型维度）、`all`、`off`，或显式逗号列表。
 
-两条不变量防止它变成"毛线球制造机"：已被语料链接的节点对绝不会被改写为衍生类型；衍生维度**仅在**语料已有 `ref`/`imports` 边时才运行——零交叉引用的语料仍然报告 `NOT-READY` 且边数为 0。无需 LLM 或嵌入模型；缺失时这些维度跳过并在 `relationNotes` 里留一行说明。
+两条不变量防止它变成"毛线球制造机"：已被语料链接的节点对绝不会被改写为衍生类型；一切维度按节点门控且扇出有上限。内容衍生维度**在零交叉引用的语料上也会运行**——内容是这种语料唯一的信号——但判定仍然如实报告 `NOT-READY`（无链接结构），存根语料依旧门控到 0 条边。无需 LLM 或嵌入模型；缺失时这些维度跳过并在 `relationNotes` 里留一行说明。
 
 设计依据与文献（AutoSchemaKG arXiv:2505.23628、KGGen arXiv:2502.09956、EDC arXiv:2404.03868、Adaptive-RAG arXiv:2403.14403）：[docs/RELATIONS.md](docs/RELATIONS.md)。
 
@@ -166,10 +171,10 @@ pretty URL 三形态（尾斜杠、无扩展名、`/title/X`）全部处理；se
 
 ## 常见问题
 
-- **摄入返回 `blocked by robots.txt`**：站点 robots 禁了这个 UA。联系站点所有者，或仅在你有权爬取时才传 `respect_robots=false`。
+- **摄入返回 `blocked by robots.txt`**：站点 robots 禁了这个 UA。联系站点所有者，或仅在你有权爬取时才传 `respect_robots=false`。对自己拥有或获授权测试的站点做深度爬取时，用 `--dev-crawl`（CLI）/ `dev=true`（MCP）：跳过 robots.txt 与限速延迟，默认上限加深（`--max-pages 2000 --max-depth 8`，并发 8）。
 - **只发现 1–2 页**：seed URL 大概是叶子节点，改传文档根目录（结果里的 `seed_hint` 会明说）。纯客户端渲染的 SPA 壳页由 Playwright 兜底自动处理。
 - **必须要 LLM 吗？** 爬取/检索/图遍历都不需要。只有 `ask` 需要 `SITE_KG_LLM_BASE` + `SITE_KG_LLM_KEY`（任意 OpenAI 兼容网关；vLLM/new-api 已实测）。
-- **判定 NOT-READY**：该站没有内部交叉引用——是目录树不是图。全文检索和正文仍可用，图遍历如实禁用而不是画噪声。
+- **NOT-READY 判定**：站点没有内部交叉引用——它是目录树，不是图。你仍然拿到全文检索、页面正文（frontmatter 里带抽取的标题与描述），且无钥匙的内容维度（`similar_to`、`shares_heading` 等）依旧会把有实质关联的页面连起来；缺的只是对链接结构的声明。
 
 ## 部署
 
