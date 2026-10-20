@@ -2,8 +2,8 @@
 (function (SK) {
   "use strict";
 
-  var PALETTE = [0x58a6ff, 0x3fb950, 0xd29922, 0xf778ba, 0xa371f7, 0x76e3ea,
-                 0xffa657, 0xff7b72, 0x7ee787, 0xe3b341, 0x79c0ff, 0x56d4bc];
+  var PALETTE = [0x7cc4ff, 0x8b7bff, 0x4fe3ff, 0x43e0c8, 0xff6fb5, 0xa78bfa,
+                 0xffc46b, 0x9fb8ff, 0x6ff0d8, 0xff9ad2, 0x5b9dff, 0xd8c2ff];
   var DERIVED = {mentions_symbol: 1, similar_to: 1, sibling_of: 1,
                  supersedes: 1, shares_entity: 1, semantic_similar: 1};
 
@@ -79,6 +79,8 @@
     this.pendingCount = 0;
     this.dangling = 0;
     this.pages = 0;
+    this.discovered = 0;
+    this.discoverFailed = 0;
     this.version = 0;
     this.dimVersion = 0;
     this.graphHash = 0;
@@ -248,6 +250,15 @@
         this.edgeAdded(ev.s, ev.d, ev.kind, ev.late);
       } else if (ev.t === "progress") {
         if (ev.pages != null) this._foldPages(ev.pages);
+      } else if (ev.t === "discover") {
+        /* discovery is monotonic within a run: a late/duplicate frame from a
+           reconnect can never make the HUD count down */
+        if (ev.found != null) {
+          this.discovered = Math.max(this.discovered, ev.found | 0);
+        }
+        if (ev.failed != null) {
+          this.discoverFailed = Math.max(this.discoverFailed, ev.failed | 0);
+        }
       } else if (ev.t === "ingest_done") {
         this.dangling = this.pendingCount;
         if (ev.pages != null) this._foldPages(ev.pages);
@@ -283,7 +294,11 @@
   LiveGraph.prototype.loadSnapshot = function (snap) {
     var nodes = snap.nodes || [];
     var prevPages = this.pages; /* pages survives reset: never regress */
+    var prevDiscovered = this.discovered;
+    var prevFailed = this.discoverFailed;
     this.reset(Math.max(64, nodes.length + 8));
+    this.discovered = prevDiscovered;
+    this.discoverFailed = prevFailed;
     var rows = (snap.layout && snap.layout.nodes) || [];
     var byIndex = {};
     for (var r = 0; r < rows.length; r++) byIndex[rows[r].i] = rows[r];
@@ -343,7 +358,8 @@
 
   LiveGraph.prototype.stats = function () {
     return {nodes: this.n, edges: this.m, pending: this.pendingCount,
-            dangling: this.dangling};
+            dangling: this.dangling, discovered: this.discovered,
+            discoverFailed: this.discoverFailed};
   };
 
   SK.LiveGraph = LiveGraph;
@@ -356,6 +372,18 @@
     this.onFlush = opts.onFlush || null;
     this._now = opts.now || function () { return Date.now(); };
     this._timerOff = opts.timer === false;
+    /* Paced mode drains the queue over time instead of applying whatever
+       arrived in the window. A local crawl can finish in under a second, and
+       without this the whole graph appears between two frames: the build looks
+       like "finding pages" followed by the finished scene. The rate is derived
+       from the discovered page count so the growth is legible for a small
+       site and still bounded for a 75k-page one. */
+    this.paced = !!opts.paced;
+    this.nodeCost = opts.nodeCost == null ? 6 : opts.nodeCost;
+    this.maxBatch = opts.maxBatch == null ? 4000 : opts.maxBatch;
+    /* One node's worth of credit to begin with so the very first world lands on
+       the first tick instead of after a visible empty beat. */
+    this._credit = this.nodeCost;
     this.queue = [];
     this._seqs = new Set();
     this.nodeCount = 0;
@@ -375,6 +403,7 @@
     this.queue = [];
     this._seqs.clear();
     this.nodeCount = 0;
+    this._credit = this.nodeCost;
     this.lastSeq = lastSeq || 0;
     this.lastFlushAt = this._now();
     this.dirtyNodes = [this.live.n, this.live.n];
@@ -398,6 +427,21 @@
     if (this.timer && typeof this.timer.unref === "function") this.timer.unref();
   };
 
+  /* Safety net for throttled timers: a background tab can starve setTimeout,
+     which used to leave the queue full and the build frozen mid-growth. The
+     render loop calls pump() every frame, so a pending backlog always drains
+     while the scene is alive. */
+  Batcher.prototype.pump = function () {
+    if (!this.queue.length) return null;
+    /* An armed timer is allowed to run late by a few windows before the render
+       loop steps in: four windows is 400ms, far past any scheduling jitter but
+       short enough that a throttled tab never looks frozen. */
+    if (this.timer != null && this._now() - this.lastFlushAt < this.windowMs * 4) {
+      return null;
+    }
+    return this.flush();
+  };
+
   Batcher.prototype.push = function (ev, now) {
     if (!ev) return false;
     if (ev.t === "batch" && Array.isArray(ev.events)) {
@@ -414,10 +458,19 @@
       }
       this._seqs.add(ev.seq);
     }
+    /* Ambient counters (pages discovered, progress, skipped pages) carry no
+       geometry and must not wait behind a paced node backlog: the build panel
+       would otherwise report a zero page count while the graph is visibly
+       growing. */
+    if (this.paced && (ev.t === "discover" || ev.t === "progress"
+                       || ev.t === "node_skipped")) {
+      this.live.applyBatch([ev]);
+      return true;
+    }
     this.queue.push(ev);
     if (ev.t === "node_added" || ev.t === "node_updated") this.nodeCount++;
     now = now == null ? this._now() : now;
-    if (this.nodeCount >= this.maxNodes ||
+    if ((!this.paced && this.nodeCount >= this.maxNodes) ||
         now - this.lastFlushAt >= this.windowMs) {
       this.flush(now);
       return true;
@@ -426,19 +479,66 @@
     return false;
   };
 
+  /* Cost of one event in pacing units: a node is a much bigger visual beat
+     than a single edge, so nodes arrive at a readable cadence while links
+     stream between them. Episode-level events are free. */
+  Batcher.prototype._units = function (ev) {
+    if (ev.t === "node_added" || ev.t === "node_updated") return this.nodeCost;
+    if (ev.t === "edge_added") return 1;
+    return 0;
+  };
+
+  Batcher.prototype._rate = function () {
+    var found = this.live && this.live.discovered ? this.live.discovered : 0;
+    /* Roughly one page per second: a 40-page crawl unfolds over ~7s, a
+       2000-page one over the same time, and a 75k-page one is capped at
+       ~19s. The floor keeps the first few pages from crawling while the
+       discover count is still zero. */
+    return Math.min(24000, Math.max(30, found));
+  };
+
   Batcher.prototype.flush = function (now, force) {
     if (this.timer != null) {
       clearTimeout(this.timer);
       this.timer = null;
     }
-    if (!this.queue.length) return null;
+    if (!this.queue.length) {
+      this.lastFlushAt = now == null ? this._now() : now;
+      this._credit = 0;
+      return null;
+    }
     now = now == null ? this._now() : now;
-    if (!force && this.nodeCount < this.maxNodes &&
-        now - this.lastFlushAt < this.windowMs) {
+    var dt = now - this.lastFlushAt;
+    /* A full batch flushes immediately; paced mode only flushes on the clock. */
+    var byCount = !this.paced && this.nodeCount >= this.maxNodes;
+    if (!force && !byCount && dt < this.windowMs) {
       this._arm();
       return null;
     }
-    var q = this.queue;
+    var take = this.queue.length;
+    if (!force && !byCount && this.paced) {
+      var rate = this._rate();
+      this._credit += rate * Math.min(dt, 1000) / 1000;
+      /* Never let a long frame bank a huge burst; two nodes is the floor so a
+         short stall does not swallow the next beat entirely. */
+      var cap = Math.max(this.nodeCost * 2, rate * 0.15);
+      if (this._credit > cap) this._credit = cap;
+      var units = 0;
+      take = 0;
+      while (take < this.queue.length && take < this.maxBatch) {
+        var cost = this._units(this.queue[take]);
+        if (cost > 0 && units + cost > this._credit) break;
+        units += cost;
+        take++;
+      }
+      if (!take) {
+        this.lastFlushAt = now;
+        this._arm();
+        return null;
+      }
+      this._credit -= units;
+    }
+    var q = this.queue.slice(0, take);
     q.sort(function (a, b) {
       var as = a.seq == null ? Number.MAX_SAFE_INTEGER : a.seq;
       var bs = b.seq == null ? Number.MAX_SAFE_INTEGER : b.seq;
@@ -449,9 +549,11 @@
     var nodeLo = Infinity, nodeHi = -Infinity;
     var edgeLo = Infinity, edgeHi = -Infinity;
     var events = [];
+    var appliedNodes = 0;
     for (var k = 0; k < q.length; k++) {
       var ev = q[k], t = ev.t;
       if (t === "node_added" || t === "node_updated") {
+        appliedNodes++;
         var idx = live.indexById.get(String(ev.id));
         if (idx !== undefined) {
           if (idx < nodeLo) nodeLo = idx;
@@ -473,7 +575,10 @@
       } else {
         live.applyBatch([ev]);
       }
-      if (ev.seq != null && ev.seq > this.lastSeq) this.lastSeq = ev.seq;
+      if (ev.seq != null) {
+        if (ev.seq > this.lastSeq) this.lastSeq = ev.seq;
+        if (this.paced) this._seqs.delete(ev.seq);
+      }
       events.push(ev);
     }
     if (live.n > n0) {
@@ -487,9 +592,10 @@
     } else {
       edgeLo = edgeHi = live.m;
     }
-    this.queue = [];
-    this._seqs.clear();
-    this.nodeCount = 0;
+    this.queue = this.queue.slice(take);
+    if (!this.paced) this._seqs.clear();
+    this.nodeCount -= appliedNodes;
+    if (this.nodeCount < 0) this.nodeCount = 0;
     this.lastFlushAt = now;
     this.dirtyNodes = [nodeLo, nodeHi];
     this.dirtyEdges = [edgeLo, edgeHi];
@@ -501,6 +607,7 @@
       nodesChanged: live.n > n0, edgesChanged: live.m > m0,
       lastSeq: this.lastSeq, events: events
     };
+    if (this.queue.length) this._arm();
     if (this.onFlush) this.onFlush(rec);
     return rec;
   };

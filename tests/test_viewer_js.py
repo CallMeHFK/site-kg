@@ -13,7 +13,6 @@ CORE = ROOT / "site_kg" / "viewer" / "core.js"
 DIRECTOR = ROOT / "site_kg" / "viewer" / "director.js"
 LAUNCHER = ROOT / "site_kg" / "viewer" / "launcher.js"
 PLANETS = ROOT / "site_kg" / "viewer" / "scenes" / "planets.js"
-PEOPLE = ROOT / "site_kg" / "viewer" / "scenes" / "people.js"
 NEURAL = ROOT / "site_kg" / "viewer" / "scenes" / "neural.js"
 UI = ROOT / "site_kg" / "viewer" / "ui.js"
 
@@ -105,8 +104,44 @@ assert.equal(g.m, 2);
 assert.equal(g.degree[0], 4);
 assert.equal(g.rank[0], 0.25);
 assert.equal(g.edgeKeys.size, 2);
-assert.deepEqual(g.stats(), {nodes: 2, edges: 2, pending: 0, dangling: 0});
+assert.deepEqual(g.stats(), {nodes: 2, edges: 2, pending: 0, dangling: 0,
+                             discovered: 0, discoverFailed: 0});
 """)
+
+
+def test_discover_events_fold_monotonically():
+    """Discovery counters survive duplicate/replayed frames and snapshots."""
+    _run(_prelude(CORE) + """
+const g = new SK.LiveGraph(16);
+g.applyBatch([
+  {t: "discover", found: 5, failed: 1, depth: 1},
+  {t: "discover", found: 3, failed: 0, depth: 2},
+  {t: "discover", found: 9, failed: 4, depth: 2},
+]);
+assert.equal(g.discovered, 9, "discovered never regresses");
+assert.equal(g.discoverFailed, 4, "failed never regresses");
+assert.equal(g.stats().discovered, 9);
+assert.equal(g.stats().discoverFailed, 4);
+g.loadSnapshot({nodes: [], edges: [], last_seq: 1});
+assert.equal(g.discovered, 9, "a reconnect snapshot keeps the discovery count");
+assert.equal(g.discoverFailed, 4);
+g.reset(16);
+assert.equal(g.discovered, 0, "a new run starts clean");
+assert.equal(g.discoverFailed, 0);
+""")
+    _run(_prelude(CORE, DIRECTOR) + """
+const g = new SK.LiveGraph(16);
+const d = new SK.Director(g, {name: "planets"}, null, null);
+d.onEvents({t: "discover", found: 7, failed: 2, depth: 1});
+assert.equal(d.status().discovered, 7);
+assert.equal(d.status().discoverFailed, 2);
+d.state = "failed";
+d.error = "discovery timed out after 180s";
+const st = d.status();
+assert.equal(st.state, "failed");
+assert.equal(st.error, "discovery timed out after 180s");
+""")
+
 
 
 def test_node_updated_events_never_clobber_titles():
@@ -167,6 +202,35 @@ assert.equal(b.lastSeq, 200);
 """)
 
 
+def test_batcher_paced_reveal_spreads_a_burst():
+    _run(_prelude(CORE) + """
+const g = new SK.LiveGraph(64);
+g.applyBatch([{t: "discover", found: 40, seq: 1}]);
+let clock = 0;
+const b = new SK.Batcher(g, {
+  windowMs: 100, maxNodes: 100, timer: false, paced: true,
+  now: function () { return clock; }
+});
+for (let i = 0; i < 20; i++) {
+  b.push({t: "node_added", id: "n" + i, title: "N" + i, seq: 10 + i}, 0);
+}
+assert.equal(g.n, 0);
+assert.equal(b.queue.length, 20);
+clock = 100;
+b.flush(100);
+assert.ok(g.n >= 1 && g.n < 20, "first window reveals a slice, got " + g.n);
+const first = g.n;
+clock = 200;
+b.flush(200);
+assert.ok(g.n > first, "the next window keeps growing");
+assert.ok(g.n < 20);
+const rec = b.flush(Date.now() + 100000, true);
+assert.equal(g.n, 20);
+assert.equal(b.queue.length, 0);
+assert.equal(rec.nodes, 20);
+""")
+
+
 def test_load_snapshot_uses_live_state_shape():
     _run(_prelude(CORE) + """
 const g = new SK.LiveGraph(4);
@@ -198,7 +262,7 @@ assert.equal(g.dangling, 1);
 
 
 def test_scene_selection_and_derived_edge_visibility():
-    _run(_prelude(CORE, DIRECTOR, PLANETS, PEOPLE, NEURAL) + """
+    _run(_prelude(CORE, DIRECTOR, PLANETS, NEURAL) + """
 const g = new SK.LiveGraph(256);
 for (let i = 0; i < 160; i++) {
   g.nodeAdded("n" + i, {t: "N" + i, c: i % 4, g: i === 0 ? 150 : 1,
@@ -207,14 +271,9 @@ for (let i = 0; i < 160; i++) {
 for (let i = 1; i <= 150; i++) g.edgeAdded("n0", "n" + i, "ref");
 assert.equal(SK.scenes.planets.select(g, -1).length, 160);
 assert.equal(SK.scenes.neural.select(g, 5).length, 160);
-const focused = SK.scenes.people.select(g, 5);
-assert.equal(focused.length, 120);
-assert.equal(focused[0], 5);
-assert.ok(focused.indexOf(0) >= 0);
-const hub = SK.scenes.people.select(g, -1);
-assert.equal(hub.length, 120);
-assert.equal(hub[0], 0);
-assert.deepEqual(SK.scenes.people.select(g, 5), focused);
+assert.equal(SK.scenes.planets.ego, false);
+assert.equal(SK.scenes.neural.ego, false);
+assert.deepEqual(SK.sceneOrder, ["planets", "neural"]);
 
 g.edgeAdded("n1", "n2", "mentions_symbol");
 const derivedEdge = g.m - 1;
@@ -278,6 +337,7 @@ def test_connect_events_resumes_and_resets_on_new_run():
   });
   assert.equal(sources.length, 1);
   assert.equal(sources[0].url, "http://live.test/events?since=3");
+  assert.equal(live.runId, "run-a");
   sources[0].onmessage({data: JSON.stringify(
     {t: "node_added", id: "b", title: "B", seq: 5})});
   assert.equal(director.batcher.queue.length, 1);
@@ -300,6 +360,42 @@ def test_connect_events_resumes_and_resets_on_new_run():
   assert.equal(live.ids[0], "z");
   handle.close();
   assert.equal(sources[1].closed, true);
+})().catch(function (err) {
+  console.error(err && err.stack ? err.stack : err);
+  process.exit(1);
+});
+""")
+
+
+def test_connect_events_discards_the_previous_run():
+    _run(_prelude(CORE, DIRECTOR) + """
+(async function () {
+  const live = new SK.LiveGraph(8);
+  live.runId = "run-old";
+  live.nodeAdded("old", {t: "Old", c: "x", g: 3, r: 0.2});
+  assert.equal(live.n, 1);
+  const director = new SK.Director(live, null, null, null);
+  const sources = [];
+  function FakeSource(url) { this.url = url; sources.push(this); }
+  FakeSource.prototype.close = function () {};
+  director.connectEvents("run-new", 12, {
+    base: "", EventSource: FakeSource, timer: false
+  });
+  /* A fresh crawl must not inherit the finished graph from the last one, and
+     it must replay from sequence zero instead of skipping the opening events. */
+  assert.equal(live.n, 0);
+  assert.equal(live.runId, "run-new");
+  assert.equal(sources[0].url, "/events?since=0");
+  director.connectEvents("run-new", 4, {
+    base: "", EventSource: FakeSource, timer: false
+  });
+  assert.equal(sources[1].url, "/events?since=4");
+  live.nodeAdded("keep", {t: "Keep", c: "x", g: 1, r: 0.1});
+  director.connectEvents("run-new", 9, {
+    base: "", EventSource: FakeSource, timer: false
+  });
+  assert.equal(live.n, 1);
+  assert.equal(sources[2].url, "/events?since=9");
 })().catch(function (err) {
   console.error(err && err.stack ? err.stack : err);
   process.exit(1);
@@ -416,6 +512,46 @@ assert.equal(L.readout(null).label, "0 pages · 0 nodes · 0 edges");
 """)
 
 
+def test_launcher_readout_shows_discovery_and_failure():
+    _run(_prelude(LAUNCHER) + """
+const L = SK.launcher;
+assert.equal(L.phaseLabel("failed"), "failed", "failed is not folded into ingesting");
+const found = L.readout({pages: 0, nodes: 0, edges: 0, discovered: 17,
+                         state: "ingesting"});
+assert.equal(found.found, true);
+assert.equal(found.label, "17 pages found · 0 nodes · 0 edges");
+assert.equal(found.building, true);
+// once real pages arrive they replace the discovery hint
+const fetched = L.readout({pages: 12, nodes: 9, edges: 21, discovered: 17,
+                           state: "ingesting"});
+assert.equal(fetched.found, false);
+assert.equal(fetched.label, "12 pages · 9 nodes · 21 edges");
+// completion still reports the real page/edge counts
+const done = L.readout({pages: 17, nodes: 12, edges: 40, discovered: 20,
+                        state: "complete"});
+assert.equal(done.label, "17 pages · 12 nodes · 40 edges");
+assert.equal(done.phase, "complete");
+// archive with no doc count keeps the no-pages contract
+const archive = L.readout({pages: 9, nodes: 5, edges: 3, discovered: 9},
+                          {pages: false});
+assert.equal(archive.label, "5 nodes · 3 edges");
+// failure surfaces the server error, truncated, with a visible phase label
+const failed = L.readout({state: "failed",
+                          error: "discovery timed out after 180s"});
+assert.equal(failed.phase, "failed");
+assert.equal(failed.failed, true);
+assert.equal(failed.building, false);
+assert.equal(failed.label, "failed: discovery timed out after 180s");
+const long = L.readout({state: "failed", error: "x".repeat(500)});
+assert.ok(long.label.length <= 128, "error summary stays bounded");
+assert.ok(long.label.indexOf("failed: ") === 0);
+const blank = L.readout({state: "failed"});
+assert.equal(blank.label, "failed: live run failed");
+""")
+src = (ROOT / "site_kg" / "viewer" / "launcher.js").read_text()
+assert 'failed: "failed"' in src
+
+
 def test_batcher_folds_progress_pages_into_live_state():
     _run(_prelude(CORE, DIRECTOR) + """
 const g = new SK.LiveGraph(16);
@@ -492,15 +628,78 @@ assert.deepEqual(P(null, {visible: 4}), ["4 visible"]);
     assert "UI.finaleParts(this.cfg, status)" in src
 
 
+def test_set_live_target_updates_bar_and_document_title():
+    """A new launch updates the host chip and the tab, while the masthead stays
+    the product name instead of a raw URL; archive viewers never call this."""
+    _run(_prelude(UI, LAUNCHER) + """
+global.document = {title: "old baked title"};
+const ui = new SK.UI();
+ui.titleEl = {textContent: "old baked title"};
+ui.targetEl = {textContent: "", title: ""};
+ui.setLiveTarget("https://new.example/docs/start");
+assert.equal(ui.targetEl.textContent, "new.example");
+assert.equal(ui.titleEl.textContent, "site-kg");
+assert.equal(document.title, "site-kg \u00b7 new.example");
+// no mounted elements (archive-ish harness) must not throw
+const bare = new SK.UI();
+bare.setLiveTarget("https://other.example/");
+assert.equal(document.title, "site-kg \u00b7 other.example");
+""")
+
+
+def test_build_view_stages_progress_and_titles():
+    """The build overlay's model: stage words, a determinate ratio once pages
+    arrive, and a five-title stream trimmed for the panel."""
+    _run(_prelude(LAUNCHER) + """
+const B = SK.launcher.buildView;
+const finding = B({state: "ingesting", pages: 0, nodes: 0, edges: 0,
+                   discovered: 12}, []);
+assert.equal(finding.phase, "finding pages");
+assert.equal(finding.indeterminate, true);
+assert.equal(finding.ratio, 0);
+const fetching = B({state: "ingesting", pages: 6, nodes: 0, edges: 0,
+                    discovered: 12}, []);
+assert.equal(fetching.phase, "fetching pages");
+assert.equal(fetching.indeterminate, false);
+assert.ok(Math.abs(fetching.ratio - 0.5) < 1e-9);
+const growing = B({state: "ingesting", pages: 6, nodes: 6, edges: 9,
+                   discovered: 12}, []);
+assert.equal(growing.phase, "growing graph");
+assert.ok(Math.abs(growing.ratio - 0.5) < 1e-9);
+assert.equal(growing.label, "6 pages \\u00b7 6 nodes \\u00b7 9 edges");
+const settling = B({state: "settling", pages: 12, nodes: 10, edges: 20,
+                    discovered: 12}, []);
+assert.equal(settling.phase, "settling");
+assert.equal(settling.ratio, 1);
+const done = B({state: "complete", pages: 12, nodes: 10, edges: 20}, []);
+assert.equal(done.phase, "complete");
+assert.equal(done.complete, true);
+const failed = B({state: "failed", pages: 3, nodes: 2, edges: 1}, []);
+assert.equal(failed.phase, "failed");
+assert.equal(failed.failed, true);
+const titles = B({state: "ingesting", pages: 2, discovered: 5},
+                 ["a", "b", "c", "d", "e", "f"]);
+assert.equal(titles.titles.length, 5);
+assert.equal(titles.titles[0], "b");
+assert.equal(titles.titles[4], "f");
+assert.equal(SK.launcher.trimTitle("  a   b  "), "a b");
+assert.equal(SK.launcher.trimTitle("9. Classes \\u00b6"), "9. Classes");
+const long = SK.launcher.trimTitle("x".repeat(80));
+assert.equal(long.length, 54);
+assert.ok(long.indexOf("\\u2026") > 0);
+""")
+
+
 def test_launcher_copy_deck_constraints():
     src = (ROOT / "site_kg" / "viewer" / "launcher.js").read_text()
     _run(_prelude(LAUNCHER) + """
 const copy = SK.launcher.copy;
-assert.equal(copy.line1, "ANY SITE IS A GRAPH.");
-assert.equal(copy.line2, "WATCH IT BUILD.");
+assert.equal(copy.line1, "TURN ANY SITE");
+assert.equal(copy.line2, "INTO A WORLD.");
 assert.equal(copy.steps.length, 3);
 assert.ok(copy.action && copy.placeholder);
-assert.ok(copy.ctaWord && copy.ctaNote);
+assert.ok(copy.ctaNote);
+assert.ok(copy.worldIdle && copy.worldOn);
 Object.keys(copy.scenes).forEach(function (key) {
   assert.ok(copy.scenes[key].length > 10);
 });
@@ -516,13 +715,13 @@ global.document = {
   getElementById: function (id) {
     if (id !== "sk-launch-art") return null;
     return {textContent: JSON.stringify({
-      people: "data:image/jpeg;base64,AAAA",
+      neural: "data:image/jpeg;base64,AAAA",
       hud: "data:image/jpeg;base64,BBBB"
     })};
   }
 };
 const art = SK.launcher.loadArt();
-assert.equal(art.people, "data:image/jpeg;base64,AAAA");
+assert.equal(art.neural, "data:image/jpeg;base64,AAAA");
 assert.equal(art.hud, "data:image/jpeg;base64,BBBB");
 global.document = {getElementById: function () { return null; }};
 assert.deepEqual(SK.launcher.loadArt(), {});
@@ -534,17 +733,24 @@ assert.deepEqual(SK.launcher.loadArt(), {});
 
 
 def test_bar_resize_floor_and_convergence():
-    """--bar follows the measured bar height but never drops below the 52px
-    design floor, and a ResizeObserver echo loop converges instead of ratcheting."""
+    """--bar follows the measured HUD box (bar plus its float inset) but never
+    drops below the 60px design floor, and a ResizeObserver echo loop converges
+    instead of ratcheting."""
     _run(_prelude(UI) + r"""
+let hudHeight = 60;
 let barHeight = 40;
+const hud = {
+  getBoundingClientRect: function () { return {height: hudHeight}; }
+};
 const bar = {
   style: {minHeight: ""},
   getBoundingClientRect: function () { return {height: barHeight}; }
 };
 const props = {};
 global.document = {
-  getElementById: function (id) { return id === "bar" ? bar : null; },
+  getElementById: function (id) {
+    return id === "hud" ? hud : (id === "bar" ? bar : null);
+  },
   documentElement: {style: {
     setProperty: function (k, v) { props[k] = v; }
   }}
@@ -561,18 +767,18 @@ const ui = new SK.UI();
 ui._wireBarResize();
 assert.equal(typeof roCb, "function", "ResizeObserver path was wired");
 assert.equal(bar.style.minHeight, "", "min-height restored after measuring");
-assert.equal(props["--bar"], "52px", "40px height lifts to the 52px floor");
+assert.equal(props["--bar"], "60px", "60px box sits on the 60px floor");
 
-barHeight = 83;
+hudHeight = 83;
 roCb();
-assert.equal(props["--bar"], "83px", "taller bar is followed exactly");
+assert.equal(props["--bar"], "83px", "taller deck is followed exactly");
 assert.equal(bar.style.minHeight, "");
 
 // echo loop: the observer firing on its own write must settle, not climb
-barHeight = 30;
+hudHeight = 30;
 for (let i = 0; i < 5; i++) roCb();
-assert.equal(props["--bar"], "52px", "repeated triggers settle on the floor");
-barHeight = 83;
+assert.equal(props["--bar"], "60px", "repeated triggers settle on the floor");
+hudHeight = 83;
 for (let i = 0; i < 5; i++) roCb();
 assert.equal(props["--bar"], "83px", "repeated triggers settle on the height");
 """)

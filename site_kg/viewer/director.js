@@ -33,6 +33,9 @@
     this._selectionSet = null;
     this.archive = null;
     this._lodVersion = -1;
+    this._revealedPrev = null;
+    this._eRevealedPrev = null;
+    this.recent = [];
     this.reducedMotion = !!(window.matchMedia &&
       window.matchMedia("(prefers-reduced-motion: reduce)").matches);
   }
@@ -47,6 +50,7 @@
     this.state = "ingesting";
     this.finaleDone = false;
     this._lodVersion = -1;
+    this.recent = [];
     if (this.renderer && this.renderer.resetFinale) this.renderer.resetFinale();
     if (this.ui && this.ui.hideFinale) this.ui.hideFinale();
     if (mode === "archive" && payload) {
@@ -72,6 +76,7 @@
       if (!batches.length) {
         this._revealAll();
         this.layoutSettled = true;
+        this._mature();
       }
       this.state = "settling";
       this.camera.fit(this._sampleAll(6000), {robust: true, duration: 700});
@@ -87,13 +92,20 @@
   Director.prototype._sampleAll = function (limit) {
     var live = this.live;
     if (!live.n) return new Float32Array(0);
+    /* The renderer may have re-placed nodes (planet shells); sample what is
+       actually drawn, otherwise the camera frames the raw layout and clips
+       the outermost shells. */
+    if (this.renderer && this.renderer.samplePoints) {
+      var placed = this.renderer.samplePoints(live, limit);
+      if (placed.length) return placed;
+    }
     var stride = Math.max(1, Math.ceil(live.n / limit));
     var out = new Float32Array(Math.ceil(live.n / stride) * 3);
     var k = 0;
     for (var i = 0; i < live.n; i += stride) {
-      out[k++] = live.x[i] * this.renderer.SCALE;
-      out[k++] = live.y[i] * this.renderer.SCALE;
-      out[k++] = live.z[i] * this.renderer.SCALE;
+      out[k++] = live.x[i] * (this.renderer.posScale || this.renderer.SCALE);
+      out[k++] = live.y[i] * (this.renderer.posScale || this.renderer.SCALE);
+      out[k++] = live.z[i] * (this.renderer.posScale || this.renderer.SCALE);
     }
     return out.subarray(0, k);
   };
@@ -102,6 +114,25 @@
     var live = this.live, i;
     for (i = 0; i < live.n; i++) live.revealed[i] = 1;
     for (i = 0; i < live.m; i++) live.eRevealed[i] = 1;
+  };
+
+  /* Take the current reveal mask as the baseline, and make everything on it
+     mature, so only later reveals animate. */
+  Director.prototype._mature = function () {
+    var live = this.live;
+    if (this.renderer && this.renderer.resetBirth) this.renderer.resetBirth();
+    this._revealedPrev = new Uint8Array(Math.max(live.cap, 1));
+    this._eRevealedPrev = new Uint8Array(Math.max(live.capE, 1));
+    for (var i = 0; i < live.n; i++) this._revealedPrev[i] = live.revealed[i];
+    for (var e = 0; e < live.m; e++) this._eRevealedPrev[e] = live.eRevealed[e];
+  };
+
+  Director.prototype._noteNode = function (title, id) {
+    var text = String(title == null || title === "" ? (id == null ? "" : id) : title);
+    text = text.replace(/\s+/g, " ").trim();
+    if (!text) return;
+    this.recent.push(text);
+    if (this.recent.length > 12) this.recent.shift();
   };
 
   Director.prototype._advanceReplay = function () {
@@ -125,6 +156,7 @@
       this._revealAll();
       this.replay = null;
       this.layoutSettled = true;
+      this._mature();
     }
   };
 
@@ -145,6 +177,7 @@
         live.applyBatch([ev]);
         for (var i = n0; i < live.n; i++) live.revealed[i] = 1;
         for (var e = m0; e < live.m; e++) live.eRevealed[e] = 1;
+        if (t === "node_added") this._noteNode(ev.title, ev.id);
         if (live.n && !this._fittedOnce) this._fitNext = true;
       } else if (t === "layout_patch") {
         var rows = ev.rows || ev.patch || [];
@@ -156,6 +189,8 @@
         this.ingestDone = true;
         this.state = "settling";
         this.camera.fitLive({robust: true, duration: 700});
+      } else if (t === "discover") {
+        live.applyBatch([ev]);
       } else if (t === "settled") {
         this.layoutSettled = true;
       }
@@ -221,6 +256,7 @@
     this.layoutSettled = true;
     this.replay = null;
     this._revealAll();
+    this._mature();
     this.state = "complete";
     if (this.camera && this.camera.settleNow) this.camera.settleNow();
     this._startFinale();
@@ -260,6 +296,13 @@
     var fetchFn = opts.fetch || (typeof fetch === "function" ? fetch : null);
 
     if (this.transport) this.transport.close();
+    /* A new crawl must start from an empty sky. Without this the previous run
+       stays in the LiveGraph and the first server event — which has the new run
+       id — does not trigger resetRun, so the finished graph is already on screen
+       before a single page of the new crawl arrives. An empty id (first mount)
+       is a bootstrap, not a switch, and keeps its resume point. */
+    var prevRun = String(live.runId || "");
+    var freshRun = !!runId && !!prevRun && String(runId) !== prevRun;
     this.runId = String(runId || "");
     this.lastSeq = Number(lastSeq) || 0;
     this.error = null;
@@ -267,18 +310,35 @@
     var handle = {base: base, runId: this.runId, source: null, closed: false,
                   refreshing: false, retryTimer: null};
     var batcher = new SK.Batcher(live, {
-      windowMs: opts.windowMs, maxNodes: opts.maxNodes, timer: opts.timer,
+      /* 100ms keeps the growth continuous instead of arriving in 300ms steps;
+         paced mode holds the burst that a fast local crawl produces and hands
+         it out at a watchable rate. */
+      windowMs: opts.windowMs == null ? 100 : opts.windowMs,
+      maxNodes: opts.maxNodes, timer: opts.timer,
+      paced: opts.paced !== false,
       lastSeq: this.lastSeq,
       onFlush: function (rec) { self.lastSeq = rec.lastSeq; onFlush(rec); }
     });
     this.batcher = batcher;
     handle.batcher = batcher;
+    if (freshRun) {
+      resetRun(this.runId);
+      /* The graph is empty again, so replay from the very first event even if
+         the start response already reported a later sequence number. */
+      this.lastSeq = 0;
+    } else if (this.runId) {
+      /* Remember the run even when there was nothing to clear, so the next
+         start can tell it is a different crawl. */
+      live.runId = this.runId;
+    }
 
     function resetRun(newRunId) {
       handle.runId = String(newRunId || "");
       self.runId = handle.runId;
-      live.runId = handle.runId;
       live.reset(1024);
+      /* reset() clears the graph's run id, so stamp the new one afterwards;
+         otherwise the next connect looks like a bootstrap and never resets. */
+      live.runId = handle.runId;
       batcher.reset(0);
       self.ingestDone = false;
       self.layoutSettled = false;
@@ -288,6 +348,9 @@
       self._fittedOnce = false;
       self._fitNext = true;
       self._visKey = "";
+      self.recent = [];
+      if (self._revealedPrev) self._revealedPrev.fill(0);
+      if (self._eRevealedPrev) self._eRevealedPrev.fill(0);
     }
 
     function onFlush(rec) {
@@ -305,12 +368,15 @@
           if (self.camera && self.camera.fitLive) {
             self.camera.fitLive({robust: true, duration: 700});
           }
+          /* Fit again once sync has placed the newest nodes in their shells. */
+          self._fitNext = true;
         } else if (ev.t === "settled") {
           self.layoutSettled = true;
         } else if (ev.t === "error") {
           self.error = String(ev.error || "live run failed");
           self.state = "failed";
         }
+        if (ev.t === "node_added") self._noteNode(ev.title, ev.id);
       }
       var d = rec.dirtyNodes || [0, 0];
       for (var i = d[0]; i < d[1]; i++) live.revealed[i] = 1;
@@ -334,11 +400,17 @@
       self.lastSeq = batcher.lastSeq;
       for (var i = 0; i < live.n; i++) live.revealed[i] = 1;
       for (var e = 0; e < live.m; e++) live.eRevealed[e] = 1;
+      self._mature();
+      var tail = Math.max(0, live.n - 5);
+      for (var t = tail; t < live.n; t++) self._noteNode(live.titles[t], live.ids[t]);
       self._visKey = "";
       if (health && health.state === "complete") {
         self.ingestDone = true;
         self.layoutSettled = true;
         self.state = "complete";
+      } else if (health && health.state === "failed") {
+        self.state = "failed";
+        self.error = String(health.error || self.error || "live run failed");
       }
       if (self.ui) {
         if (self.ui._buildLegend) self.ui._buildLegend();
@@ -446,6 +518,31 @@
     var live = this.live;
     var vis = this._vis || (this._vis = new Uint8Array(live.cap));
     if (vis.length < live.n) vis = this._vis = new Uint8Array(live.cap);
+    /* Stamp first-seen times before anything else: the renderer's shaders grow
+       a node or an edge over 0.45s from its birth, and reads the same clock. */
+    var prev = this._revealedPrev;
+    if (!prev || prev.length < live.cap) {
+      var np = new Uint8Array(Math.max(live.cap, 1));
+      if (prev) np.set(prev);
+      prev = this._revealedPrev = np;
+    }
+    var eprev = this._eRevealedPrev;
+    if (!eprev || eprev.length < live.capE) {
+      var nep = new Uint8Array(Math.max(live.capE, 1));
+      if (eprev) nep.set(eprev);
+      eprev = this._eRevealedPrev = nep;
+    }
+    var r = this.renderer;
+    for (var b = 0; b < live.n; b++) {
+      if (live.revealed[b] && !prev[b] && r && r.markBirth) r.markBirth(b, this.time);
+      prev[b] = live.revealed[b];
+    }
+    for (var be = 0; be < live.m; be++) {
+      if (live.eRevealed[be] && !eprev[be] && r && r.markEdgeBirth) {
+        r.markEdgeBirth(be, this.time);
+      }
+      eprev[be] = live.eRevealed[be];
+    }
     var focus = this.focusIndex;
     var scene = (SK.scenes && SK.scenes[this.renderer.name]) || {};
     if (scene.ego && scene.select) {
@@ -501,6 +598,8 @@
     }
     return {nodes: live.n, edges: live.m, pages: live.pages, revealed: revealed,
             visible: visible, pending: live.pendingCount, state: this.state,
+            discovered: live.discovered, discoverFailed: live.discoverFailed,
+            error: this.error,
             scene: this.renderer.name, mode: this.mode, finale: this.finaleDone,
             ego: this.selection ? this.selection.length : 0,
             fps: Math.round(this.fps)};
@@ -528,15 +627,22 @@
       this._visKey = key;
       this._recomputeDims();
     }
-    if (this._fitNext && this.live.n) {
-      this._fitNext = false;
-      if (!this.camera.tween) {
-        this.camera.fitLive({robust: true, duration: 500});
-        this._fittedOnce = true;
-      }
-    }
     this.camera.update(dt);
+    if (this.batcher && this.batcher.pump) this.batcher.pump();
+    if (this.renderer) this.renderer.time = this.time;
     this.renderer.sync(this.live);
+    /* Keep framing the graph while it grows: nodes arrive over minutes and a
+       fit that only happens at ingest_done leaves the build off-centre. */
+    if (!this.camera.userInteracting && this.state === "ingesting" &&
+        this.live.n && this.time - (this._fitTick || 0) > 1.6) {
+      this._fitTick = this.time;
+      this._fitNext = true;
+    }
+    if (this._fitNext && this.live.n && !this.camera.tween) {
+      this._fitNext = false;
+      this.camera.fitLive({robust: true, duration: 500});
+      this._fittedOnce = true;
+    }
     if (this.layoutSettled && this.renderer.prepareEdgeLod &&
         this._lodVersion !== this.live.version) {
       this.renderer.prepareEdgeLod();
@@ -546,7 +652,10 @@
     this.renderer.render();
     if (this.time - this.labelTime > 0.18) {
       this.labelTime = this.time;
-      this.labels.update(this.live, this.camera, {focus: this.focusIndex});
+      this.labels.update(this.live, this.camera, {
+        focus: this.focusIndex,
+        finale: this.ui && this.ui.finaleNote
+      });
     }
     if (this.ui && this.time - this.statusTime > 0.3) {
       this.statusTime = this.time;
