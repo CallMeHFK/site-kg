@@ -180,7 +180,12 @@ def test_fenced_code_and_images_make_no_edges(tmp_path: Path):
         "# A\n\n```\nexample: [x](b.md)\n```\n\n![pic](b.md)\n\ninline `[y](b.md)`\n")
     (src / "b.md").write_text("b\n")
     r = build(src, tmp_path / "corpus")
-    assert r["graph"]["edges"] == []
+    # no evidence edges: fenced and image links never become ref/imports.
+    # A same-directory sibling_of edge is correct derived behaviour (local
+    # corpora get directory cohorts since the file:// dir-key fix), so only
+    # the evidence kinds are forbidden here.
+    kinds = {e["k"] for e in r["graph"]["edges"]}
+    assert not kinds & {"ref", "imports", "contains"}
     assert r["stats"]["dropped_refs"] == 0  # image never counted as a doc ref
 
 

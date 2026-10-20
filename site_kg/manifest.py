@@ -112,7 +112,8 @@ async def from_doxygen_navtree(client: httpx.AsyncClient, base: str) -> list[str
 
 
 async def bfs(client: httpx.AsyncClient, base: str, max_pages: int, max_depth: int,
-              stats: dict, on_discover=None, on_page_found=None) -> list[str]:
+              stats: dict, on_discover=None, on_page_found=None,
+              respect_robots: bool = True) -> list[str]:
     """Same-site BFS over <a href>. Pages that fetch as client-side shells are
     re-rendered headlessly so their links are discoverable. Renderer failures
     degrade to the static HTML and are counted in stats.
@@ -122,9 +123,12 @@ async def bfs(client: httpx.AsyncClient, base: str, max_pages: int, max_depth: i
     sitting silent for the whole crawl. ``failed`` counts fetches that errored
     or returned non-HTML, rather than swallowing them. ``on_page_found(url,
     html)`` fires for each page that settles with HTML, so the caller can add
-    the node while the crawl is still running."""
+    the node while the crawl is still running. Honours robots.txt unless
+    ``respect_robots=False`` (only for sites you are authorized to test)."""
+    from .ingest import _robots_async
     from .render import ambient_proxy, internal_links, is_js_shell, try_render_urls
 
+    rp = await _robots_async(base) if respect_robots else None
     failed = 0
 
     def notify(found: int, depth: int) -> None:
@@ -136,6 +140,9 @@ async def bfs(client: httpx.AsyncClient, base: str, max_pages: int, max_depth: i
     seen, queue, out = {base}, [(base, 0)], []
     while queue and len(out) < max_pages:
         url, depth = queue.pop(0)
+        if rp and not rp.can_fetch(UA["User-Agent"], url):
+            stats["robots_blocked"] = stats.get("robots_blocked", 0) + 1
+            continue
         try:
             r = await client.get(url, follow_redirects=True)
         except Exception as exc:
@@ -178,14 +185,16 @@ async def bfs(client: httpx.AsyncClient, base: str, max_pages: int, max_depth: i
 
 
 async def page_inventory(base: str, max_pages: int = 500, max_depth: int = 4,
-                         on_discover=None, on_page_found=None) -> tuple[list[str], str, dict]:
+                         dev: bool = False, on_discover=None,
+                         on_page_found=None) -> tuple[list[str], str, dict]:
     """Returns (urls, source, stats) where source is objects_inv|navtree|sitemap|bfs.
     stats carries renderer-degradation counters and ``failed``/``discovered``.
 
     ``on_discover(found, depth, failed)`` is optional; without it behaviour is
     unchanged. Fast inventory sources still report once so the caller sees the
     page count before fetching starts. ``on_page_found(url, html)`` is only
-    available on the BFS path, which already has each page's HTML in hand."""
+    available on the BFS path, which already has each page's HTML in hand.
+    ``dev=True`` (authorized testing only) skips the BFS robots.txt check."""
     stats: dict = {"errors": {}, "failed": 0, "discovered": 0}
 
     def report(urls: list[str]) -> None:
@@ -209,6 +218,7 @@ async def page_inventory(base: str, max_pages: int = 500, max_depth: int = 4,
             urls = sm[:max_pages]
             report(urls)
             return urls, "sitemap", stats
-        urls = await bfs(client, base, max_pages, max_depth, stats, on_discover,
-                         on_page_found)
+        urls = await bfs(client, base, max_pages, max_depth, stats,
+                         on_discover=on_discover, on_page_found=on_page_found,
+                         respect_robots=not dev)
         return urls, "bfs", stats

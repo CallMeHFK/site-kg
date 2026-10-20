@@ -32,11 +32,12 @@ async def ingest_local(path: str, max_files: int = 2000, respect_gitignore: bool
     READY (traversable edges found) or NOT-READY (no links/imports; use search).
 
     `relations` selects the derived relation dimensions, chosen per node:
-    "auto" (keyless: mentions_symbol/similar_to/sibling_of/supersedes), "llm"
-    (auto + an LLM router plus entity/embedding similarity), "all", "off", or an
-    explicit comma list. Omit it to use $SITE_KG_RELATIONS, or "auto" when that
-    is unset. Derived edges only enrich a corpus that already has
-    cross-references.
+    "auto" (keyless: mentions_symbol/similar_to/sibling_of/supersedes/
+    shares_heading/shares_term/duplicate_of/coupled_with/co_cited_with),
+    "llm" (auto + an LLM router plus entity/embedding similarity), "all", "off",
+    or an explicit comma list. Omit it to use $SITE_KG_RELATIONS, or "auto"
+    when that is unset. Content-derived edges also run on corpora with no
+    cross-references; the verdict still reports NOT-READY for those.
     """
     import anyio
 
@@ -70,7 +71,7 @@ async def ingest_local(path: str, max_files: int = 2000, respect_gitignore: bool
 @mcp.tool()
 async def ingest_url(url: str, max_pages: int = 200, max_depth: int = 4,
                      concurrency: int = 4, respect_robots: bool = True,
-                     relations: str | None = None) -> dict:
+                     relations: str | None = None, dev: bool = False) -> dict:
     """Crawl a website, build its knowledge graph, and register it as a queryable site.
 
     Returns site_id for later tools plus a graph-quality verdict:
@@ -80,23 +81,35 @@ async def ingest_url(url: str, max_pages: int = 200, max_depth: int = 4,
     (keyless dimensions), "llm" (LLM router + entity/embedding similarity),
     "all", "off", or an explicit comma list. Omit it to use $SITE_KG_RELATIONS,
     or "auto" when that is unset.
+
+    `dev` is the development/testing mode for sites you own or are authorized
+    to test: it ignores robots.txt and politeness delays so a deep crawl of an
+    authorized target finishes fast. It forces respect_robots=False.
     """
     urls, source, inv_stats = await manifest.page_inventory(url, max_pages=max_pages,
-                                                            max_depth=max_depth)
+                                                            max_depth=max_depth, dev=dev)
     seed_hint = None
     if len(urls) <= 2:
         seed_hint = ("only the seed page was discovered -- the seed looks like a section leaf. "
                      "Re-ingest with the docs root (e.g. https://site/docs/) "
                      "so scope covers siblings.")
     if not urls:
+        if inv_stats.get("robots_blocked"):
+            return {"ok": False, "url": url, **inv_stats,
+                    "error": "blocked by robots.txt during discovery: the site disallows "
+                             "this user agent. Ask the site owner, or use dev=true / "
+                             "respect_robots=false only if you are authorized to test "
+                             "this site."}
         return {"ok": False, "error": "no pages discovered", "url": url}
     pages, stats = await ingestmod.fetch_pages(urls, url, concurrency=concurrency,
-                                               respect_robots=respect_robots)
+                                               respect_robots=respect_robots and not dev,
+                                               dev=dev)
     if not pages:
         if stats["robots_blocked"]:
             return {"ok": False, "url": url, "discovered": len(urls), **stats,
                     "error": "blocked by robots.txt: the site disallows this user agent. "
-                             "Ask the site owner or pass respect_robots=false only if authorized."}
+                             "Ask the site owner, or use dev=true / respect_robots=false "
+                             "only if you are authorized to test this site."}
         return {"ok": False, "error": "all fetches failed", "url": url,
                 "discovered": len(urls), **stats}
     site_id = store.site_id_for(url)

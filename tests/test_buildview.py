@@ -1,6 +1,7 @@
 """Build-replay viewer tests (site_kg/buildview.py) -- offline, no browser."""
 import base64
 import json
+import math
 from array import array
 from pathlib import Path
 
@@ -9,9 +10,10 @@ import pytest
 from site_kg.buildview import (
     DERIVED_ORDER,
     EVIDENCE_ORDER,
+    R_MAX,
     _b64,
     build_view_data,
-    layout_rings,
+    layout_shells,
     render_build_viewer,
 )
 
@@ -78,26 +80,61 @@ def test_births_are_monotonic_within_phase_and_packed_in_order():
         assert 0 <= edge_idx[i] < n and 0 <= edge_idx[i + 1] < n
 
 
-def test_ring_layout_is_deterministic_and_bounded():
+def _radius(nd: dict) -> float:
+    return (nd["x"] ** 2 + nd["y"] ** 2 + nd["z"] ** 2) ** 0.5
+
+
+def test_shell_layout_is_deterministic_and_bounded():
     g = _graph(n_nodes=40)
     a = {"nodes": [dict(nd) for nd in g["nodes"]], "edges": g["edges"]}
     b = {"nodes": [dict(nd) for nd in g["nodes"]], "edges": g["edges"]}
-    layout_rings(a)
-    layout_rings(b)
+    layout_shells(a)
+    layout_shells(b)
     assert [(n["x"], n["y"], n["z"]) for n in a["nodes"]] == \
            [(n["x"], n["y"], n["z"]) for n in b["nodes"]]
     for n in a["nodes"]:
-        assert abs(n["x"]) <= 105 and abs(n["z"]) <= 105 and abs(n["y"]) <= 3
+        # base_r <= R_MAX, pull <= 1, jitter <= 1.03, rounding to 2 decimals
+        assert _radius(n) <= 104.0
 
 
 def test_hub_nodes_migrate_toward_the_core():
     nodes = [{"i": f"n{i}", "c": "ch", "t": "", "u": ""} for i in range(8)]
     edges = [{"s": "n0", "t": f"n{i}", "k": "ref"} for i in range(1, 8)]
     g = {"nodes": nodes, "edges": edges}
-    layout_rings(g)
-    r0 = (g["nodes"][0]["x"] ** 2 + g["nodes"][0]["z"] ** 2) ** 0.5
-    others = [(n["x"] ** 2 + n["z"] ** 2) ** 0.5 for n in g["nodes"][1:]]
-    assert r0 < min(others)   # hub pulled ~30% inward; others keep their ring
+    layout_shells(g)
+    r0 = _radius(g["nodes"][0])
+    others = [_radius(n) for n in g["nodes"][1:]]
+    assert r0 < min(others)   # hub pulled ~30% inward; others keep their shell
+
+
+def test_shell_layout_fills_the_volume_not_a_pie():
+    """The whole point of 3D: a large corpus must not flatten onto y ~ 0."""
+    g = _graph(n_nodes=300)
+    layout_shells(g)
+    mean_abs_y = sum(abs(n["y"]) for n in g["nodes"]) / len(g["nodes"])
+    assert mean_abs_y > 0.25 * R_MAX
+    # a majority of nodes must sit clearly off the equatorial band
+    off_band = sum(1 for n in g["nodes"] if abs(n["y"]) > 0.15 * R_MAX)
+    assert off_band > len(g["nodes"]) // 2
+
+
+def test_chapter_shells_are_ordered_by_chapter_size():
+    """Edge-free fixture: pull == 1, so mean radius == shell radius, cleanly."""
+    nodes = [{"i": f"a{i}", "c": "big", "t": "", "u": ""} for i in range(30)]
+    nodes += [{"i": f"b{i}", "c": "mid", "t": "", "u": ""} for i in range(10)]
+    nodes += [{"i": f"c{i}", "c": "small", "t": "", "u": ""} for i in range(5)]
+    g = {"nodes": nodes, "edges": []}
+    layout_shells(g)
+
+    def mean_r(ch: str) -> float:
+        members = [n for n in nodes if n["c"] == ch]
+        return sum(_radius(n) for n in members) / len(members)
+
+    big, mid, small = mean_r("big"), mean_r("mid"), mean_r("small")
+    assert big > mid > small
+    assert big > 0.9 * R_MAX          # biggest chapter owns the outer shell
+    assert mid < 0.75 * R_MAX < big   # mid shell sits clearly inside big
+    assert small < 0.65 * R_MAX
 
 
 def test_viewer_html_is_self_contained(tmp_path: Path):
@@ -115,6 +152,37 @@ def test_viewer_html_is_self_contained(tmp_path: Path):
     assert len(_u32(data["edgesB"])) == len(g["edges"]) * 4
     assert len(_f32(data["birthsB"])) == len(g["edges"])
     assert data["verdict"] == "READY" and data["edgesTotal"] == len(g["edges"])
+
+
+def test_payload_carries_framing_radius_that_fits_every_viewport(tmp_path):
+    """boundR drives the fit-to-viewport camera: the fitted distance must keep
+    every node on-screen at desktop, tablet and phone aspects.
+
+    Invariant (no matrix mirror needed): a node at radius r <= boundR, viewed
+    from distance D, has sin(view angle) <= r/D <= boundR/D < sin(half-angle),
+    so its NDC = tan(angle)/tan(half) < 1 at any yaw/pitch. Asserted against
+    the viewer's default camera and its exact fit formula.
+    """
+    g = _graph(n_nodes=40)
+    out = render_build_viewer(g, {"url": "http://x/"}, tmp_path / "b.html")
+    data = _data_of(out.read_text(encoding="utf-8"))
+    pos = _f32(data["nodesB"])
+    radii = [(pos[i] ** 2 + pos[i + 1] ** 2 + pos[i + 2] ** 2) ** 0.5
+             for i in range(0, len(pos), 4)]
+    assert data["boundR"] == pytest.approx(max(radii), abs=0.02)
+    yaw, pitch = 0.7, 0.42   # the viewer's default camera
+    cp, sp = math.cos(pitch), math.sin(pitch)
+    ux, uy, uz = math.sin(yaw) * cp, sp, math.cos(yaw) * cp   # eye direction
+    for aspect in (16 / 10, 3 / 4, 390 / 844):
+        half = min(0.45, math.atan(math.tan(0.45) * aspect))
+        dist = max(40, min(900, data["boundR"] / math.sin(half) * 1.08))
+        # camera sits at dist*u looking at the origin: forward is -u
+        for x, y, z in ((pos[i], pos[i + 1], pos[i + 2])
+                        for i in range(0, len(pos), 4)):
+            vx, vy, vz = x - dist * ux, y - dist * uy, z - dist * uz
+            cos_a = -(ux * vx + uy * vy + uz * vz) / math.sqrt(
+                vx * vx + vy * vy + vz * vz)
+            assert cos_a > math.cos(half)   # view angle < half-angle => on-screen
 
 
 def test_titles_with_script_tags_cannot_break_out(tmp_path: Path):

@@ -21,11 +21,29 @@ is bounded and the LLM is only allowed to *choose*, never to mint edge kinds.
 
 Ground rules inherited from the rest of site-kg:
   * every edge is derived from the corpus, never invented;
-  * derived edges only enrich a corpus that already has structural evidence
-    (ref/imports > 0). A corpus with zero cross-references stays NOT-READY with
-    zero edges rather than gaining a decorative hairball;
+  * content-derived dimensions are per-node gated and fan-out capped, so they
+    may run even when the corpus has zero cross-references (ref/imports == 0):
+    a pile of files with comparable content gains real signal instead of an
+    empty graph, while the NOT-READY verdict still says "no link structure".
+    A stub corpus with no shared evidence of any kind (no prose, headings,
+    cohorts, versions, curated terms, or content hash) still ends up with
+    zero edges, never a decorative hairball; the one exception is identical
+    content, where the shared sha256 is itself the evidence;
+  * corpus-level dimensions (duplicate_of from frontmatter sha256,
+    coupled_with/co_cited_with from the evidence graph's own neighbourhoods)
+    skip per-node gating because their evidence is graph- or hash-level, not
+    per-node content;
   * no LLM or embedding model is required. Every keyless dimension works
     offline; the LLM/embedding dimensions fail open to "skipped".
+
+Literature behind the keyless dimensions (see docs/RELATIONS.md for the full
+map): bibliographic coupling / co-citation (Kessler 1963, Small 1973) with a
+resource-allocation weight (Zhou-Lü-Zhang 2009) for the neighbourhood
+dimensions; keyword-salience features (YAKE, Campos et al. 2020; entity
+salience, Dunietz & Gillick 2014) for term and symbol weighting; SimHash
+banded blocking (Charikar 2002, Manku et al. 2007) as the model for the
+sha256 duplicate tier; relative df windows to keep the tf-idf pass
+scale-robust (the search index's DF_RATIO_CAP semantics).
 """
 from __future__ import annotations
 
@@ -33,13 +51,20 @@ import math
 import os
 import re
 from collections import Counter, defaultdict
+from itertools import pairwise
 from pathlib import PurePosixPath
 
-from .graph import STOP, TOKEN, _prose
+from .graph import FENCE, STOP, TOKEN, _prose
 
 EVIDENCE_KINDS = ("ref", "imports", "contains")
-KEYLESS_KINDS = ("mentions_symbol", "similar_to", "sibling_of", "supersedes")
+KEYLESS_KINDS = ("mentions_symbol", "similar_to", "sibling_of", "supersedes",
+                 "shares_heading", "shares_term", "duplicate_of",
+                 "coupled_with", "co_cited_with")
 MODEL_KINDS = ("shares_entity", "semantic_similar")
+# Corpus-level dimensions: their evidence is a whole-corpus hash or the
+# evidence graph's neighbourhood structure, not per-node content, so the
+# per-node selector does not gate them.
+ALWAYS_ON_KINDS = ("duplicate_of", "coupled_with", "co_cited_with")
 
 DIMENSIONS = {
     "ref": "markdown link / wikilink, resolved against the corpus",
@@ -49,6 +74,11 @@ DIMENSIONS = {
     "similar_to": "tf-idf cosine over prose: same topic, no explicit link",
     "sibling_of": "same directory cohort (package or URL folder)",
     "supersedes": "version lineage: 2.0 supersedes 1.4 of the same page family",
+    "shares_heading": "pages share a document skeleton: >=35% Jaccard overlap of heading sets",
+    "shares_term": "pages share >= 2 salient curated terms (inline code, headings, symbols)",
+    "duplicate_of": "identical content: same frontmatter sha256",
+    "coupled_with": "bibliographic coupling: both pages cite the same targets",
+    "co_cited_with": "co-citation: the same pages cite both of these",
     "shares_entity": "pages share >= 2 LLM-extracted named entities",
     "semantic_similar": "embedding cosine over title + body head",
 }
@@ -57,15 +87,42 @@ DIMENSIONS = {
 MIN_PROSE = 220           # shorter bodies have no lexical signature to compare
 MIN_PROSE_LLM = 400       # entity extraction on a stub is wasted tokens
 SIG_TERMS = 15            # signature terms per doc for sparse cosine
-DF_MIN, DF_MAX = 2, 25    # a term in 1 doc matches nothing; in >25 it is a stopword
+DF_MIN = 2                # a term in 1 doc matches nothing
+DF_RATIO_MAX = 0.35       # df ceiling as a corpus fraction (matches graph.py
+                          # search-index semantics: beyond this it is boilerplate).
+                          # Pure ratio, no absolute cap: POSTING_K truncation
+                          # bounds the pair pass, so a topical term at 20% of a
+                          # 20k corpus stays in play instead of being silently
+                          # dropped by a stale absolute ceiling.
+POSTING_K = 64            # per-term posting truncation, weight-ordered: bounds
+                          # the pair pass at K*(K-1)/2 per term once DF_MAX
+                          # stops doing that job implicitly
 SIM_THRESHOLD = 0.20
 SIM_CAP = 5
 SIBLING_MIN, SIBLING_MAX = 1, 12
 SYMBOL_CAP = 5
 SYMBOL_MIN_LEN = 4
+SYMBOL_TITLE_BONUS = 2    # symbol named in the title is load-bearing, not incidental
 ENTITY_CAP = 5
 EMBED_CAP = 5
 EMBED_THRESHOLD = 0.70
+HEAD_MIN = 3              # a page needs >=3 headings for a comparable skeleton
+HEAD_OVERLAP = 0.35       # heading-set Jaccard threshold
+HEAD_CAP = 5              # per-nominator heading neighbours (same shape as SIM_CAP)
+HEAD_DF_FLOOR = 8         # relative boilerplate window for headings (see _df_ceiling)
+HEAD_POST_K = 64          # per-heading posting truncation: bounds the pair pass
+                          # under the pure-ratio df window (deterministic: id order)
+TERM_MIN = 2              # shared curated terms required for a shares_term edge
+TERM_SIG = 10             # signature terms per doc for the term dimension
+TERM_CAP = 5              # per-nominator term neighbours
+TERM_POST_K = 40          # per-term posting truncation for the term dimension
+TERM_MIN_W = 1.0          # minimum summed idf over the shared terms (only bites
+                          # when idf itself collapses, i.e. df ~ n)
+HUB_OUT_MAX = 24          # a page linking to more than this is a ToC: its
+                          # out-neighbourhood carries no coupling signal
+GROUP_MAX = 40            # deterministic truncation of one shared neighbour's
+                          # co-linker group (<=780 pairs per neighbour)
+COUPLE_CAP, COUPLE_MIN = 5, 0.25  # RA-weighted overlap threshold + fan-out
 MAX_HEAVY_DOCS = 8000     # above this, only cheap dimensions run (kernel trees)
 MAX_SYMBOL_DOCS = 4000    # code files scanned for cross-file symbol references
 MAX_ENTITY_PAGES = 120    # LLM entity-extraction budget per ingest
@@ -78,6 +135,16 @@ CODE_HEADER = re.compile(
 VER_TAGGED = re.compile(r"(?<![0-9A-Za-z])(?:v|ver|version|rev)(\d+)(?![0-9A-Za-z_.])", re.I)
 VER_STRICT = re.compile(r"(?<![0-9A-Za-z_.])(\d+(?:\.\d+){1,3})(?![0-9A-Za-z_.])")
 IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]{2,}")
+INLINE_CODE = re.compile(r"`([^`\n]{2,60})`")
+HEADING_RE = re.compile(r"^(#{1,4})\s+(.+?)\s*#*\s*$", re.M)
+
+
+def _df_ceiling(n: int, floor: int) -> int:
+    """Relative df ceiling: a term held by a fixed *fraction* of the corpus is
+    boilerplate, whatever the corpus size. The old absolute caps (df>25 => gone)
+    amputated genuinely topical terms exactly where the corpus was rich, and the
+    floor keeps tiny corpora from treating every recurring word as signal."""
+    return max(floor, int(n * DF_RATIO_MAX))
 SYMBOL_STOP = {
     "self", "this", "main", "init", "name", "args", "kwargs", "value", "values",
     "item", "items", "data", "result", "results", "text", "path", "type", "types",
@@ -126,12 +193,14 @@ def _code_header(body: str):
 
 
 def _dir_key(doc: dict) -> str | None:
-    """Directory cohort: source path for code, URL parent folder for pages."""
+    """Directory cohort: source path for code, URL parent folder for pages.
+    `file://` source URLs (local corpora written by the local scanner) count
+    too: without this the whole local-prose class silently got no cohorts."""
     m = _code_header(doc.get("body") or "")
     if m and m.group(1):
         return str(PurePosixPath(m.group(1)).parent) or "."
     u = doc.get("url") or ""
-    if u.startswith("http"):
+    if u.startswith("http") or u.startswith("file://"):
         return u.rsplit("/", 1)[0] or None
     return None
 
@@ -157,6 +226,40 @@ def _base_key(doc: dict) -> str:
     return re.sub(r"[^a-z0-9]+", "", stripped.lower())
 
 
+def _headings_of(body: str) -> list[str]:
+    """Normalized markdown heading texts (h1-h4), fences excluded. The corpus
+    writer keeps headings as markdown, so this works for crawled pages and
+    local docs alike."""
+    body = FENCE.sub(" ", body)
+    out: list[str] = []
+    for m in HEADING_RE.finditer(body):
+        t = re.sub(r"[^a-z0-9]+", " ", m.group(2).lower()).strip()
+        if len(t) >= 3 and t not in out:
+            out.append(t)
+    return out
+
+
+def _terms_of(body: str, headings: list[str], symbols: list[str]) -> list[tuple[str, int]]:
+    """Curated term inventory with local salience. Inline code spans are the
+    writer's own terminology marking (weight 3), headings delimit document
+    structure (2), declared symbols unify the code+prose vocabulary (2).
+    Fenced code is excluded first so block content cannot masquerade as a
+    curated span. Deterministic: sorted by (-weight, term)."""
+    fenced = FENCE.sub(" ", body)
+    counts: Counter = Counter()
+    for m in INLINE_CODE.findall(fenced):
+        t = re.sub(r"[^a-z0-9]+", " ", m.lower()).strip()
+        if 2 <= len(t) <= 60:
+            counts[t] += 3
+    for h in headings:
+        counts[h] += 2
+    for s in symbols:
+        t = re.sub(r"[^a-z0-9]+", " ", s.lower()).strip()
+        if len(t) >= 2:
+            counts[t] += 2
+    return sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+
+
 def profile_of(doc: dict) -> dict:
     """Cheap per-node signals: the input to dimension selection."""
     body = doc.get("body") or ""
@@ -166,16 +269,20 @@ def profile_of(doc: dict) -> dict:
     if m:
         syms = [s.strip() for s in m.group(3).split(",")
                 if s.strip() and s != "(none detected)"]
+    headings = _headings_of(body)
     return {
         "id": doc["id"],
         "title": doc.get("title", ""),
         "url": doc.get("url", ""),
+        "sha": doc.get("sha", ""),
         "body": body,
         "prose": prose,
         "prose_len": len(prose.strip()),
         "is_code": m is not None,
         "lang": m.group(2) if m else "",
         "symbols": syms,
+        "headings": headings,
+        "terms": _terms_of(body, headings, syms),
         "dir": _dir_key(doc),
         "version": _version(doc),
         "base": _base_key(doc),
@@ -199,6 +306,10 @@ def select_dimensions(p: dict, *, enabled: set[str], heavy_ok: bool) -> list[str
         out.append("sibling_of")
     if "supersedes" in enabled and p["version"] and len(p["base"]) >= 4:
         out.append("supersedes")
+    if "shares_heading" in enabled and len(p["headings"]) >= HEAD_MIN:
+        out.append("shares_heading")
+    if "shares_term" in enabled and len(p["terms"]) >= TERM_MIN:
+        out.append("shares_term")
     if "shares_entity" in enabled and p["prose_len"] >= MIN_PROSE_LLM:
         out.append("shares_entity")
     if "semantic_similar" in enabled and p["prose_len"] >= MIN_PROSE:
@@ -222,7 +333,11 @@ def _index_groups(profiles: list[dict]) -> None:
 
 # ---- dimension builders ---------------------------------------------------
 def _symbol_edges(profiles: list[dict]) -> list[tuple[str, str, str]]:
-    """Cross-file symbol references: identifiers defined in one file, used in another."""
+    """Cross-file symbol references: identifiers defined in one file, used in
+    another. Ranked by mention count plus a title bonus (a symbol the page is
+    *about* beats one pasted into a helper), with a (-score, symbol) tie-break:
+    Counter.most_common would fall back to scan order, so a permuted doc list
+    could permute which symbols make the cap."""
     code = [p for p in profiles if p["is_code"]]
     if len(code) > MAX_SYMBOL_DOCS:
         return []
@@ -236,46 +351,72 @@ def _symbol_edges(profiles: list[dict]) -> list[tuple[str, str, str]]:
     out: list[tuple[str, str, str]] = []
     for p in code:
         own = set(p["symbols"])
+        title = p["title"].lower()
         hits: Counter = Counter()
         for tok in IDENT.findall(p["body"]):
             owner = index.get(tok)
             if owner and owner != p["id"] and tok not in own:
                 hits[tok] += 1
-        for sym, _n in hits.most_common(SYMBOL_CAP):
+        scored = sorted(((n + (SYMBOL_TITLE_BONUS if tok.lower() in title else 0), tok)
+                         for tok, n in hits.items()), key=lambda kv: (-kv[0], kv[1]))
+        for _score, sym in scored[:SYMBOL_CAP]:
             out.append((p["id"], index[sym], "mentions_symbol"))
     return out
 
 
 def _similar_edges(profiles: list[dict]) -> list[tuple[str, str, str]]:
-    """Sparse tf-idf cosine between prose signatures (no O(n^2) dense pass)."""
+    """Sparse tf-idf cosine between prose signatures (no O(n^2) dense pass).
+
+    Scale-robust by construction: the df ceiling is a corpus *fraction*
+    (a term in 30 of 100 docs can be topical; in 30 of 28 it is boilerplate),
+    title tokens join the signature (the most discriminative strings on a
+    page), and each posting list is truncated to the top POSTING_K weights so
+    the pair pass stays bounded once the df ceiling stops capping it.
+    """
     cands = [p for p in profiles if p["prose_len"] >= MIN_PROSE]
     n = len(cands)
     if n < 2:
         return []
-    tf: list[Counter] = []
+    df_hi = _df_ceiling(n, DF_MIN + 1)
+    body_tf: list[Counter] = []
+    title_tf: list[Counter] = []
     df: Counter = Counter()
     for p in cands:
-        c: Counter = Counter()
+        cb: Counter = Counter()
         for tok in TOKEN.findall(p["prose"][:4000].lower()):
             if tok in STOP or tok.isdigit():
                 continue
-            c[tok] += 1
-        tf.append(c)
-        df.update(c.keys())
+            cb[tok] += 1
+        ct: Counter = Counter()
+        for tok in TOKEN.findall(p["title"].lower()):
+            if tok not in STOP and not tok.isdigit():
+                ct[tok] += 2  # title terms speak for the whole page
+        body_tf.append(cb)
+        title_tf.append(ct)
+        df.update((cb + ct).keys())
     idf = {t: math.log(1 + n / (1 + d)) for t, d in df.items()}
     sig: dict[str, list[tuple[float, str]]] = {}
     norm: dict[str, float] = {}
-    for p, c in zip(cands, tf):
-        ranked = sorted(((v * idf[t], t) for t, v in c.items()
-                         if DF_MIN <= df[t] <= DF_MAX), reverse=True)[:SIG_TERMS]
+    body_sig: dict[str, set[str]] = {}
+    for p, cb, ct in zip(cands, body_tf, title_tf):
+        full = cb + ct
+        ranked = sorted(((full[t] * idf[t], t) for t in full
+                         if DF_MIN <= df[t] <= df_hi), reverse=True)[:SIG_TERMS]
         sig[p["id"]] = ranked
         norm[p["id"]] = math.sqrt(sum(w * w for w, _ in ranked)) or 1.0
+        # title tokens may only reinforce a signature, never carry one: a pair
+        # whose bodies share zero in-window terms is a title convention, not a
+        # topic match (generated API sites share title boilerplate by design)
+        body_sig[p["id"]] = {t for _w, t in ranked if cb[t] > 0}
     postings: dict[str, list[tuple[str, float]]] = defaultdict(list)
     for p in cands:
         for w, t in sig[p["id"]]:
             postings[t].append((p["id"], w))
     acc: dict[tuple[str, str], float] = defaultdict(float)
     for plist in postings.values():
+        if len(plist) > POSTING_K:
+            plist.sort(key=lambda x: (-x[1], x[0]))
+            plist = plist[:POSTING_K]
         for i in range(len(plist)):
             a, wa = plist[i]
             for j in range(i + 1, len(plist)):
@@ -286,6 +427,8 @@ def _similar_edges(profiles: list[dict]) -> list[tuple[str, str, str]]:
         cos = dot / (norm[a] * norm[b])
         if cos < SIM_THRESHOLD:
             continue
+        if not body_sig[a] & body_sig[b]:
+            continue
         neighbours[a].append((cos, b))
         neighbours[b].append((cos, a))
     out: list[tuple[str, str, str]] = []
@@ -293,6 +436,177 @@ def _similar_edges(profiles: list[dict]) -> list[tuple[str, str, str]]:
         for _cos, b in sorted(lst, key=lambda kv: (-kv[0], kv[1]))[:SIM_CAP]:
             if a < b:
                 out.append((a, b, "similar_to"))
+    return out
+
+
+def _heading_shared_pairs(cands: list[dict], head_hi: int) -> Counter:
+    """Inverted index on headings -> per-pair shared-heading counts. Posting
+    lists are truncated to the top HEAD_POST_K ids, so a df just under the
+    ceiling stays sub-quadratic in the pair pass."""
+    by_heading: dict[str, list[str]] = defaultdict(list)
+    for p in cands:
+        for h in set(p["headings"]):
+            by_heading[h].append(p["id"])
+    shared: Counter = Counter()
+    for owners in by_heading.values():
+        if not 2 <= len(owners) <= head_hi:
+            continue
+        if len(owners) > HEAD_POST_K:
+            owners = sorted(owners)[:HEAD_POST_K]
+        for i in range(len(owners)):
+            for j in range(i + 1, len(owners)):
+                a, b = owners[i], owners[j]
+                shared[(a, b) if a < b else (b, a)] += 1
+    return shared
+
+
+def _heading_edges(profiles: list[dict]) -> list[tuple[str, str, str]]:
+    """Document-skeleton overlap: two pages whose normalized heading sets pass a
+    Jaccard threshold describe the same kind of document. Inverted index on
+    headings keeps the pass off O(n^2). Boilerplate headings (shared by more
+    than the relative df ceiling) are excluded from the shared-count numerator
+    but stay in the Jaccard union -- a conservative bias against
+    boilerplate-laden sets. Like SIM_CAP, HEAD_CAP limits each node's
+    *nominations*, so a node's incident degree can exceed it via nominations
+    from smaller-id peers."""
+    cands = [p for p in profiles if len(p["headings"]) >= HEAD_MIN]
+    if len(cands) < 2:
+        return []
+    head_hi = _df_ceiling(len(cands), HEAD_DF_FLOOR)
+    shared = _heading_shared_pairs(cands, head_hi)
+    heads = {p["id"]: set(p["headings"]) for p in cands}
+    neighbours: dict[str, list[tuple[float, str]]] = defaultdict(list)
+    for (a, b), n in shared.items():
+        union = len(heads[a] | heads[b])
+        jac = n / union if union else 0.0
+        if jac >= HEAD_OVERLAP:
+            neighbours[a].append((jac, b))
+            neighbours[b].append((jac, a))
+    out: list[tuple[str, str, str]] = []
+    for a, lst in neighbours.items():
+        for _jac, b in sorted(lst, key=lambda kv: (-kv[0], kv[1]))[:HEAD_CAP]:
+            if a < b:
+                out.append((a, b, "shares_heading"))
+    return out
+
+
+def _duplicate_edges(profiles: list[dict]) -> list[tuple[str, str, str]]:
+    """Exact duplicates: same frontmatter sha256, chained in sorted-id order
+    (never a clique -- a 400-copy page would fan out 79 800 edges, and the
+    chain keeps incident degree at 2). Precision ~1.0 by hash equality;
+    adjacent copies in the chain claim their pair before similar_to can spend
+    a nomination on it."""
+    by_sha: dict[str, list[str]] = defaultdict(list)
+    for p in profiles:
+        if p["sha"]:
+            by_sha[p["sha"]].append(p["id"])
+    out: list[tuple[str, str, str]] = []
+    for members in by_sha.values():
+        if len(members) < 2:
+            continue
+        ordered = sorted(members)
+        for a, b in pairwise(ordered):
+            out.append((a, b, "duplicate_of"))
+    return out
+
+
+def _overlap_edges(link_pairs: set[tuple[str, str]],
+                   direction: str) -> list[tuple[str, str, str]]:
+    """Neighbourhood overlap over the evidence graph, Kessler/Small style with
+    a resource-allocation weight (1/deg(z): a shared neighbour that everyone
+    cites contributes almost nothing). direction="out" is bibliographic
+    coupling (both pages cite the same targets), "in" is co-citation (the same
+    pages cite both) -- the only dimension that can relate two stubs that
+    never link anywhere. Hub guards: pages with HUB_OUT_MAX+ out-links are
+    tables of contents and contribute no candidates; a shared neighbour's
+    co-linker group is truncated deterministically (lowest ids first) so one
+    hub cannot blow up the pair pass."""
+    out_, in_ = defaultdict(set), defaultdict(set)
+    for a, b in sorted(link_pairs):
+        if a != b:
+            out_[a].add(b)
+            in_[b].add(a)
+    deg = {n: len(out_[n]) + len(in_[n]) for n in set(out_) | set(in_)}
+    nbrs = out_ if direction == "out" else in_
+    inv: dict[str, list[str]] = defaultdict(list)
+    for n in sorted(out_ | in_):
+        if len(out_[n]) <= HUB_OUT_MAX:
+            for z in sorted(nbrs[n]):
+                inv[z].append(n)
+    acc: dict[tuple[str, str], float] = defaultdict(float)
+    for z in sorted(inv):
+        pages = inv[z][:GROUP_MAX]
+        if len(pages) < 2:
+            continue
+        w = 1.0 / max(2, deg.get(z, 2))
+        for i in range(len(pages)):
+            for j in range(i + 1, len(pages)):
+                a, b = pages[i], pages[j]
+                acc[(a, b) if a < b else (b, a)] += w
+    kind = "coupled_with" if direction == "out" else "co_cited_with"
+    neighbours: dict[str, list[tuple[float, str]]] = defaultdict(list)
+    for (a, b), s in acc.items():
+        if s < COUPLE_MIN:
+            continue
+        neighbours[a].append((s, b))
+        neighbours[b].append((s, a))
+    out: list[tuple[str, str, str]] = []
+    for a, lst in neighbours.items():
+        for _s, b in sorted(lst, key=lambda kv: (-kv[0], kv[1]))[:COUPLE_CAP]:
+            if a < b:
+                out.append((a, b, kind))
+    return out
+
+
+def _term_edges(profiles: list[dict]) -> list[tuple[str, str, str]]:
+    """Shared curated terms: inline code spans, headings and declared symbols
+    are the writer's own terminology marking, and two pages anchored on the
+    same backticked API names relate even when their prose styles differ --
+    exactly the signal _prose() discards for the cosine pass. Inverted index
+    with relative df filtering (a term on a third of the corpus is chrome) and
+    per-term posting truncation; an edge needs >= TERM_MIN distinct shared
+    terms with summed idf >= TERM_MIN_W, so a single coincidence never fires."""
+    cands = [p for p in profiles if p["terms"]]
+    n = len(cands)
+    if n < 2:
+        return []
+    df: Counter = Counter()
+    for p in cands:
+        df.update(t for t, _w in p["terms"])
+    df_hi = _df_ceiling(n, TERM_MIN + 1)
+    idf = {t: math.log(1 + n / (1 + d)) for t, d in df.items()}
+    sig: dict[str, list[tuple[str, float]]] = {}
+    postings: dict[str, list[tuple[str, float]]] = defaultdict(list)
+    for p in cands:
+        ranked = [(t, w * idf[t]) for t, w in p["terms"]
+                  if TERM_MIN <= df[t] <= df_hi]
+        ranked.sort(key=lambda kv: (-kv[1], kv[0]))
+        ranked = ranked[:TERM_SIG]
+        sig[p["id"]] = ranked
+        for t, w in ranked:
+            postings[t].append((p["id"], w))
+    shared: dict[tuple[str, str], list[float]] = defaultdict(list)
+    for t, plist in postings.items():
+        if len(plist) > TERM_POST_K:
+            plist.sort(key=lambda x: (-x[1], x[0]))
+            plist = plist[:TERM_POST_K]
+        for i in range(len(plist)):
+            a, _wa = plist[i]
+            for j in range(i + 1, len(plist)):
+                b, _wb = plist[j]
+                shared[(a, b) if a < b else (b, a)].append(idf[t])
+    neighbours: dict[str, list[tuple[float, str]]] = defaultdict(list)
+    for (a, b), ws in shared.items():
+        if len(ws) < TERM_MIN or sum(ws) < TERM_MIN_W:
+            continue
+        s = sum(ws)
+        neighbours[a].append((s, b))
+        neighbours[b].append((s, a))
+    out: list[tuple[str, str, str]] = []
+    for a, lst in neighbours.items():
+        for _s, b in sorted(lst, key=lambda kv: (-kv[0], kv[1]))[:TERM_CAP]:
+            if a < b:
+                out.append((a, b, "shares_term"))
     return out
 
 
@@ -506,11 +820,17 @@ def route_with_llm(profiles: list[dict], enabled: set[str],
 
 # ---- entry point ----------------------------------------------------------
 def build_relations(docs: list[dict], mode: str | None = None,
-                    have: set[tuple[str, str]] | None = None) -> tuple[list[dict], dict]:
+                    have: set[tuple[str, str]] | None = None,
+                    link_pairs: set[tuple[str, str]] | None = None
+                    ) -> tuple[list[dict], dict]:
     """Derived edges for `docs`, plus a per-dimension report.
 
     `have` is the set of evidence edge pairs already resolved upstream: a pair
     that the corpus already links is never re-labelled with a derived kind.
+    `link_pairs` is the ref/imports subset of that graph, passed separately so
+    the neighbourhood dimensions (coupled_with/co_cited_with) can read the
+    citation structure -- `contains` hub edges are deliberately excluded,
+    a README listing its directory is not a citation.
     """
     resolved, enabled, use_llm = resolve_mode(mode)
     notes: list[str] = []
@@ -540,6 +860,14 @@ def build_relations(docs: list[dict], mode: str | None = None,
 
     seen = have or set()
     raw: list[tuple[str, str, str]] = []
+    # duplicates first: exact copies claim their pair before the fuzzy
+    # dimensions spend nominations on them
+    if "duplicate_of" in enabled:
+        raw += _duplicate_edges(profiles)
+    if "coupled_with" in enabled and link_pairs:
+        raw += _overlap_edges(link_pairs, "out")
+    if "co_cited_with" in enabled and link_pairs:
+        raw += _overlap_edges(link_pairs, "in")
     if any("mentions_symbol" in v for v in chosen.values()):
         raw += _symbol_edges(profiles)
     if any("similar_to" in v for v in chosen.values()):
@@ -548,6 +876,10 @@ def build_relations(docs: list[dict], mode: str | None = None,
         raw += _sibling_edges(profiles)
     if any("supersedes" in v for v in chosen.values()):
         raw += _supersedes_edges(profiles)
+    if any("shares_heading" in v for v in chosen.values()):
+        raw += _heading_edges(profiles)
+    if any("shares_term" in v for v in chosen.values()):
+        raw += _term_edges(profiles)
     if any("shares_entity" in v for v in chosen.values()):
         raw += _entity_edges(profiles, notes)
     if any("semantic_similar" in v for v in chosen.values()):
@@ -559,11 +891,14 @@ def build_relations(docs: list[dict], mode: str | None = None,
         if a == b or (a, b) in seen or (b, a) in seen:
             continue
         pair = (a, b)
-        if k in ("similar_to", "sibling_of", "shares_entity", "semantic_similar"):
+        if k in ("similar_to", "sibling_of", "shares_entity", "semantic_similar",
+                 "shares_heading", "shares_term", "duplicate_of",
+                 "coupled_with", "co_cited_with"):
             pair = (a, b) if a < b else (b, a)
         if pair in seen:
             continue
-        if k not in chosen.get(a, []) and k not in chosen.get(b, []):
+        if k not in ALWAYS_ON_KINDS and k not in chosen.get(a, []) \
+                and k not in chosen.get(b, []):
             continue  # the node's own selection did not admit this dimension
         edges.append({"s": pair[0], "t": pair[1], "k": k})
         by_node[k].add(pair[0])
