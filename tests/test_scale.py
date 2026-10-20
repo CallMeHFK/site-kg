@@ -162,7 +162,7 @@ console.log(JSON.stringify({{bestMs: best, cap: g.cap, capE: g.capE,
 
 
 def test_label_budgets_are_capped():
-    budgets = {"planets": (40, 12), "neural": (36, 10)}
+    budgets = {"planets": (40, 12), "neural": (18, 8)}
     for name, (desktop, mobile) in budgets.items():
         src = (SCENES / f"{name}.js").read_text(encoding="utf-8")
         found_desktop = int(re.search(r"labelBudget:\s*(\d+)", src).group(1))
@@ -176,9 +176,14 @@ def test_renderer_draw_call_and_object_budget():
     points = len(re.findall(r"new THREE\.Points\b", src))
     lines = len(re.findall(r"new THREE\.LineSegments\b", src))
     instanced = len(re.findall(r"new THREE\.InstancedMesh\b", src))
+    # one fullscreen quad carries the animated nebula + parallax starfield;
+    # everything else stays merged
+    meshes = len(re.findall(r"new THREE\.Mesh\(", src))
     assert (points, lines, instanced) == (2, 2, 1), (
         "renderer must keep one cloud+halo, one edge mesh and one merged ring mesh")
-    assert points + lines + instanced <= 6
+    assert meshes == 1 and "this.sky = new THREE.Mesh(" in src, (
+        "the only Mesh is the fullscreen sky shader")
+    assert points + lines + instanced + meshes <= 6
     rings = src[src.index("Renderer.prototype._ensureRings"):
                 src.index("Renderer.prototype._disposeRings")]
     assert len(re.findall(r"new THREE\.LineSegments\b", rings)) == 1, (
@@ -186,7 +191,6 @@ def test_renderer_draw_call_and_object_budget():
     assert "this.ringMesh = new THREE.LineSegments" in rings
     assert src.count("new THREE.Object3D") == 1  # one reusable instance dummy
     assert "new THREE.Sprite" not in src
-    assert "new THREE.Mesh(" not in src
     assert "new THREE.InstancedMesh(sphere, this.egoMat, 120)" in src
 
 

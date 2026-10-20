@@ -74,7 +74,7 @@
     } else {
       for (i = 0; i < n; i++) if (dists[i] > radius) radius = dists[i];
     }
-    radius = Math.max(radius, 1);
+    radius = Math.max(radius, opts.minRadius || 1);
     var fov = this.camera.fov * Math.PI / 180;
     var distance = radius / Math.sin(fov / 2) * (opts.zoom || 1) * 1.2;
     var dir = this._tmp.copy(this.camera.position).sub(this.controls.target);
@@ -86,7 +86,14 @@
 
   Camera.prototype.fitLive = function (opts) {
     if (!this.live) return;
-    this.fit(this.renderer.samplePoints(this.live, 6000), opts || {robust: true});
+    opts = opts || {robust: true};
+    /* While the graph is still tiny the visible bounds are a couple of units
+       wide; fitting to those dives the camera into the first planet and the
+       rest of the build happens inside it. The floor keeps the opening shot
+       wide enough to read as space, and the later fit (once the layout is
+       real) pulls back from there. */
+    if (opts.minRadius == null) opts.minRadius = 21;
+    this.fit(this.renderer.samplePoints(this.live, 6000), opts);
   };
 
   Camera.prototype.focus = function (index) {

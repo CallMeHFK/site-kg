@@ -202,6 +202,35 @@ assert.equal(b.lastSeq, 200);
 """)
 
 
+def test_batcher_paced_reveal_spreads_a_burst():
+    _run(_prelude(CORE) + """
+const g = new SK.LiveGraph(64);
+g.applyBatch([{t: "discover", found: 40, seq: 1}]);
+let clock = 0;
+const b = new SK.Batcher(g, {
+  windowMs: 100, maxNodes: 100, timer: false, paced: true,
+  now: function () { return clock; }
+});
+for (let i = 0; i < 20; i++) {
+  b.push({t: "node_added", id: "n" + i, title: "N" + i, seq: 10 + i}, 0);
+}
+assert.equal(g.n, 0);
+assert.equal(b.queue.length, 20);
+clock = 100;
+b.flush(100);
+assert.ok(g.n >= 1 && g.n < 20, "first window reveals a slice, got " + g.n);
+const first = g.n;
+clock = 200;
+b.flush(200);
+assert.ok(g.n > first, "the next window keeps growing");
+assert.ok(g.n < 20);
+const rec = b.flush(Date.now() + 100000, true);
+assert.equal(g.n, 20);
+assert.equal(b.queue.length, 0);
+assert.equal(rec.nodes, 20);
+""")
+
+
 def test_load_snapshot_uses_live_state_shape():
     _run(_prelude(CORE) + """
 const g = new SK.LiveGraph(4);
@@ -308,6 +337,7 @@ def test_connect_events_resumes_and_resets_on_new_run():
   });
   assert.equal(sources.length, 1);
   assert.equal(sources[0].url, "http://live.test/events?since=3");
+  assert.equal(live.runId, "run-a");
   sources[0].onmessage({data: JSON.stringify(
     {t: "node_added", id: "b", title: "B", seq: 5})});
   assert.equal(director.batcher.queue.length, 1);
@@ -330,6 +360,42 @@ def test_connect_events_resumes_and_resets_on_new_run():
   assert.equal(live.ids[0], "z");
   handle.close();
   assert.equal(sources[1].closed, true);
+})().catch(function (err) {
+  console.error(err && err.stack ? err.stack : err);
+  process.exit(1);
+});
+""")
+
+
+def test_connect_events_discards_the_previous_run():
+    _run(_prelude(CORE, DIRECTOR) + """
+(async function () {
+  const live = new SK.LiveGraph(8);
+  live.runId = "run-old";
+  live.nodeAdded("old", {t: "Old", c: "x", g: 3, r: 0.2});
+  assert.equal(live.n, 1);
+  const director = new SK.Director(live, null, null, null);
+  const sources = [];
+  function FakeSource(url) { this.url = url; sources.push(this); }
+  FakeSource.prototype.close = function () {};
+  director.connectEvents("run-new", 12, {
+    base: "", EventSource: FakeSource, timer: false
+  });
+  /* A fresh crawl must not inherit the finished graph from the last one, and
+     it must replay from sequence zero instead of skipping the opening events. */
+  assert.equal(live.n, 0);
+  assert.equal(live.runId, "run-new");
+  assert.equal(sources[0].url, "/events?since=0");
+  director.connectEvents("run-new", 4, {
+    base: "", EventSource: FakeSource, timer: false
+  });
+  assert.equal(sources[1].url, "/events?since=4");
+  live.nodeAdded("keep", {t: "Keep", c: "x", g: 1, r: 0.1});
+  director.connectEvents("run-new", 9, {
+    base: "", EventSource: FakeSource, timer: false
+  });
+  assert.equal(live.n, 1);
+  assert.equal(sources[2].url, "/events?since=9");
 })().catch(function (err) {
   console.error(err && err.stack ? err.stack : err);
   process.exit(1);
@@ -563,8 +629,8 @@ assert.deepEqual(P(null, {visible: 4}), ["4 visible"]);
 
 
 def test_set_live_target_updates_bar_and_document_title():
-    """A new launch replaces the baked cfg.title in both the bar and the tab;
-    archive viewers never call this, so their title is untouched."""
+    """A new launch updates the host chip and the tab, while the masthead stays
+    the product name instead of a raw URL; archive viewers never call this."""
     _run(_prelude(UI, LAUNCHER) + """
 global.document = {title: "old baked title"};
 const ui = new SK.UI();
@@ -572,12 +638,12 @@ ui.titleEl = {textContent: "old baked title"};
 ui.targetEl = {textContent: "", title: ""};
 ui.setLiveTarget("https://new.example/docs/start");
 assert.equal(ui.targetEl.textContent, "new.example");
-assert.equal(ui.titleEl.textContent, "https://new.example/docs/start");
-assert.equal(document.title, "https://new.example/docs/start");
+assert.equal(ui.titleEl.textContent, "site-kg");
+assert.equal(document.title, "site-kg \u00b7 new.example");
 // no mounted elements (archive-ish harness) must not throw
 const bare = new SK.UI();
 bare.setLiveTarget("https://other.example/");
-assert.equal(document.title, "https://other.example/");
+assert.equal(document.title, "site-kg \u00b7 other.example");
 """)
 
 
@@ -591,12 +657,16 @@ const finding = B({state: "ingesting", pages: 0, nodes: 0, edges: 0,
 assert.equal(finding.phase, "finding pages");
 assert.equal(finding.indeterminate, true);
 assert.equal(finding.ratio, 0);
-const fetching = B({state: "ingesting", pages: 6, nodes: 6, edges: 9,
+const fetching = B({state: "ingesting", pages: 6, nodes: 0, edges: 0,
                     discovered: 12}, []);
 assert.equal(fetching.phase, "fetching pages");
 assert.equal(fetching.indeterminate, false);
 assert.ok(Math.abs(fetching.ratio - 0.5) < 1e-9);
-assert.equal(fetching.label, "6 pages \\u00b7 6 nodes \\u00b7 9 edges");
+const growing = B({state: "ingesting", pages: 6, nodes: 6, edges: 9,
+                   discovered: 12}, []);
+assert.equal(growing.phase, "growing graph");
+assert.ok(Math.abs(growing.ratio - 0.5) < 1e-9);
+assert.equal(growing.label, "6 pages \\u00b7 6 nodes \\u00b7 9 edges");
 const settling = B({state: "settling", pages: 12, nodes: 10, edges: 20,
                     discovered: 12}, []);
 assert.equal(settling.phase, "settling");
@@ -663,17 +733,24 @@ assert.deepEqual(SK.launcher.loadArt(), {});
 
 
 def test_bar_resize_floor_and_convergence():
-    """--bar follows the measured bar height but never drops below the 52px
-    design floor, and a ResizeObserver echo loop converges instead of ratcheting."""
+    """--bar follows the measured HUD box (bar plus its float inset) but never
+    drops below the 60px design floor, and a ResizeObserver echo loop converges
+    instead of ratcheting."""
     _run(_prelude(UI) + r"""
+let hudHeight = 60;
 let barHeight = 40;
+const hud = {
+  getBoundingClientRect: function () { return {height: hudHeight}; }
+};
 const bar = {
   style: {minHeight: ""},
   getBoundingClientRect: function () { return {height: barHeight}; }
 };
 const props = {};
 global.document = {
-  getElementById: function (id) { return id === "bar" ? bar : null; },
+  getElementById: function (id) {
+    return id === "hud" ? hud : (id === "bar" ? bar : null);
+  },
   documentElement: {style: {
     setProperty: function (k, v) { props[k] = v; }
   }}
@@ -690,18 +767,18 @@ const ui = new SK.UI();
 ui._wireBarResize();
 assert.equal(typeof roCb, "function", "ResizeObserver path was wired");
 assert.equal(bar.style.minHeight, "", "min-height restored after measuring");
-assert.equal(props["--bar"], "52px", "40px height lifts to the 52px floor");
+assert.equal(props["--bar"], "60px", "60px box sits on the 60px floor");
 
-barHeight = 83;
+hudHeight = 83;
 roCb();
-assert.equal(props["--bar"], "83px", "taller bar is followed exactly");
+assert.equal(props["--bar"], "83px", "taller deck is followed exactly");
 assert.equal(bar.style.minHeight, "");
 
 // echo loop: the observer firing on its own write must settle, not climb
-barHeight = 30;
+hudHeight = 30;
 for (let i = 0; i < 5; i++) roCb();
-assert.equal(props["--bar"], "52px", "repeated triggers settle on the floor");
-barHeight = 83;
+assert.equal(props["--bar"], "60px", "repeated triggers settle on the floor");
+hudHeight = 83;
 for (let i = 0; i < 5; i++) roCb();
 assert.equal(props["--bar"], "83px", "repeated triggers settle on the height");
 """)

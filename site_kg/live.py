@@ -282,7 +282,46 @@ class LiveHub:
         fetched = 0
         nbytes = 0
         announced: set[str] = set()
+        seen_pids: set[str] = set()
+        seen_edges: set[tuple[str, str]] = set()
         node_event = self._node_emitter(announced)
+
+        def chapter_of(pid: str) -> str:
+            return pid.split("_", 1)[0] if "_" in pid else "_root"
+
+        def edge_kind(src: str) -> str:
+            hub = src == "index" or src.endswith("_index")
+            return ("hub" if src == "index" else "contains") if hub else "ref"
+
+        def observe(url: str, html: str) -> None:
+            """Turn a page that already landed into graph elements now, so the
+            scene grows while the crawl is still running instead of exploding
+            into existence at settle time."""
+            try:
+                pid, title, links = ingestmod.page_meta(html, url, target)
+            except Exception:
+                # exotic markup must not abort a crawl that would otherwise
+                # succeed; still show the node, just without resolved links
+                fallback = url.rstrip("/").rsplit("/", 1)[-1] or url
+                try:
+                    pid = manifest.page_id(target, url)
+                except Exception:
+                    return
+                title, links = fallback, []
+            if pid in seen_pids:
+                return
+            seen_pids.add(pid)
+            node_event({"t": "node_added", "id": pid, "title": title,
+                        "url": url, "c": chapter_of(pid)})
+            kind = edge_kind(pid)
+            for dst in links:
+                if dst == pid or dst not in announced:
+                    continue
+                key = (pid, dst)
+                if key in seen_edges:
+                    continue
+                seen_edges.add(key)
+                self.emit({"t": "edge_added", "s": pid, "d": dst, "kind": kind})
 
         def on_page(url: str, page: str | None, reason: str | None) -> None:
             nonlocal fetched, nbytes
@@ -290,6 +329,7 @@ class LiveHub:
                 self.emit({"t": "node_skipped", "url": url,
                            "reason": reason or "skip"})
                 return
+            observe(url, page)
             fetched += 1
             nbytes += len(page.encode("utf-8", "ignore"))
             self.emit({"t": "progress", "pages": fetched, "bytes": nbytes})
@@ -302,7 +342,8 @@ class LiveHub:
             try:
                 urls, _source, _inv = await asyncio.wait_for(
                     manifest.page_inventory(target, max_pages=200, max_depth=4,
-                                            on_discover=on_discover),
+                                            on_discover=on_discover,
+                                            on_page_found=observe),
                     timeout=DISCOVERY_TIMEOUT_S)
             except TimeoutError:
                 raise RuntimeError(
@@ -326,7 +367,9 @@ class LiveHub:
         site_id = store.site_id_for(target)
         corpus = store.site_dir(site_id) / "corpus"
         store.reset_corpus(corpus)
-        ingestmod.write_corpus(pages, target, corpus, events=node_event)
+        # every page already streamed in on_page/on_page_found, so the corpus
+        # write must not replay the same node_added burst
+        ingestmod.write_corpus(pages, target, corpus)
         built = graphmod.build_graph(corpus, events=self.emit, announced=announced)
         store.save_site(site_id, target, built)
         return built
@@ -351,8 +394,19 @@ class LiveHub:
 
     def _node_emitter(self, announced: set[str]):
         """Emit node events during corpus materialization, batching the
-        server-authoritative positions so the scene fills in while ingesting."""
+        server-authoritative positions so the scene fills in while ingesting.
+
+        A full batch is 512 rows, but a small site never reaches it: without a
+        time-based flush every streamed node would sit at the origin until the
+        final settle. Flush on a short interval instead."""
         rows: list[dict] = []
+        last = [0.0]  # 0 means "flush the first row immediately"
+
+        def flush() -> None:
+            if rows:
+                self.emit({"t": "layout_patch", "rows": list(rows)})
+                rows.clear()
+            last[0] = time.monotonic()
 
         def emit_node(ev: dict) -> None:
             if self.emit(ev) is None:
@@ -363,9 +417,9 @@ class LiveHub:
             row = self._row(str(ev.get("id")))
             if row is not None:
                 rows.append(row)
-                if len(rows) >= LAYOUT_BATCH:
-                    self.emit({"t": "layout_patch", "rows": list(rows)})
-                    rows.clear()
+                if (len(rows) >= LAYOUT_BATCH
+                        or time.monotonic() - last[0] >= 0.15):
+                    flush()
 
         return emit_node
 

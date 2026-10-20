@@ -103,9 +103,9 @@
     var out = new Float32Array(Math.ceil(live.n / stride) * 3);
     var k = 0;
     for (var i = 0; i < live.n; i += stride) {
-      out[k++] = live.x[i] * this.renderer.SCALE;
-      out[k++] = live.y[i] * this.renderer.SCALE;
-      out[k++] = live.z[i] * this.renderer.SCALE;
+      out[k++] = live.x[i] * (this.renderer.posScale || this.renderer.SCALE);
+      out[k++] = live.y[i] * (this.renderer.posScale || this.renderer.SCALE);
+      out[k++] = live.z[i] * (this.renderer.posScale || this.renderer.SCALE);
     }
     return out.subarray(0, k);
   };
@@ -296,6 +296,13 @@
     var fetchFn = opts.fetch || (typeof fetch === "function" ? fetch : null);
 
     if (this.transport) this.transport.close();
+    /* A new crawl must start from an empty sky. Without this the previous run
+       stays in the LiveGraph and the first server event — which has the new run
+       id — does not trigger resetRun, so the finished graph is already on screen
+       before a single page of the new crawl arrives. An empty id (first mount)
+       is a bootstrap, not a switch, and keeps its resume point. */
+    var prevRun = String(live.runId || "");
+    var freshRun = !!runId && !!prevRun && String(runId) !== prevRun;
     this.runId = String(runId || "");
     this.lastSeq = Number(lastSeq) || 0;
     this.error = null;
@@ -303,18 +310,35 @@
     var handle = {base: base, runId: this.runId, source: null, closed: false,
                   refreshing: false, retryTimer: null};
     var batcher = new SK.Batcher(live, {
-      windowMs: opts.windowMs, maxNodes: opts.maxNodes, timer: opts.timer,
+      /* 100ms keeps the growth continuous instead of arriving in 300ms steps;
+         paced mode holds the burst that a fast local crawl produces and hands
+         it out at a watchable rate. */
+      windowMs: opts.windowMs == null ? 100 : opts.windowMs,
+      maxNodes: opts.maxNodes, timer: opts.timer,
+      paced: opts.paced !== false,
       lastSeq: this.lastSeq,
       onFlush: function (rec) { self.lastSeq = rec.lastSeq; onFlush(rec); }
     });
     this.batcher = batcher;
     handle.batcher = batcher;
+    if (freshRun) {
+      resetRun(this.runId);
+      /* The graph is empty again, so replay from the very first event even if
+         the start response already reported a later sequence number. */
+      this.lastSeq = 0;
+    } else if (this.runId) {
+      /* Remember the run even when there was nothing to clear, so the next
+         start can tell it is a different crawl. */
+      live.runId = this.runId;
+    }
 
     function resetRun(newRunId) {
       handle.runId = String(newRunId || "");
       self.runId = handle.runId;
-      live.runId = handle.runId;
       live.reset(1024);
+      /* reset() clears the graph's run id, so stamp the new one afterwards;
+         otherwise the next connect looks like a bootstrap and never resets. */
+      live.runId = handle.runId;
       batcher.reset(0);
       self.ingestDone = false;
       self.layoutSettled = false;
@@ -604,8 +628,16 @@
       this._recomputeDims();
     }
     this.camera.update(dt);
+    if (this.batcher && this.batcher.pump) this.batcher.pump();
     if (this.renderer) this.renderer.time = this.time;
     this.renderer.sync(this.live);
+    /* Keep framing the graph while it grows: nodes arrive over minutes and a
+       fit that only happens at ingest_done leaves the build off-centre. */
+    if (!this.camera.userInteracting && this.state === "ingesting" &&
+        this.live.n && this.time - (this._fitTick || 0) > 1.6) {
+      this._fitTick = this.time;
+      this._fitNext = true;
+    }
     if (this._fitNext && this.live.n && !this.camera.tween) {
       this._fitNext = false;
       this.camera.fitLive({robust: true, duration: 500});
@@ -620,7 +652,10 @@
     this.renderer.render();
     if (this.time - this.labelTime > 0.18) {
       this.labelTime = this.time;
-      this.labels.update(this.live, this.camera, {focus: this.focusIndex});
+      this.labels.update(this.live, this.camera, {
+        focus: this.focusIndex,
+        finale: this.ui && this.ui.finaleNote
+      });
     }
     if (this.ui && this.time - this.statusTime > 0.3) {
       this.statusTime = this.time;

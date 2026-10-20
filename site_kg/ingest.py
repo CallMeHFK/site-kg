@@ -151,6 +151,16 @@ def _internal_links(soup: BeautifulSoup, page_url: str, base: str, own_id: str) 
     return sorted(ids)
 
 
+def page_meta(html: str, url: str, base: str) -> tuple[str, str, list[str]]:
+    """Cheap (id, title, links) for streaming a node the moment its page lands.
+    The markdown conversion in ``to_markdown`` is deferred to corpus write."""
+    soup = BeautifulSoup(html, "html.parser")
+    pid = page_id(base, url)
+    title = _title(soup, url.rsplit("/", 1)[-1])
+    main = _content_el(soup)
+    return pid, title, _internal_links(main, url, base, pid)
+
+
 def to_markdown(html: str, url: str, base: str) -> dict:
     """Returns {id, title, md, links}: md has frontmatter; links are resolved same-site page ids."""
     soup = BeautifulSoup(html, "html.parser")

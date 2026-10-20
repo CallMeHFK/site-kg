@@ -72,6 +72,56 @@ def test_live_ingest_emits_nodes_before_done(tmp_path, monkeypatch):
     assert events[-1]["seq"] > done["seq"]
 
 
+def _collect(hub: LiveHub) -> list[dict]:
+    sub, events = hub.log.subscribe(0)
+    hub.log.unsubscribe(sub)
+    return events
+
+
+def test_nodes_stream_during_fetch_not_after(tmp_path, monkeypatch):
+    """The sitemap path fetches after discovery; a node must exist before the
+    last page settles, otherwise the scene is empty until the very end."""
+    monkeypatch.setattr(store, "DATA", tmp_path / "sites")
+    url, srv = _serve(tmp_path, _pages())
+    hub = LiveHub()
+    try:
+        hub.start(url, "planets")
+        assert _wait_state(hub) == "complete", hub.run.get("error")
+        events = _collect(hub)
+    finally:
+        srv.shutdown()
+        hub.close()
+
+    nodes = [ev for ev in events if ev["t"] == "node_added"]
+    progress = [ev for ev in events if ev["t"] == "progress" and ev.get("pages")]
+    assert nodes and progress
+    last_fetch = max(ev["seq"] for ev in progress if ev["pages"] >= 3)
+    assert nodes[0]["seq"] < last_fetch, "first node must land mid-fetch"
+    patches = [ev for ev in events if ev["t"] == "layout_patch"]
+    assert patches, "streamed nodes need positions before ingest_done"
+    assert patches[0]["seq"] < max(ev["seq"] for ev in nodes)
+
+
+def test_bfs_streams_nodes_while_discovering(tmp_path, monkeypatch):
+    """The BFS inventory already fetched the HTML; emit the node then, not
+    after the whole crawl returns its URL list."""
+    monkeypatch.setattr(store, "DATA", tmp_path / "sites")
+    url, srv = _serve(tmp_path, _bfs_pages())
+    hub = LiveHub()
+    try:
+        hub.start(url, "planets")
+        assert _wait_state(hub) == "complete", hub.run.get("error")
+        events = _collect(hub)
+    finally:
+        srv.shutdown()
+        hub.close()
+
+    nodes = [ev for ev in events if ev["t"] == "node_added"]
+    final_discover = max(ev["seq"] for ev in events
+                         if ev["t"] == "discover" and ev.get("found") == 3)
+    assert nodes[0]["seq"] < final_discover
+
+
 def _wait_state(hub: LiveHub, timeout: float = 15.0) -> str:
     deadline = time.monotonic() + timeout
     while hub.run["state"] == "running" and time.monotonic() < deadline:

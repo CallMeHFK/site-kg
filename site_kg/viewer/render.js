@@ -14,6 +14,7 @@
 
   function Renderer() {
     this.SCALE = SCALE;
+    this.posScale = SCALE;
     this.name = "planets";
     this.cfg = null;
     this.cap = 0;
@@ -71,11 +72,151 @@
     this.camera = new THREE.PerspectiveCamera(60, 1, 0.1, 1e6);
     this.scene.background = new THREE.Color(0x0d1117);
 
+    /* The cosmos is a shader, not a baked image: three parallax star layers
+       twinkle over drifting nebulae, a milky-way band crosses the field, and
+       a comet now and then. The camera's orbit shifts the whole field, and the
+       nebulae churn on their own clock, so the background never reads as a
+       still frame. One fullscreen quad, one draw call. */
+    this.skyUni = {u_time: {value: 0}, u_drift: {value: new THREE.Vector2()},
+                   u_mode: {value: 0},
+                   u_res: {value: new THREE.Vector2(1, 1)}};
+    this.sky = new THREE.Mesh(
+      new THREE.PlaneGeometry(2, 2),
+      new THREE.ShaderMaterial({
+        uniforms: this.skyUni, depthTest: false, depthWrite: false,
+        vertexShader: "varying vec2 vUv; void main(){ vUv = uv;"
+          + " gl_Position = vec4(position.xy, 0.0, 1.0); }",
+        fragmentShader: [
+          "varying vec2 vUv;",
+          "uniform float u_time; uniform vec2 u_drift; uniform vec2 u_res;"
+          + " uniform float u_mode;",
+          "float hash(vec2 p){ p = fract(p*vec2(123.34,456.21));",
+          "  p += dot(p,p+45.32); return fract(p.x*p.y); }",
+          "float noise(vec2 p){ vec2 i=floor(p), f=fract(p);",
+          "  f=f*f*(3.0-2.0*f);",
+          "  float a=hash(i), b=hash(i+vec2(1.0,0.0));",
+          "  float c=hash(i+vec2(0.0,1.0)), d=hash(i+vec2(1.0,1.0));",
+          "  return mix(mix(a,b,f.x), mix(c,d,f.x), f.y); }",
+          "float fbm(vec2 p){ float v=0.0, a=0.5;",
+          "  for(int i=0;i<4;i++){ v += a*noise(p); p = p*2.02 + 17.3; a *= 0.5; }",
+          "  return v; }",
+          "vec3 stars(vec2 uv, float scale, float density, float size,",
+          "           float seed, float t){",
+          "  vec2 g = uv*scale + seed; vec2 id = floor(g);",
+          "  vec2 f = fract(g) - 0.5;",
+          "  float h = hash(id + seed);",
+          "  if(h > density) return vec3(0.0);",
+          "  vec2 off = vec2(hash(id+3.1), hash(id+7.7)) - 0.5;",
+          "  float d = length(f - off*0.62);",
+          "  float tw = 0.42 + 0.58*sin(t*(1.3+2.4*h) + h*61.0);",
+          "  float core = smoothstep(size, 0.0, d);",
+          "  float glow = smoothstep(size*5.0, 0.0, d)*0.22;",
+          "  vec3 tint = mix(vec3(0.72,0.84,1.0), vec3(1.0,0.84,0.62),",
+          "                  step(0.86,h));",
+          "  return tint*(core+glow)*tw; }",
+          /* A comet every few seconds: a bright head with a tapering tail,
+             deterministic from the time so nothing has to be animated on the
+             CPU. */
+          "float comet(vec2 uv, float t){",
+          "  float k = floor(t*0.24);",
+          "  float h1 = hash(vec2(k, 1.7));",
+          "  float h2 = hash(vec2(k, 8.3));",
+          "  if(h1 > 0.45) return 0.0;",
+          "  float ph = fract(t*0.24);",
+          "  vec2 start = vec2(-1.0 + h1*2.0, 0.60 + h2*0.30);",
+          "  vec2 dir = normalize(vec2(1.0, -0.62));",
+          "  vec2 head = start + dir*(ph*2.0);",
+          "  vec2 q = uv - head;",
+          "  float along = -dot(q, dir);",
+          "  float perp = abs(dot(q, vec2(-dir.y, dir.x)));",
+          "  float tail = smoothstep(0.0,0.02,along)*smoothstep(0.42,0.0,along)",
+          "             * smoothstep(0.024,0.0,perp);",
+          "  float core = smoothstep(0.028,0.0,length(q));",
+          "  float fade = (1.0-ph)*(1.0-ph);",
+          "  return (tail*0.55 + core*1.3)*fade; }",
+          "vec3 cosmos(vec2 uv, float t){",
+          "  vec2 flow = vec2(sin(t*0.105)*0.105, cos(t*0.082)*0.082);",
+          "  vec2 p = uv*1.32 + u_drift + flow;",
+          "  float n1 = fbm(p + vec2(t*0.150, -t*0.108));",
+          "  float n2 = fbm(p*1.9 + vec2(-t*0.125, t*0.140) + 7.0);",
+          "  float n3 = fbm(p*3.4 + vec2(t*0.082, -t*0.094) + 19.0);",
+          "  float mask = smoothstep(0.26, 0.84, n1*0.68 + n2*0.34);",
+          "  vec3 deep = vec3(0.004, 0.006, 0.020);",
+          "  vec3 core = mix(vec3(0.150,0.070,0.400), vec3(0.022,0.165,0.300),",
+          "                  smoothstep(0.40,1.0,n2));",
+          "  core = mix(core, vec3(0.340,0.075,0.360),",
+          "             smoothstep(0.64,1.0,n1)*0.62);",
+          "  core = mix(core, vec3(0.020,0.245,0.235),",
+          "             smoothstep(0.70,1.0,n3)*0.42);",
+          "  vec3 col = deep + core*mask*1.12;",
+          "  col += vec3(0.070,0.050,0.160)*smoothstep(0.52,1.0,n3)*0.48;",
+          /* Milky-way band: a diagonal lane of dense dust and small stars. */
+          "  float lane = exp(-pow((uv.x*0.78 + uv.y*0.62)*3.1, 2.0));",
+          "  col += vec3(0.105,0.115,0.205)*lane*(0.60+0.40*sin(t*0.12));",
+          /* Each layer streams at its own speed, so the field never sits still:
+             the nearest stars travel about nine cells per ten seconds. */
+          "  col += stars(uv + u_drift*0.20 + vec2(t*0.0035, t*0.0021),",
+          "               90.0, 0.68, 0.055, 1.0, t*0.62);",
+          "  col += stars(uv + u_drift*0.45 + vec2(t*0.0062, t*0.0038),",
+          "               155.0, 0.56, 0.050, 9.0, t*0.95)*0.78;",
+          "  col += stars(uv + u_drift*0.85 + vec2(t*0.0100, t*0.0060),",
+          "               240.0, 0.48, 0.045, 23.0, t*1.25)*0.58;",
+          "  col += stars(uv + u_drift*0.30 + vec2(t*0.0044, t*0.0026)",
+          "               + vec2(0.31,0.17), 320.0,",
+          "               mix(0.24, 0.76, lane), 0.038, 41.0, t*0.9)*0.62;",
+          "  col += vec3(0.80,0.88,1.0)*comet(uv + u_drift*0.12, t);",
+          "  return col; }",
+          /* Wetware: the neural scene's backdrop is tissue, not sky. Slow
+             bokeh washes, ridged dendrite filaments and sparse synaptic
+             flashes that pulse on their own clocks. */
+          "vec3 wetware(vec2 uv, float t){",
+          "  vec2 q = uv*2.4 + vec2(t*0.008, -t*0.006) + u_drift*0.18;",
+          "  float n1 = fbm(q*0.75);",
+          "  float n2 = fbm(q*1.15 + vec2(-t*0.006, t*0.005) + 5.0);",
+          "  vec3 deep = vec3(0.003, 0.006, 0.012);",
+          "  vec3 cool = vec3(0.006, 0.045, 0.075);",
+          "  vec3 warm = vec3(0.070, 0.008, 0.055);",
+          "  vec3 col = deep + mix(cool, warm, smoothstep(0.42,0.85,n2))",
+          "             * smoothstep(0.34,0.94,n1) * 0.46;",
+          /* Dendrites: a warped ridged field, thin enough to read as branches
+             instead of a nebula, with a finer magenta arbor underneath. */
+          "  vec2 w = q + vec2(fbm(q*1.35), fbm(q*1.35+7.3))*0.55;",
+          "  float r1 = 1.0 - abs(fbm(w*3.4)*2.0 - 1.0);",
+          "  float fil1 = pow(smoothstep(0.90, 0.998, r1), 2.2);",
+          "  col += vec3(0.07, 0.44, 0.58) * fil1 * 0.46;",
+          "  float r2 = 1.0 - abs(fbm(w*7.2 + 3.1)*2.0 - 1.0);",
+          "  float fil2 = pow(smoothstep(0.93, 0.9995, r2), 2.4);",
+          "  col += vec3(0.38, 0.06, 0.34) * fil2 * 0.30;",
+          /* Synaptic flashes at sparse lattice points. */
+          "  vec2 g = uv*9.0; vec2 id = floor(g); vec2 f = fract(g)-0.5;",
+          "  float h = hash(id);",
+          "  vec2 off = vec2(hash(id+3.7), hash(id+9.1)) - 0.5;",
+          "  float d = length(f - off*0.55);",
+          "  float pulse = 0.5 + 0.5*sin(t*(1.6+2.2*h) + h*47.0);",
+          "  float syn = smoothstep(0.045, 0.0, d) * step(0.86, h) * pulse;",
+          "  col += vec3(0.45, 0.92, 1.0) * syn * 0.9;",
+          "  return col; }",
+          "void main(){",
+          "  vec2 uv = (vUv - 0.5) * vec2(u_res.x/max(u_res.y,1.0), 1.0);",
+          "  float t = u_time;",
+          "  vec3 col = mix(cosmos(uv, t), wetware(uv, t), u_mode);",
+          "  float vig = smoothstep(1.32, 0.26, length(vUv-0.5));",
+          "  col *= mix(0.45, 1.0, vig);",
+          "  gl_FragColor = vec4(col, 1.0); }"
+        ].join("\n")
+      }));
+    this.sky.frustumCulled = false;
+    this.sky.renderOrder = -1000;
+    this.scene.add(this.sky);
+
     this.nodeUni = {u_px: {value: 1}, u_scale: {value: 1}, u_minpx: {value: 2},
-                    u_time: {value: 0},
+                    u_time: {value: 0}, u_neural: {value: 0},
+                    u_fly: {value: 1}, u_driftA: {value: 0},
                     u_light: {value: new THREE.Vector3(-0.55, 0.6, 0.75).normalize()}};
     this.haloUni = {u_px: this.nodeUni.u_px, u_scale: this.nodeUni.u_scale,
                     u_minpx: this.nodeUni.u_minpx, u_time: this.nodeUni.u_time,
+                    u_neural: this.nodeUni.u_neural,
+                    u_fly: this.nodeUni.u_fly, u_driftA: this.nodeUni.u_driftA,
                     u_light: this.nodeUni.u_light,
                     u_halo: {value: 3.1}};
     /* Node sprites are shaded as spheres: the point coordinate gives a normal,
@@ -85,38 +226,152 @@
     var vs = "attribute float a_size; attribute float a_dim; attribute float a_ring;"
       + " attribute float a_birth; attribute vec3 color;"
       + " uniform float u_px; uniform float u_scale; uniform float u_minpx;"
-      + " uniform float u_time;"
+      + " uniform float u_time; uniform float u_fly; uniform float u_driftA;"
       + " varying vec3 vC; varying float vD; varying float vR; varying float vAge;"
+      + " varying vec3 vTail;"
+      /* One hash per node position: the node sprite and the two edge endpoints
+         that share the position read the same phase, so a drifting cell never
+         tears away from its axons. */
+      + " float skHash(vec3 p){"
+      + "   return fract(sin(dot(p, vec3(12.9898, 78.233, 37.719)))*43758.5453); }"
       + " void main(){ vC=color; vD=a_dim; vR=a_ring;"
+      + "   float ph = skHash(position);"
       + "   float age = max(0.0, u_time-a_birth);"
       + "   float born = smoothstep(0.0,0.45,age); vAge = born;"
-      + "   float grow = (0.55+0.45*born)*(1.0+0.18*sin(born*3.14159));"
-      + "   vec4 mv = modelViewMatrix*vec4(position,1.0);"
+      /* Birth flight: a new node streaks in from outside the frame and settles
+         onto its layout slot, so the build reads as matter arriving rather
+         than sprites fading up where they stand. */
+      + "   float k = clamp(age/1.15, 0.0, 1.0);"
+      + "   float ease = 1.0 - pow(1.0-k, 2.4);"
+      + "   float rr = length(position);"
+      + "   vec3 dir = rr > 1e-3 ? position/rr"
+      + "     : normalize(vec3(sin(ph*6.283), cos(ph*4.11), sin(ph*2.77)));"
+      + "   vec3 side = normalize(cross(dir, vec3(0.31, 0.91, 0.27)));"
+      + "   vec3 start = position + dir*(26.0 + 34.0*ph)"
+      + "              + side*(12.0*(ph-0.5));"
+      + "   vec3 p = position + (start-position)*u_fly*(1.0-ease);"
+      /* Screen-space motion axis for the comet tail: the world-space velocity
+         projected to view xy (already screen-aligned), plus how much flight is
+         left as the tail's weight. */
+      + "   float flight = u_fly*(1.0-ease);"
+      + "   vec3 velV = (modelViewMatrix*vec4(position-start, 0.0)).xyz;"
+      + "   vec2 td = vec2(velV.x, -velV.y);"
+      + "   float tl = length(td);"
+      + "   vTail = vec3(tl > 1e-4 ? td/tl : vec2(0.0, 1.0), flight);"
+      /* Drift: the tissue keeps breathing after the flight lands. */
+      + "   p += u_driftA * vec3(sin(u_time*0.55 + ph*6.283),"
+      + "                        cos(u_time*0.47 + ph*11.0),"
+      + "                        sin(u_time*0.63 + ph*17.0));"
+      + "   float grow = (0.35+0.65*born)*(1.0+0.18*sin(born*3.14159));"
+      + "   vec4 mv = modelViewMatrix*vec4(p,1.0);"
       + "   float size = a_size*u_scale*u_px*(300.0/max(-mv.z,1.0));"
-      + "   size *= mix(1.0,1.42,vR)*grow;"
-      + "   gl_PointSize = clamp(size, u_minpx*0.7, 220.0*u_px);"
+      + "   size *= mix(1.0,1.42,vR)*grow*(1.0+flight*5.0);"
+      + "   gl_PointSize = clamp(size, u_minpx*0.7, (220.0 + 280.0*flight)*u_px);"
       + "   gl_Position = projectionMatrix*mv; }";
     this.pgeo = new THREE.BufferGeometry();
     this.cloud = new THREE.Points(this.pgeo, new THREE.ShaderMaterial({
       uniforms: this.nodeUni, vertexShader: vs,
       fragmentShader: "varying vec3 vC; varying float vD; varying float vR;"
-        + " varying float vAge; uniform vec3 u_light;"
-        + " void main(){ vec2 b = gl_PointCoord*2.0-1.0;"
+        + " varying float vAge; varying vec3 vTail;"
+        + " uniform vec3 u_light; uniform float u_neural;"
+        + " void main(){ vec2 sp = gl_PointCoord*2.0-1.0; vec2 b = sp;"
+        /* While a node streaks in the body shrinks toward the leading edge,
+           leaving the trailing half of the sprite free for the comet tail. */
+        + "   float flight = vTail.z;"
+        + "   vec2 tdir = vTail.xy;"
+        + "   vec2 tperp = vec2(-tdir.y, tdir.x);"
+        /* The tapering streak is drawn here in the body sprite's own frame,
+           where the width constants stay proportional to the planet; the
+           halo's frame is u_halo times coarser and only adds a thin aura. */
+        + "   float sA = 0.0; vec3 sC = vC;"
+        + "   if (flight > 0.002) {"
+        + "     b = (b - tdir*0.30*flight) * (1.0 + 1.6*flight);"
+        + "     float hb = 0.30*flight - dot(sp, tdir);"
+        + "     float back = clamp(hb / (1.0 + 0.30*flight), 0.0, 1.0);"
+        + "     float w = mix(0.30, 0.03, back);"
+        + "     float streak = smoothstep(w, 0.0, abs(dot(sp, tperp)))"
+        + "                  * pow(1.0 - back, 1.2) * step(0.0, hb);"
+        + "     sA = clamp(streak * min(1.0, 0.45 + 1.1*flight), 0.0, 1.0);"
+        + "     sC = mix(mix(vC, vec3(1.0), 0.35), vC, back);"
+        + "   }"
+        /* A neuron is a soma with dendrites, not a ball: a solid cell body with
+           a nucleus, six primary dendrites that bend and taper, and twelve
+           finer branches between them. Everything lives inside the point
+           sprite, so the scene still costs one draw call. */
+        + "   if (u_neural > 0.5) {"
+        + "     float sd = fract(dot(vC, vec3(12.9898, 78.233, 37.719)));"
+        + "     float r = length(b);"
+        + "     float coreR = 0.30 + 0.02*sin(sd*9.0);"
+        /* Bend the polar frame so dendrites wander instead of forming a
+           perfect snowflake; the displacement is zero at the soma. */
+        + "     float ang = atan(b.y, b.x);"
+        + "     float bend = sin(ang*3.0 + sd*6.283)*0.20"
+        + "                + sin(ang*7.0 - sd*11.0)*0.10;"
+        + "     float rr = r*(1.0 + bend*smoothstep(0.18, 0.95, r));"
+        + "     float ad = atan(b.y, b.x) + bend*0.55*smoothstep(0.2, 1.0, r);"
+        + "     float taper = 1.0 - 0.38*smoothstep(coreR*1.2, 1.0, rr);"
+        /* six primary dendrites, then twelve shorter branches */
+        + "     float a6 = smoothstep(0.52, 0.98, cos(ad*6.0 + sd*6.283));"
+        + "     float arms = a6 * smoothstep(1.0, coreR*0.55, rr)"
+        + "                * smoothstep(coreR*0.35, coreR*1.45, rr);"
+        + "     float a12 = smoothstep(0.70, 0.99, cos(ad*12.0 - sd*9.0));"
+        + "     arms += a12 * smoothstep(0.88, coreR*1.3, rr)"
+        + "             * smoothstep(coreR*0.55, coreR*1.9, rr) * 0.38;"
+        /* varicosities: small swellings along the branches */
+        + "     float bead = smoothstep(0.72, 1.0,"
+        + "       sin(rr*15.0 - sd*7.0)*0.5 + 0.5);"
+        + "     arms *= taper*(1.0 + 0.55*bead);"
+        /* the soma: a filled body with a brighter membrane and nucleus */
+        + "     float soma = smoothstep(coreR+0.07, coreR-0.03, r);"
+        + "     float membrane = smoothstep(coreR+0.07, coreR-0.01, r)"
+        + "                    - smoothstep(coreR-0.03, coreR-0.13, r);"
+        + "     vec2 nu = b - vec2(0.035, 0.045);"
+        + "     float nucleus = smoothstep(0.115, 0.0, length(nu));"
+        + "     float aura = exp(-r*2.8)*0.18;"
+        + "     vec3 col = vC*(0.30 + 1.05*arms)"
+        + "              + mix(vC, vec3(0.86,0.97,1.0), 0.24)*soma*0.86"
+        + "              + vec3(0.62,0.95,1.0)*(membrane*0.50 + nucleus*0.92)"
+        + "              + vC*aura;"
+        + "     float a = clamp(soma*0.98 + arms*0.78 + membrane*0.45"
+        + "                    + nucleus*0.9 + aura, 0.0, 1.0);"
+        + "     col = mix(col, sC, sA*(1.0-soma)); a = max(a, sA*(1.0-soma));"
+        + "     if (a < 0.02) discard;"
+        + "     gl_FragColor = vec4(col, a*(0.18+0.82*vD)*vAge);"
+        + "     return;"
+        + "   }"
         + "   float scale = mix(1.0,1.42,vR); vec2 p = b*scale;"
         + "   float r2 = dot(p,p);"
         + "   float inside = 1.0-smoothstep(0.96,1.0,r2);"
         + "   vec3 n = vec3(p.x,-p.y,sqrt(max(0.0,1.0-r2)));"
         + "   vec3 L = normalize(u_light);"
         + "   float diff = max(dot(n,L),0.0);"
-        + "   float spec = pow(max(dot(n,normalize(L+vec3(0.0,0.0,1.0))),0.0),42.0);"
-        + "   float rim = pow(1.0-n.z,2.2);"
-        + "   vec3 col = vC*(0.18+0.82*diff) + vec3(0.85,0.92,1.0)*spec*0.55"
-        + "            + vC*rim*0.55;"
+        + "   float spec = pow(max(dot(n,normalize(L+vec3(0.0,0.0,1.0))),0.0),18.0);"
+        + "   float rim = pow(1.0-n.z,2.6);"
+        + "   float seed = fract(dot(vC, vec3(12.9898, 78.233, 37.719)));"
+        /* Continents and cloud belts give each world a surface instead of a
+           uniform plastic ball; the seed comes from the node colour so the
+           pattern varies without another vertex attribute. */
+        + "   float landA = sin(p.x*6.0 + seed*19.0)*sin(p.y*7.5 - seed*11.0);"
+        + "   float land = smoothstep(0.10, 0.58, landA*0.5 + 0.5);"
+        + "   float cloud = smoothstep(0.55, 0.96,"
+        + "     sin(p.y*13.0 + seed*6.28 + sin(p.x*5.0)*0.9)*0.5 + 0.5);"
+        + "   vec3 albedo = mix(vC*0.84, vC*1.08, land);"
+        + "   albedo = mix(albedo, mix(vC, vec3(1.0), 0.5), cloud*0.26);"
+        + "   float polar = smoothstep(0.62, 0.95, abs(p.y));"
+        + "   albedo = mix(albedo, vec3(0.80,0.90,1.0), polar*0.24*seed);"
+        + "   vec3 rimC = mix(vC, vec3(0.52,0.82,1.0), 0.62);"
+        + "   vec3 col = albedo*(0.09+0.91*diff)"
+        + "            + vec3(0.80,0.90,1.0)*spec*0.34"
+        + "            + rimC*rim*1.05 + vC*0.040;"
         + "   float e = abs(length(vec2(b.x,b.y*3.4))-0.86);"
         + "   float band = (1.0-smoothstep(0.0,0.035,e))*vR;"
         + "   band *= (b.y < 0.0 ? (1.0-inside) : 1.0);"
         + "   col += (vC*1.5+0.10)*band*(0.4+0.6*diff);"
         + "   float a = max(inside, band*0.75);"
+        /* The streak paints only outside the body disc, so it never seams
+           across the planet face; the displaced head covers the join. */
+        + "   float sVis = sA*(1.0-inside);"
+        + "   col = mix(col, sC, sVis); a = max(a, sVis);"
         + "   if(a < 0.01) discard;"
         + "   gl_FragColor = vec4(col, a*(0.15+0.85*vD)*vAge); }",
       transparent: true, depthWrite: false}));
@@ -133,13 +388,33 @@
                        .replace("clamp(size, u_minpx*0.7",
                                 "clamp(size, u_minpx*1.2"),
       fragmentShader: "varying vec3 vC; varying float vD; varying float vR;"
-        + " varying float vAge; uniform vec3 u_light;"
+        + " varying float vAge; varying vec3 vTail;"
+        + " uniform vec3 u_light; uniform float u_neural;"
         + " void main(){ vec2 p = gl_PointCoord*2.0-1.0;"
         + "   float r2 = dot(p,p); if(r2 > 1.0) discard;"
-        + "   vec3 n = vec3(p.x,-p.y,sqrt(max(0.0,1.0-r2)));"
+        /* Comet tail: while a node streaks in, its glow shrinks to a bright
+           head with only a faint narrow aura behind it — the tapering streak
+           itself is drawn in the node sprite's finer frame. Settled nodes
+           keep the plain round halo. */
+        + "   vec2 tdir = vTail.xy;"
+        + "   vec2 tperp = vec2(-tdir.y, tdir.x);"
+        + "   float flight = clamp(vTail.z, 0.0, 1.0);"
+        + "   vec2 hp = p - tdir*0.30*flight;"
+        + "   float hd = length(hp) * (1.0 + 2.0*flight);"
+        + "   vec3 n = vec3(hp.x,-hp.y,sqrt(max(0.0,1.0-min(hd*hd,1.0))));"
         + "   float lit = 0.22+0.78*max(dot(n,normalize(u_light)),0.0);"
-        + "   float a = pow(smoothstep(1.0,0.0,sqrt(r2)),2.2)*0.28*vD*lit*vAge;"
-        + "   gl_FragColor = vec4(vC, a); }",
+        + "   float sharp = mix(2.2, 1.5, u_neural);"
+        + "   float gain = mix(0.32, 0.20, u_neural);"
+        + "   float shade = mix(lit, 1.0, u_neural*0.75);"
+        + "   float body = pow(smoothstep(1.0,0.0,min(hd,1.0)),sharp)"
+        + "              *gain*vD*shade;"
+        + "   float hb = 0.30*flight - dot(p, tdir);"
+        + "   float back = clamp(hb / (1.0 + 0.30*flight), 0.0, 1.0);"
+        + "   float w = mix(0.16, 0.02, back);"
+        + "   float tail = smoothstep(w, 0.0, abs(dot(p, tperp)))"
+        + "              * pow(1.0 - back, 2.6) * step(0.0, hb);"
+        + "   tail *= flight * 0.6 * vD;"
+        + "   gl_FragColor = vec4(vC, (body + tail) * vAge); }",
       transparent: true, depthWrite: false, blending: THREE.AdditiveBlending}));
     this.halo.frustumCulled = false;
     this.halo.renderOrder = 1;
@@ -147,7 +422,9 @@
 
     this.edgeUni = {u_cull: {value: 1e9}, u_cam: {value: new THREE.Vector3()},
                     u_opacity: {value: 1}, u_sweepX: {value: 0},
-                    u_sweepAmp: {value: 0}, u_time: {value: 0}};
+                    u_sweepAmp: {value: 0}, u_time: {value: 0},
+                    u_neural: {value: 0}, u_fly: {value: 1},
+                    u_driftA: {value: 0}};
     this.lgeo = new THREE.BufferGeometry();
     this.lines = new THREE.LineSegments(this.lgeo, new THREE.ShaderMaterial({
       uniforms: this.edgeUni, transparent: true, depthWrite: false,
@@ -155,15 +432,38 @@
         + " attribute float a_birth; attribute float a_t;"
         + " uniform float u_cull; uniform float u_opacity; uniform vec3 u_cam;"
         + " uniform float u_sweepX; uniform float u_sweepAmp; uniform float u_time;"
+        + " uniform float u_neural; uniform float u_fly; uniform float u_driftA;"
         + " varying vec3 vC; varying float vA;"
+        /* Same hash and the same flight/drift maths as the node sprite, so an
+           axon endpoint never detaches from the cell it belongs to. */
+        + " float skHash(vec3 p){"
+        + "   return fract(sin(dot(p, vec3(12.9898, 78.233, 37.719)))*43758.5453); }"
         + " void main(){ vC=color;"
-        + "   float d = distance(position, u_cam);"
-        + "   float fade = 1.0 - smoothstep(u_cull*0.55, u_cull, d);"
+        + "   float ph = skHash(position);"
         + "   float age = max(0.0, u_time-a_birth);"
+        + "   float k = clamp(age/1.15, 0.0, 1.0);"
+        + "   float ease = 1.0 - pow(1.0-k, 2.4);"
+        + "   float rr = length(position);"
+        + "   vec3 dir = rr > 1e-3 ? position/rr"
+        + "     : normalize(vec3(sin(ph*6.283), cos(ph*4.11), sin(ph*2.77)));"
+        + "   vec3 side = normalize(cross(dir, vec3(0.31, 0.91, 0.27)));"
+        + "   vec3 start = position + dir*(26.0 + 34.0*ph)"
+        + "              + side*(12.0*(ph-0.5));"
+        + "   vec3 pos = position + (start-position)*u_fly*(1.0-ease);"
+        + "   pos += u_driftA * vec3(sin(u_time*0.55 + ph*6.283),"
+        + "                          cos(u_time*0.47 + ph*11.0),"
+        + "                          sin(u_time*0.63 + ph*17.0));"
+        + "   float d = distance(pos, u_cam);"
+        + "   float fade = 1.0 - smoothstep(u_cull*0.55, u_cull, d);"
         + "   float wave = smoothstep(0.0,0.5,age-a_t*0.22);"
         + "   vA = a_base*u_opacity*a_dim*fade*wave;"
-        + "   vA += u_sweepAmp*exp(-abs(position.x-u_sweepX)*0.18)*0.9;"
-        + "   gl_Position = projectionMatrix*modelViewMatrix*vec4(position,1.0); }",
+        + "   vA += u_sweepAmp*exp(-abs(pos.x-u_sweepX)*0.18)*0.9;"
+        /* Neural scene: action potentials travel along the axons as a spatial
+           wave, so the web reads as living tissue rather than static lines. */
+        + "   vA += u_neural * a_base * 0.5 *"
+        + "         (0.5+0.5*sin(pos.x*0.55 + pos.y*0.38"
+        + "                     + pos.z*0.31 + u_time*2.1 + a_t*4.0));"
+        + "   gl_Position = projectionMatrix*modelViewMatrix*vec4(pos,1.0); }",
       fragmentShader: "varying vec3 vC; varying float vA;"
         + " void main(){ gl_FragColor = vec4(vC, vA); }"}));
     this.lines.frustumCulled = false;
@@ -186,96 +486,36 @@
     return this;
   };
 
-  /* A flat background image built in-page: a few thousand stars in three
-     brightness classes plus low-alpha nebula blooms. It is drawn once, used as
-     scene.background, and never becomes a draw call of its own. */
-  Renderer.prototype._makeStarfield = function () {
-    var w = 1024, h = 512;
-    var started = (typeof performance !== "undefined" && performance.now)
-      ? performance.now() : 0;
-    for (var attempt = 0; attempt < 2; attempt++) {
-      var canvas = document.createElement("canvas");
-      canvas.width = w;
-      canvas.height = h;
-      var ctx = canvas.getContext("2d");
-      if (!ctx) return null;
-      ctx.fillStyle = "#05070c";
-      ctx.fillRect(0, 0, w, h);
-      var seed = 20261019;
-      var rnd = function () {
-        seed = (seed * 1664525 + 1013904223) >>> 0;
-        return seed / 4294967296;
-      };
-      var blooms = [[0.24, 0.38, 0.30], [0.71, 0.26, 0.24], [0.55, 0.78, 0.22]];
-      for (var b = 0; b < blooms.length; b++) {
-        var bx = blooms[b][0] * w, by = blooms[b][1] * h;
-        var br = blooms[b][2] * Math.min(w, h);
-        var grad = ctx.createRadialGradient(bx, by, 0, bx, by, br);
-        grad.addColorStop(0, b === 1 ? "rgba(56,84,160,0.16)"
-                                     : "rgba(40,120,140,0.10)");
-        grad.addColorStop(0.55, "rgba(12,24,49,0.05)");
-        grad.addColorStop(1, "rgba(5,7,12,0)");
-        ctx.fillStyle = grad;
-        ctx.fillRect(bx - br, by - br, br * 2, br * 2);
-      }
-      for (var i = 0; i < 2200; i++) {
-        var x = rnd() * w, y = rnd() * h;
-        var roll = rnd();
-        var r = roll > 0.99 ? 1.7 + rnd() * 1.0
-              : (roll > 0.88 ? 0.9 + rnd() * 0.55 : 0.35 + rnd() * 0.45);
-        var alpha = 0.25 + rnd() * 0.65;
-        var tint = rnd();
-        ctx.fillStyle = tint > 0.9 ? "rgba(255,226,190," + alpha + ")"
-          : (tint > 0.6 ? "rgba(178,206,255," + alpha + ")"
-                        : "rgba(236,242,255," + alpha + ")");
-        ctx.beginPath();
-        ctx.arc(x, y, r, 0, Math.PI * 2);
-        ctx.fill();
-        if (r > 1.6) {
-          var halo = ctx.createRadialGradient(x, y, 0, x, y, r * 4);
-          halo.addColorStop(0, "rgba(210,228,255,0.22)");
-          halo.addColorStop(1, "rgba(210,228,255,0)");
-          ctx.fillStyle = halo;
-          ctx.fillRect(x - r * 4, y - r * 4, r * 8, r * 8);
-        }
-      }
-      var cost = started && performance.now ? performance.now() - started : 0;
-      /* a slow first bake falls back to half resolution rather than paying the
-         cost on every launch */
-      if (attempt === 0 && cost > 50 && w > 512) {
-        w = 512;
-        h = 256;
-        started = performance.now();
-        continue;
-      }
-      var tex = new T3.THREE.CanvasTexture(canvas);
-      if ("colorSpace" in tex && T3.THREE.SRGBColorSpace) {
-        tex.colorSpace = T3.THREE.SRGBColorSpace;
-      }
-      tex.needsUpdate = true;
-      return tex;
-    }
-    return null;
-  };
-
   Renderer.prototype.setScene = function (name) {
     var cfg = (SK.scenes && SK.scenes[name]) || (SK.scenes && SK.scenes.planets);
     if (!cfg) return;
     this.name = name;
     this.cfg = cfg;
-    if (cfg.starfield) {
-      if (!this._starTex) this._starTex = this._makeStarfield();
-      this.scene.background = this._starTex ||
-        new T3.THREE.Color(cfg.bg);
-    } else {
-      this.scene.background = new T3.THREE.Color(cfg.bg);
-    }
+    this.scene.background = new T3.THREE.Color(cfg.bg);
+    if (this.sky) this.sky.visible = cfg.starfield !== false;
     this._ringThreshold = cfg.ringRank == null ? 2 : cfg.ringRank;
     var ld = cfg.lightDir || [-0.55, 0.6, 0.75];
     this.nodeUni.u_light.value.set(ld[0], ld[1], ld[2]).normalize();
     this.haloUni.u_halo.value = cfg.haloScale;
     this.edgeUni.u_opacity.value = cfg.edgeOpacity;
     this.nodeUni.u_scale.value = cfg.nodeScale;
+    /* The sky and the node sprites each carry two drawings; a scene picks one
+       without adding a draw call or a second material. */
+    if (this.skyUni) this.skyUni.u_mode.value = cfg.sky === "wetware" ? 1 : 0;
+    this.nodeUni.u_neural.value = cfg.neuralNodes ? 1 : 0;
+    this.edgeUni.u_neural.value = cfg.neuralNodes ? 1 : 0;
+    /* How far a newborn node streaks in from, and how much the settled graph
+       breathes; both are per scene because planets want arrivals and wetware
+       wants a slow drift. */
+    var fly = cfg.fly == null ? 1 : cfg.fly;
+    var drift = cfg.drift == null ? 0 : cfg.drift;
+    this.nodeUni.u_fly.value = fly;
+    this.nodeUni.u_driftA.value = drift;
+    this.edgeUni.u_fly.value = fly;
+    this.edgeUni.u_driftA.value = drift;
+    /* Scene-wide position spread: the layout is shared, a scene may open it up
+       so cells and planets get the room their sprites need. */
+    this.posScale = SCALE * (cfg.posScale || 1);
     this.colorDirty = true;
     this.lastVersion = -1;
     this.lastSelectionKey = "";
@@ -418,6 +658,11 @@
 
   Renderer.prototype.sync = function (live) {
     this.live = live;
+    if (this._dragRun !== live.runId) {
+      this._dragRun = live.runId;
+      this._dragOff = {};
+      this._drag = null;
+    }
     this._ensure();
     this._syncVisibility();
     if (this.lodReady && this.lodVersion !== live.version) this._clearEdgeIndex();
@@ -438,7 +683,8 @@
       var neural = this.name === "neural";
       var maxR = 1;
       for (i = 0; i < live.n; i++) {
-        var x = live.x[i] * SCALE, y = live.y[i] * SCALE, z = live.z[i] * SCALE;
+        var x = live.x[i] * this.posScale, y = live.y[i] * this.posScale,
+            z = live.z[i] * this.posScale;
         if (shells) {
           var cid = live._nodeCluster ? live._nodeCluster[i] : 0;
           var shellR = this._shellRadius(cid);
@@ -457,6 +703,11 @@
           }
         }
         var cluster = live._nodeCluster ? live._nodeCluster[i] : 0;
+        var dragKey = live.ids && live.ids[i] ? live.ids[i] : i;
+        var off = this._dragOff && this._dragOff[dragKey];
+        if (off) {
+          x += off.x; y += off.y; z += off.z;
+        }
         var c = this._color(cluster);
         this.nPos[i * 3] = x;
         this.nPos[i * 3 + 1] = y;
@@ -465,9 +716,16 @@
         this.nCol[i * 3 + 1] = c.g;
         this.nCol[i * 3 + 2] = c.b;
         var degPart = Math.sqrt((live.degree[i] || 0) / gmax);
-        var rankPart = rmax > 0 ? Math.sqrt((live.rank[i] || 0) / rmax) : 0;
-        if (shells) this.nSize[i] = 2.0 + 6.4 * rankPart + 1.4 * degPart;
-        else if (neural) this.nSize[i] = 1.0 + 1.9 * degPart;
+        /* Rank only arrives with the layout patch, which lands after the first
+           edges. Until it does every node would be the minimum size and the
+           growth would look like dust condensing instead of worlds being born;
+           degree is already known from the edges that just arrived, so it
+           stands in until rank data exists. */
+        var rankPart = rmax > 1e-6 ? Math.sqrt((live.rank[i] || 0) / rmax) : degPart;
+        if (shells) this.nSize[i] = 2.4 + 6.4 * rankPart + 1.6 * degPart;
+        /* A neuron sprite is a soma plus dendrites: the soma is only 30% of the
+           quad, so the point must be bigger than a planet to read as a cell. */
+        else if (neural) this.nSize[i] = 6.2 + 7.6 * degPart;
         else this.nSize[i] = 2.2 + 3.4 * degPart;
         /* giant worlds carry a visible band; leaves stay smooth spheres */
         this.nRing[i] = shells && (0.7 * rankPart + 0.3 * degPart) >=
@@ -666,12 +924,144 @@
     if (this.nPos && i >= 0 && i < this.sceneN) {
       out.set(this.nPos[i * 3], this.nPos[i * 3 + 1], this.nPos[i * 3 + 2]);
     } else if (this.live && i >= 0 && i < this.live.n) {
-      out.set(this.live.x[i] * SCALE, this.live.y[i] * SCALE,
-              this.live.z[i] * SCALE);
+      out.set(this.live.x[i] * this.posScale, this.live.y[i] * this.posScale,
+              this.live.z[i] * this.posScale);
     } else {
       out.set(0, 0, 0);
     }
     return out;
+  };
+
+  /* ---- per-node drag -------------------------------------------------------
+     Placement belongs to the scene (the planet scene projects nodes onto orbit
+     shells), so a drag is stored as a world-space offset keyed by page id and
+     re-applied after every rebuild. It therefore survives streaming updates and
+     layout patches, and a new crawl starts from a clean map. */
+  Renderer.prototype._pointerRay = function (x, y) {
+    var THREE = T3.THREE;
+    var ndc = new THREE.Vector2((x / Math.max(this.width || 1, 1)) * 2 - 1,
+                                -(y / Math.max(this.height || 1, 1)) * 2 + 1);
+    var ray = new THREE.Raycaster();
+    ray.setFromCamera(ndc, this.camera);
+    return ray;
+  };
+
+  Renderer.prototype._dragEdges = function (i) {
+    var live = this.live, out = [];
+    if (!live) return out;
+    for (var e = 0; e < live.m; e++) {
+      var slot = this._edgeSlots ? this._edgeSlots[e] : e;
+      if (slot == null || slot < 0 || slot >= this._drawEdges) continue;
+      if (live.eSrc[e] === i) out.push(slot, 0);
+      else if (live.eDst[e] === i) out.push(slot, 1);
+    }
+    return out;
+  };
+
+  /* Neighbours that trail the dragged cell: one and two hops out, each ring
+     pulled along at a fraction of the pointer's delta. The cluster flexes with
+     the drag instead of the whole graph translating as one block. */
+  Renderer.prototype._dragFollow = function (i) {
+    var live = this.live, out = [];
+    if (!live || !live.adjacency) return out;
+    var adj = live.adjacency(), self = this;
+    var seen = {};
+    seen[i] = 1;
+    (function collect(src, depth, w) {
+      if (depth > 2 || out.length >= 40) return;
+      var list = adj[src] || [];
+      for (var k = 0; k < list.length; k++) {
+        var j = list[k][0];
+        if (seen[j]) continue;
+        seen[j] = 1;
+        if (live.dim[j] >= 0.15) {
+          out.push({i: j, key: live.ids[j] || String(j), w: w,
+                    edges: self._dragEdges(j)});
+        }
+        if (out.length >= 40) return;
+        collect(j, depth + 1, w * 0.42);
+      }
+    })(i, 1, 0.45);
+    return out;
+  };
+
+  Renderer.prototype.beginDrag = function (i, x, y) {
+    var THREE = T3.THREE, live = this.live;
+    if (!live || i < 0 || i >= live.n || live.dim[i] < 0.15) return false;
+    var p = new THREE.Vector3();
+    this.nodeWorld(i, p);
+    var dir = new THREE.Vector3();
+    this.camera.getWorldDirection(dir);
+    /* Drag on the plane that faces the camera and passes through the node, so
+       the cell tracks the pointer one-to-one instead of sliding in depth. */
+    var plane = new THREE.Plane().setFromNormalAndCoplanarPoint(dir, p);
+    var hit = new THREE.Vector3();
+    if (!this._pointerRay(x, y).ray.intersectPlane(plane, hit)) return false;
+    this._dragOff = this._dragOff || {};
+    var key = live.ids[i] || String(i);
+    var prev = this._dragOff[key] || {x: 0, y: 0, z: 0};
+    this._drag = {
+      i: i, key: key, plane: plane, grab: hit.clone(), start: p.clone(),
+      off: {x: prev.x, y: prev.y, z: prev.z},
+      edges: this._dragEdges(i),
+      follow: this._dragFollow(i)
+    };
+    return true;
+  };
+
+  Renderer.prototype.moveDrag = function (x, y) {
+    var d = this._drag;
+    if (!d || !this.live) return;
+    var hit = new T3.THREE.Vector3();
+    if (!this._pointerRay(x, y).ray.intersectPlane(d.plane, hit)) return;
+    var dx = hit.x - d.grab.x, dy = hit.y - d.grab.y, dz = hit.z - d.grab.z;
+    d.off.x += dx; d.off.y += dy; d.off.z += dz;
+    d.grab.copy(hit);
+    this._dragOff[d.key] = d.off;
+    var wx = d.start.x + dx, wy = d.start.y + dy, wz = d.start.z + dz;
+    d.start.set(wx, wy, wz);
+    this.nPos[d.i * 3] = wx;
+    this.nPos[d.i * 3 + 1] = wy;
+    this.nPos[d.i * 3 + 2] = wz;
+    this._mark("position", this.nPos, this.pgeo);
+    if (this.ePos && d.edges.length) {
+      for (var k = 0; k < d.edges.length; k += 2) {
+        var at = d.edges[k] * 6 + d.edges[k + 1] * 3;
+        this.ePos[at] = wx;
+        this.ePos[at + 1] = wy;
+        this.ePos[at + 2] = wz;
+      }
+      this._mark("position", this.ePos, this.lgeo);
+    }
+    /* The surrounding cells trail behind at their own weights; their offsets
+       land in the same map as the dragged node's, so they survive rebuilds. */
+    if (d.follow && d.follow.length) {
+      for (var f = 0; f < d.follow.length; f++) {
+        var nb = d.follow[f];
+        var nx = dx * nb.w, ny = dy * nb.w, nz = dz * nb.w;
+        var noff = this._dragOff[nb.key] || {x: 0, y: 0, z: 0};
+        noff.x += nx; noff.y += ny; noff.z += nz;
+        this._dragOff[nb.key] = noff;
+        var px = this.nPos[nb.i * 3] + nx;
+        var py = this.nPos[nb.i * 3 + 1] + ny;
+        var pz = this.nPos[nb.i * 3 + 2] + nz;
+        this.nPos[nb.i * 3] = px;
+        this.nPos[nb.i * 3 + 1] = py;
+        this.nPos[nb.i * 3 + 2] = pz;
+        for (var q = 0; q < nb.edges.length; q += 2) {
+          var nat = nb.edges[q] * 6 + nb.edges[q + 1] * 3;
+          this.ePos[nat] = px;
+          this.ePos[nat + 1] = py;
+          this.ePos[nat + 2] = pz;
+        }
+      }
+      this._mark("position", this.nPos, this.pgeo);
+      if (this.ePos) this._mark("position", this.ePos, this.lgeo);
+    }
+  };
+
+  Renderer.prototype.endDrag = function () {
+    this._drag = null;
   };
 
   Renderer.prototype.startFinale = function (reduced) {
@@ -815,6 +1205,14 @@
     this.nodeUni.u_time.value = this.time || 0;
     this.edgeUni.u_time.value = this.time || 0;
     var cam = this.camera;
+    if (this.sky && this.sky.visible) {
+      /* orbiting the camera slides the star layers instead of leaving a
+         painted backdrop pinned to the screen */
+      var clen = Math.max(cam.position.length(), 1);
+      this.skyUni.u_time.value = this.time || 0;
+      this.skyUni.u_drift.value.set(Math.atan2(cam.position.x, cam.position.z) * 0.16,
+                                    Math.asin(cam.position.y / clen) * 0.24);
+    }
     var targetDist = this.camDistance || cam.position.length() || 1;
     this.edgeUni.u_cull.value = targetDist * 1.15 + this.sceneRadius * 0.95;
     this.edgeUni.u_cam.value.copy(cam.position);
@@ -838,6 +1236,7 @@
     this.renderer.setSize(w, h, false);
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
+    if (this.skyUni) this.skyUni.u_res.value.set(w, h);
     this.nodeUni.u_px.value = this.renderer.getPixelRatio();
     this.nodeUni.u_minpx.value = 1.6 * this.renderer.getPixelRatio();
   };
@@ -845,7 +1244,7 @@
   Renderer.prototype.pick = function (x, y) {
     var live = this.live;
     if (!live) return -1;
-    var best = -1, bestD = 15 * 15;
+    var best = -1, bestD = 0;
     var v = this._v, cam = this.camera;
     var w = this.width || 1, h = this.height || 1;
     var list = this.selectionSet ? this.selection : null;
@@ -860,7 +1259,11 @@
       var sy = (-v.y * 0.5 + 0.5) * h;
       var dx = sx - x, dy = sy - y;
       var d = dx * dx + dy * dy;
-      if (d < bestD) {
+      /* Every node gets at least a 24px hit box and big worlds grow past it:
+         a strict 15px ring is why small cells felt impossible to grab. */
+      var sz = (this.nSize && this.nSize[i]) || 3;
+      var rad = 24 + Math.min(18, sz * 2);
+      if (d < rad * rad && (best < 0 || d < bestD)) {
         bestD = d;
         best = i;
       }
@@ -885,9 +1288,9 @@
           out[k++] = this.nPos[i * 3 + 1];
           out[k++] = this.nPos[i * 3 + 2];
         } else {
-          out[k++] = live.x[i] * SCALE;
-          out[k++] = live.y[i] * SCALE;
-          out[k++] = live.z[i] * SCALE;
+          out[k++] = live.x[i] * this.posScale;
+          out[k++] = live.y[i] * this.posScale;
+          out[k++] = live.z[i] * this.posScale;
         }
       }
     }
@@ -905,9 +1308,10 @@
       }
     }
     this._disposeRings();
-    if (this._starTex) {
-      this._starTex.dispose();
-      this._starTex = null;
+    if (this.sky) {
+      this.sky.geometry.dispose();
+      this.sky.material.dispose();
+      this.sky = null;
     }
     this.pgeo.dispose();
     this.lgeo.dispose();

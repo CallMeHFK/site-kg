@@ -184,13 +184,22 @@
     else if (state === "complete") key = "complete";
     else if (state === "settling") key = "settling";
     else if (pages === 0 && nodes === 0) key = "discovering";
+    else if (nodes > 0) key = "growing";
     else key = "fetching";
     var phases = {discovering: "finding pages", fetching: "fetching pages",
+                  growing: "growing graph",
                   settling: "settling", complete: "complete", failed: "failed"};
     var indeterminate = key === "discovering" ||
       (key === "fetching" && discovered === 0);
-    var ratio = key === "complete" || key === "settling" ? 1
-      : (discovered > 0 ? Math.min(1, pages / discovered) : 0);
+    /* While the graph grows, nodes are the honest progress signal: pages land
+       in a burst and would slam the bar to 100% before the first world does. */
+    var ratio;
+    if (key === "complete" || key === "settling") ratio = 1;
+    else if (key === "growing") {
+      ratio = discovered > 0 ? Math.min(0.99, nodes / discovered) : 0;
+    } else {
+      ratio = discovered > 0 ? Math.min(1, pages / discovered) : 0;
+    }
     var titles = [];
     var list = recent || [];
     var start = Math.max(0, list.length - 5);

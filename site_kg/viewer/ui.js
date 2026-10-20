@@ -39,6 +39,7 @@
     if (document.documentElement) document.documentElement.classList.add("sk-anim");
     this._buildBar();
     this._buildLegend();
+    this._wireLegend();
     this._buildBuild();
     this._wirePointer();
     this._wireKeys();
@@ -51,14 +52,10 @@
   };
 
   UI.prototype._buildFinale = function () {
-    var box = el("div", "panel");
-    box.id = "finale";
-    box.style.cssText = "position:fixed;left:50%;bottom:34px;transform:translateX(-50%);"
-      + "padding:10px 16px;z-index:7;display:none;pointer-events:none;"
-      + "text-align:center;max-width:80vw";
-    document.body.appendChild(box);
-    this.finaleEl = box;
+    this.finaleNote = null;
   };
+
+  UI.prototype._makeFinale = function () { return null; };
 
   /* The bar wraps at narrow widths; the canvas is offset by --bar, so keep the
      custom property in sync with the bar's natural height. #bar's min-height is
@@ -66,21 +63,24 @@
      measured height and the property would feed itself. min-height is still
      suspended while measuring so the natural height can fall below the floor. */
   UI.prototype._wireBarResize = function () {
+    var hud = byId("hud");
     var bar = byId("bar");
-    if (!bar) return;
+    if (!hud || !bar) return;
     var sync = function () {
       bar.style.minHeight = "0px";
-      var h = Math.ceil(bar.getBoundingClientRect().height);
+      /* The floating deck is inset by the HUD's padding, so the offset the
+         canvas needs is the whole HUD box, not just the bar. */
+      var h = Math.ceil(hud.getBoundingClientRect().height);
       bar.style.minHeight = "";
       if (h > 0) {
-        document.documentElement.style.setProperty("--bar", Math.max(h, 52) + "px");
+        document.documentElement.style.setProperty("--bar", Math.max(h, 60) + "px");
       }
     };
     this._barSync = sync;
     if (typeof ResizeObserver !== "undefined") {
       if (this._barRO) { try { this._barRO.disconnect(); } catch (ignored) {} }
       this._barRO = new ResizeObserver(sync);
-      this._barRO.observe(bar);
+      this._barRO.observe(hud);
     }
     window.addEventListener("resize", sync);
     sync();
@@ -117,26 +117,47 @@
     bar.innerHTML = "";
     var self = this;
 
-    var title = el("b", null, this.cfg.title || "site-kg graph");
+    /* Brand: the sigil and the crawl identity, stacked so the host never
+       competes with the product name. */
+    var brand = el("div", "hud-brand");
+    brand.appendChild(el("span", "hud-mark"));
+    var ident = el("div", "hud-id");
+    /* A crawler's "title" is often the address itself; the deck already shows
+       the host on the second line, so the brand stays the product name. */
+    var brandName = this.cfg.title || "site-kg graph";
+    if (/^https?:\/\//i.test(brandName)) brandName = "site-kg";
+    var title = el("b", null, brandName);
     title.id = "title";
-    bar.appendChild(title);
+    title.title = this.cfg.title || "";
+    ident.appendChild(title);
     this.titleEl = title;
-
     var target = el("span");
     target.id = "live-target";
-    bar.appendChild(target);
+    ident.appendChild(target);
     this.targetEl = target;
+    brand.appendChild(ident);
+    bar.appendChild(brand);
+
+    /* Live telemetry: state chip first, then the page/node/edge readout. */
+    var liveBox = el("div", "hud-live");
+    var phase = el("span", null, "ingesting");
+    phase.id = "phase";
+    liveBox.appendChild(phase);
+    this.phaseEl = phase;
 
     var readout = el("span", null, "");
     readout.id = "readout";
-    bar.appendChild(readout);
+    liveBox.appendChild(readout);
     this.readoutEl = readout;
 
-    var phase = el("span", null, "ingesting");
-    phase.id = "phase";
-    bar.appendChild(phase);
-    this.phaseEl = phase;
+    var cnt = el("span", null, "");
+    cnt.id = "cnt";
+    liveBox.appendChild(cnt);
+    this.cntEl = cnt;
+    bar.appendChild(liveBox);
 
+    /* Tools: scene switch, search, help. */
+    var tools = el("div", "hud-tools");
     var scenes = el("span", "t-scenes");
     (SK.sceneOrder || ["planets"]).forEach(function (name) {
       var b = el("button", "mb", (SK.scenes[name] && SK.scenes[name].label) || name);
@@ -146,14 +167,14 @@
       b.addEventListener("click", function () { self.activateScene(name); });
       scenes.appendChild(b);
     });
-    bar.appendChild(scenes);
+    tools.appendChild(scenes);
 
     var wrap = el("span", "swrap");
     var input = el("input");
     input.id = "q";
     input.type = "search";
     input.autocomplete = "off";
-    input.placeholder = "filter / search title\u2026 (/)";
+    input.placeholder = "search pages  /";
     input.setAttribute("aria-label", "search pages");
     var res = el("div");
     res.id = "sres";
@@ -161,24 +182,28 @@
     res.setAttribute("aria-label", "search results");
     wrap.appendChild(input);
     wrap.appendChild(res);
-    bar.appendChild(wrap);
+    tools.appendChild(wrap);
     this.input = input;
     this.results = res;
 
     var chap = el("button", "mb", "chapters");
     chap.type = "button";
-    chap.title = "keyboard and pointer help";
-    chap.setAttribute("aria-label", "keyboard and pointer help");
+    chap.title = "chapters, edge kinds and controls";
+    chap.setAttribute("aria-label", "chapters, edge kinds and controls");
+    chap.setAttribute("aria-expanded", "false");
+    chap.setAttribute("aria-controls", "legend");
     chap.addEventListener("click", function () {
-      self.legendEl.classList.toggle("on");
-      if (self.legendEl.classList.contains("on")) self._buildLegend();
+      var on = self.legendEl.classList.toggle("on");
+      chap.classList.toggle("on", on);
+      chap.setAttribute("aria-expanded", on ? "true" : "false");
+      /* The live-build card owns the same corner; it steps aside while the
+         legend is open so the two panels never stack on each other. */
+      var build = byId("build");
+      if (build) build.classList.toggle("legend-open", on);
+      if (on) self._buildLegend();
     });
-    bar.appendChild(chap);
-
-    var cnt = el("span", null, "");
-    cnt.id = "cnt";
-    bar.appendChild(cnt);
-    this.cntEl = cnt;
+    tools.appendChild(chap);
+    bar.appendChild(tools);
 
     input.addEventListener("input", function () {
       self.director.setQuery(input.value);
@@ -265,14 +290,6 @@
         row.appendChild(dot);
         row.appendChild(el("span", null, name));
         row.appendChild(el("span", "n", String(counts[name])));
-        row.addEventListener("click", function () {
-          var active = self.director.setChapter(name);
-          var rows = legend.querySelectorAll(".ch[data-ch]");
-          for (var k = 0; k < rows.length; k++) {
-            rows[k].classList.toggle("on", rows[k].getAttribute("data-ch") === active);
-          }
-          self._updateCount();
-        });
         legend.appendChild(row);
       });
     }
@@ -297,19 +314,52 @@
       row.appendChild(el("span", null, entry.kind));
       row.appendChild(el("span", "n", String(kindCounts[entry.kind] || 0)));
       row.style.opacity = entry.on ? "1" : "0.4";
-      row.addEventListener("click", function () {
-        var hidden = self.director.toggleKind(entry.kind);
-        row.style.opacity = hidden ? "0.4" : "1";
-        self._updateCount();
-      });
       legend.appendChild(row);
     });
 
-    var keys = el("div", "keys",
-                  "drag rotate \u00b7 wheel zoom \u00b7 click a node to focus \u00b7 "
-                  + "1\u20132 scenes \u00b7 F finale \u00b7 shift+F fit \u00b7 "
-                  + "space replay \u00b7 / search");
+    legend.appendChild(el("h4", null, "controls"));
+    var keys = el("div", "keys");
+    [["drag", "rotate"], ["wheel", "zoom"], ["click", "focus"],
+     ["1\u20132", "scenes"], ["F", "finale"], ["shift+F", "fit"],
+     ["space", "replay"], ["/", "search"]].forEach(function (pair) {
+      var row = el("div", "kr");
+      row.appendChild(el("span", "kb", pair[0]));
+      row.appendChild(el("span", "ka", pair[1]));
+      keys.appendChild(row);
+    });
     legend.appendChild(keys);
+  };
+
+  /* Row clicks are delegated from the panel itself: _buildLegend replaces the
+     rows on every live flush, and listeners bound to rows that get replaced
+     mid-crawl swallow the click. */
+  UI.prototype._wireLegend = function () {
+    var legend = this.legendEl, self = this;
+    if (!legend) return;
+    legend.addEventListener("click", function (e) {
+      var node = e.target;
+      while (node && node !== legend &&
+             !(node.classList && node.classList.contains("ch"))) {
+        node = node.parentNode;
+      }
+      if (!node || node === legend) return;
+      var ch = node.getAttribute("data-ch");
+      if (ch != null) {
+        var active = self.director.setChapter(ch);
+        var rows = legend.querySelectorAll(".ch[data-ch]");
+        for (var k = 0; k < rows.length; k++) {
+          rows[k].classList.toggle("on", rows[k].getAttribute("data-ch") === active);
+        }
+        self._updateCount();
+        return;
+      }
+      var kind = node.getAttribute("data-kind");
+      if (kind != null) {
+        var hidden = self.director.toggleKind(kind);
+        node.style.opacity = hidden ? "0.4" : "1";
+        self._updateCount();
+      }
+    });
   };
 
   /* Build overlay: the stage, a progress bar, live counts and the last few
@@ -320,6 +370,7 @@
     if (!box) return;
     box.innerHTML = "";
     var panel = el("div", "b-panel");
+    panel.appendChild(el("div", "b-kicker", "live build"));
     this.buildPhaseEl = el("div", "b-phase", "finding pages");
     this.buildFillEl = el("span", "b-fill");
     this.buildTrackEl = el("div", "b-track");
@@ -432,10 +483,12 @@
       this.targetEl.textContent = host;
       this.targetEl.title = host;
     }
-    /* The bar title and the tab title were baked from cfg.title at render
-       time; a new launch must replace both, not just the host chip. */
-    if (this.titleEl) this.titleEl.textContent = value;
-    if (typeof document !== "undefined") document.title = value;
+    /* The brand is the product, the host is the subject: a live launch must
+       not replace the masthead with a raw URL. */
+    if (this.titleEl) this.titleEl.textContent = "site-kg";
+    if (typeof document !== "undefined") {
+      document.title = host ? "site-kg \u00b7 " + host : "site-kg";
+    }
   };
 
   UI.finaleParts = function (cfg, status) {
@@ -451,19 +504,18 @@
     return parts;
   };
 
+  /* The caption is painted by the label canvas (see Labels._finale); keeping
+     it out of the DOM avoids a compositor ghost over the WebGL scene. */
   UI.prototype.showFinale = function (sceneName, status) {
-    var box = this.finaleEl;
-    if (!box) return;
     var scene = (SK.scenes && SK.scenes[sceneName]) || {};
-    var parts = UI.finaleParts(this.cfg, status);
-    box.innerHTML = "";
-    box.appendChild(el("b", null, scene.finale || "Finale"));
-    if (parts.length) box.appendChild(el("div", "muted", parts.join(" \u00b7 ")));
-    box.style.display = "block";
+    this.finaleNote = {
+      title: scene.finale || "Finale",
+      detail: UI.finaleParts(this.cfg, status).join(" \u00b7 ")
+    };
   };
 
   UI.prototype.hideFinale = function () {
-    if (this.finaleEl) this.finaleEl.style.display = "none";
+    this.finaleNote = null;
   };
 
   UI.prototype.setSceneActive = function (name) {
@@ -517,8 +569,16 @@
     var canvas = this.renderer.canvas, self = this;
     canvas.addEventListener("pointermove", function (e) {
       var rect = canvas.getBoundingClientRect();
-      self._mouse = {x: e.clientX - rect.left, y: e.clientY - rect.top,
-                     cx: e.clientX, cy: e.clientY};
+      var x = e.clientX - rect.left, y = e.clientY - rect.top;
+      if (self._dragDown) {
+        self.renderer.moveDrag(x, y);
+        if (Math.hypot(e.clientX - self._dragDown.x,
+                       e.clientY - self._dragDown.y) > 3) {
+          self._dragDown.moved = true;
+        }
+        return;
+      }
+      self._mouse = {x: x, y: y, cx: e.clientX, cy: e.clientY};
       if (!self._hoverRaf) {
         self._hoverRaf = requestAnimationFrame(function () {
           self._hoverRaf = 0;
@@ -527,21 +587,71 @@
       }
     });
     canvas.addEventListener("pointerleave", function () {
+      if (self._dragDown) return;
       self._setHover(-1);
     });
     var down = null;
     canvas.addEventListener("pointerdown", function (e) {
+      if (e.button !== 0) return;
       down = {x: e.clientX, y: e.clientY};
-    });
-    canvas.addEventListener("pointerup", function (e) {
-      if (!down) return;
-      var moved = Math.hypot(e.clientX - down.x, e.clientY - down.y);
-      down = null;
-      if (moved > 6) return;
       var rect = canvas.getBoundingClientRect();
       var idx = self.renderer.pick(e.clientX - rect.left, e.clientY - rect.top);
+      if (idx < 0) return;
+      var begin = self.renderer.beginDrag(idx, e.clientX - rect.left,
+                                          e.clientY - rect.top);
+      if (!begin) return;
+      /* The cell wins over the orbit rig: press-and-hold moves this node,
+         release without travel still opens its page. */
+      down.drag = idx;
+      down.moved = false;
+      self._dragDown = down;
+      if (e.pointerId != null && canvas.setPointerCapture) {
+        try { canvas.setPointerCapture(e.pointerId); } catch (ignored) {}
+      }
+      self.camera.controls.enabled = false;
+      self.camera.controls.autoRotate = false;
+      self._setHover(-1);
+      canvas.style.cursor = "grabbing";
+    });
+    var release = function (e) {
+      if (!down) return;
+      var moved = Math.hypot(e.clientX - down.x, e.clientY - down.y);
+      var dragging = down.drag !== undefined;
+      var idx = down.drag;
+      down = null;
+      self._dragDown = null;
+      if (dragging) {
+        self.renderer.endDrag();
+        self.camera.controls.enabled = true;
+        canvas.style.cursor = "";
+        if (e.pointerId != null && canvas.releasePointerCapture) {
+          try { canvas.releasePointerCapture(e.pointerId); } catch (ignored) {}
+        }
+        if (moved > 4) return;
+      } else if (moved > 6) {
+        return;
+      }
+      var rect = canvas.getBoundingClientRect();
+      if (idx === undefined) {
+        idx = self.renderer.pick(e.clientX - rect.left, e.clientY - rect.top);
+      }
       var focus = self.director.focus(idx);
       self.showInfo(focus);
+    };
+    canvas.addEventListener("pointerup", release);
+    canvas.addEventListener("pointercancel", function (e) {
+      if (!down) return;
+      var dragging = down.drag !== undefined;
+      down = null;
+      self._dragDown = null;
+      if (dragging) {
+        self.renderer.endDrag();
+        self.camera.controls.enabled = true;
+        canvas.style.cursor = "";
+      }
+      if (e.pointerId != null && canvas.releasePointerCapture) {
+        try { canvas.releasePointerCapture(e.pointerId); } catch (ignored) {}
+      }
     });
   };
 
@@ -570,7 +680,7 @@
     var y = Math.min(m.cy + 12, window.innerHeight - 40);
     tip.style.left = Math.max(8, x) + "px";
     tip.style.top = Math.max(8, y) + "px";
-    this.renderer.canvas.style.cursor = "pointer";
+    this.renderer.canvas.style.cursor = "grab";
   };
 
   UI.prototype._wireKeys = function () {
@@ -995,6 +1105,7 @@
       var director = new SK.Director(live, renderer, camera, labels);
       var ui = new SK.UI();
       ui.token = token;
+      if (typeof window !== "undefined") window.__sk = {renderer: renderer, ui: ui};
       ui.mount(byId("hud"), {cfg: cfg, live: live, renderer: renderer,
                              camera: camera, director: director});
       director.attach(ui);
