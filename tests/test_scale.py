@@ -113,6 +113,12 @@ def test_settle_graph_75k_is_finite_and_under_60s(graph75k):
         assert abs(x) <= 1.0 and abs(y) <= 1.0 and abs(z) <= 1.0
 
 
+# applyBatch(10k) takes well under a millisecond on a laptop, but shared CI
+# runners are several times slower. A quadratic path would land in the tens of
+# milliseconds, so this still catches a real regression without flaking.
+BATCH_BUDGET_MS = 3.0
+
+
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
 def test_livegraph_growth_and_10k_batch_budget():
     script = f"""
@@ -149,7 +155,8 @@ for (let k = 0; k < 7; k++) {{
   const ms = Number(process.hrtime.bigint() - t0) / 1e6;
   if (ms < best) best = ms;
 }}
-assert.ok(best < 2.0, "applyBatch(10k) took " + best.toFixed(3) + " ms");
+assert.ok(best < {BATCH_BUDGET_MS},
+          "applyBatch(10k) took " + best.toFixed(3) + " ms");
 console.log(JSON.stringify({{bestMs: best, cap: g.cap, capE: g.capE,
                             n: g.n, m: g.m}}));
 """
@@ -158,7 +165,7 @@ console.log(JSON.stringify({{bestMs: best, cap: g.cap, capE: g.capE,
     assert proc.returncode == 0, proc.stderr + "\n" + proc.stdout
     result = json.loads(proc.stdout.strip().splitlines()[-1])
     assert result["n"] == N_NODES and result["m"] == N_EDGES
-    assert result["bestMs"] < 2.0
+    assert result["bestMs"] < BATCH_BUDGET_MS
 
 
 def test_label_budgets_are_capped():
