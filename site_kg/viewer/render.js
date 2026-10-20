@@ -1004,8 +1004,11 @@
         this.nodeWorld(nb.i, np);
         var off = this._dragOff[nb.key] || {x: 0, y: 0, z: 0};
         nb.base = {x: np.x - off.x, y: np.y - off.y, z: np.z - off.z};
-        nb.cur = {x: 0, y: 0, z: 0};
-        nb.target = {x: 0, y: 0, z: 0};
+        /* Start each follower where it already sits, so grabbing a cell does
+           not yank neighbours back to the layout position they were dragged
+           away from in an earlier gesture. */
+        nb.cur = {x: off.x, y: off.y, z: off.z};
+        nb.target = {x: off.x, y: off.y, z: off.z};
         nb.vel = {x: 0, y: 0, z: 0};
         return nb;
       }, this),
