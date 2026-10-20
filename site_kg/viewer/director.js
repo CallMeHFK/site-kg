@@ -648,6 +648,7 @@
       this.renderer.prepareEdgeLod();
       this._lodVersion = this.live.version;
     }
+    if (this.renderer.advanceDrag) this.renderer.advanceDrag(dt);
     if (this.renderer.advanceFinale) this.renderer.advanceFinale(dt);
     this.renderer.render();
     if (this.time - this.labelTime > 0.18) {

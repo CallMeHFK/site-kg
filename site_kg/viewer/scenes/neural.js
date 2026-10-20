@@ -14,7 +14,7 @@
     haloScale: 2.2,
     edgeOpacity: 0.62,
     starfield: true,
-    sky: "wetware",
+    sky: "deepvoid",
     neuralNodes: true,
     /* Wetware is sparse: open the layout up so a cell has room for its
        dendrites, and keep the whole tissue drifting slowly instead of
