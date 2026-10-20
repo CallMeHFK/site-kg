@@ -166,40 +166,25 @@
           "               mix(0.24, 0.76, lane), 0.038, 41.0, t*0.9)*0.62;",
           "  col += vec3(0.80,0.88,1.0)*comet(uv + u_drift*0.12, t);",
           "  return col; }",
-          /* Wetware: the neural scene's backdrop is tissue, not sky. Slow
-             bokeh washes, ridged dendrite filaments and sparse synaptic
-             flashes that pulse on their own clocks. */
-          "vec3 wetware(vec2 uv, float t){",
-          "  vec2 q = uv*2.4 + vec2(t*0.008, -t*0.006) + u_drift*0.18;",
-          "  float n1 = fbm(q*0.75);",
-          "  float n2 = fbm(q*1.15 + vec2(-t*0.006, t*0.005) + 5.0);",
-          "  vec3 deep = vec3(0.003, 0.006, 0.012);",
-          "  vec3 cool = vec3(0.006, 0.045, 0.075);",
-          "  vec3 warm = vec3(0.070, 0.008, 0.055);",
-          "  vec3 col = deep + mix(cool, warm, smoothstep(0.42,0.85,n2))",
-          "             * smoothstep(0.34,0.94,n1) * 0.46;",
-          /* Dendrites: a warped ridged field, thin enough to read as branches
-             instead of a nebula, with a finer magenta arbor underneath. */
-          "  vec2 w = q + vec2(fbm(q*1.35), fbm(q*1.35+7.3))*0.55;",
-          "  float r1 = 1.0 - abs(fbm(w*3.4)*2.0 - 1.0);",
-          "  float fil1 = pow(smoothstep(0.90, 0.998, r1), 2.2);",
-          "  col += vec3(0.07, 0.44, 0.58) * fil1 * 0.46;",
-          "  float r2 = 1.0 - abs(fbm(w*7.2 + 3.1)*2.0 - 1.0);",
-          "  float fil2 = pow(smoothstep(0.93, 0.9995, r2), 2.4);",
-          "  col += vec3(0.38, 0.06, 0.34) * fil2 * 0.30;",
-          /* Synaptic flashes at sparse lattice points. */
-          "  vec2 g = uv*9.0; vec2 id = floor(g); vec2 f = fract(g)-0.5;",
+          /* Neural: a dark basin, not tissue. The scene already draws bright
+             synapses and halos, so the backdrop stays near-black with one cool
+             radial wash and a few faint motes. Nothing here may compete with
+             an edge for attention. */
+          "vec3 deepvoid(vec2 uv, float t){",
+          "  float r = length(uv);",
+          "  vec3 col = vec3(0.0035, 0.0050, 0.0100);",
+          "  col += vec3(0.011, 0.018, 0.036) * smoothstep(1.02, 0.0, r);",
+          /* Dust motes: sparse pinpricks, dim enough to read as texture at the
+             frame edge while leaving the graph's own glow uncontested. */
+          "  vec2 g = uv*175.0; vec2 id = floor(g); vec2 f = fract(g) - 0.5;",
           "  float h = hash(id);",
-          "  vec2 off = vec2(hash(id+3.7), hash(id+9.1)) - 0.5;",
-          "  float d = length(f - off*0.55);",
-          "  float pulse = 0.5 + 0.5*sin(t*(1.6+2.2*h) + h*47.0);",
-          "  float syn = smoothstep(0.045, 0.0, d) * step(0.86, h) * pulse;",
-          "  col += vec3(0.45, 0.92, 1.0) * syn * 0.9;",
+          "  float mote = step(0.9962, h) * smoothstep(0.42, 0.0, length(f));",
+          "  col += vec3(0.18,0.28,0.44) * mote * (0.50 + 0.50*sin(t*0.8 + h*37.0));",
           "  return col; }",
           "void main(){",
           "  vec2 uv = (vUv - 0.5) * vec2(u_res.x/max(u_res.y,1.0), 1.0);",
           "  float t = u_time;",
-          "  vec3 col = mix(cosmos(uv, t), wetware(uv, t), u_mode);",
+          "  vec3 col = mix(cosmos(uv, t), deepvoid(uv, t), u_mode);",
           "  float vig = smoothstep(1.32, 0.26, length(vUv-0.5));",
           "  col *= mix(0.45, 1.0, vig);",
           "  gl_FragColor = vec4(col, 1.0); }"
@@ -501,11 +486,11 @@
     this.nodeUni.u_scale.value = cfg.nodeScale;
     /* The sky and the node sprites each carry two drawings; a scene picks one
        without adding a draw call or a second material. */
-    if (this.skyUni) this.skyUni.u_mode.value = cfg.sky === "wetware" ? 1 : 0;
+    if (this.skyUni) this.skyUni.u_mode.value = cfg.sky === "deepvoid" ? 1 : 0;
     this.nodeUni.u_neural.value = cfg.neuralNodes ? 1 : 0;
     this.edgeUni.u_neural.value = cfg.neuralNodes ? 1 : 0;
     /* How far a newborn node streaks in from, and how much the settled graph
-       breathes; both are per scene because planets want arrivals and wetware
+       breathes; both are per scene because planets want arrivals and the neural
        wants a slow drift. */
     var fly = cfg.fly == null ? 1 : cfg.fly;
     var drift = cfg.drift == null ? 0 : cfg.drift;
@@ -997,14 +982,37 @@
     var plane = new THREE.Plane().setFromNormalAndCoplanarPoint(dir, p);
     var hit = new THREE.Vector3();
     if (!this._pointerRay(x, y).ray.intersectPlane(plane, hit)) return false;
+    this._finishDrag();
     this._dragOff = this._dragOff || {};
     var key = live.ids[i] || String(i);
     var prev = this._dragOff[key] || {x: 0, y: 0, z: 0};
+    var follow = this._dragFollow(i);
+    /* Each body carries its own spring state. ``base`` is where the layout put
+       it, ``cur``/``vel`` are the live offset from that base, and ``target``
+       is where the pointer wants it. Nothing is written straight to the
+       buffer: advanceDrag integrates every frame, so the node trails the
+       pointer and settles with weight instead of teleporting. */
     this._drag = {
-      i: i, key: key, plane: plane, grab: hit.clone(), start: p.clone(),
-      off: {x: prev.x, y: prev.y, z: prev.z},
+      i: i, key: key, plane: plane, grab: hit.clone(),
+      main: {base: {x: p.x - prev.x, y: p.y - prev.y, z: p.z - prev.z},
+             cur: {x: prev.x, y: prev.y, z: prev.z},
+             target: {x: prev.x, y: prev.y, z: prev.z},
+             vel: {x: 0, y: 0, z: 0}},
       edges: this._dragEdges(i),
-      follow: this._dragFollow(i)
+      follow: follow.map(function (nb) {
+        var np = new THREE.Vector3();
+        this.nodeWorld(nb.i, np);
+        var off = this._dragOff[nb.key] || {x: 0, y: 0, z: 0};
+        nb.base = {x: np.x - off.x, y: np.y - off.y, z: np.z - off.z};
+        /* Start each follower where it already sits, so grabbing a cell does
+           not yank neighbours back to the layout position they were dragged
+           away from in an earlier gesture. */
+        nb.cur = {x: off.x, y: off.y, z: off.z};
+        nb.target = {x: off.x, y: off.y, z: off.z};
+        nb.vel = {x: 0, y: 0, z: 0};
+        return nb;
+      }, this),
+      released: false
     };
     return true;
   };
@@ -1015,53 +1023,115 @@
     var hit = new T3.THREE.Vector3();
     if (!this._pointerRay(x, y).ray.intersectPlane(d.plane, hit)) return;
     var dx = hit.x - d.grab.x, dy = hit.y - d.grab.y, dz = hit.z - d.grab.z;
-    d.off.x += dx; d.off.y += dy; d.off.z += dz;
+    d.main.target.x += dx;
+    d.main.target.y += dy;
+    d.main.target.z += dz;
     d.grab.copy(hit);
-    this._dragOff[d.key] = d.off;
-    var wx = d.start.x + dx, wy = d.start.y + dy, wz = d.start.z + dz;
-    d.start.set(wx, wy, wz);
-    this.nPos[d.i * 3] = wx;
-    this.nPos[d.i * 3 + 1] = wy;
-    this.nPos[d.i * 3 + 2] = wz;
-    this._mark("position", this.nPos, this.pgeo);
-    if (this.ePos && d.edges.length) {
-      for (var k = 0; k < d.edges.length; k += 2) {
-        var at = d.edges[k] * 6 + d.edges[k + 1] * 3;
-        this.ePos[at] = wx;
-        this.ePos[at + 1] = wy;
-        this.ePos[at + 2] = wz;
-      }
-      this._mark("position", this.ePos, this.lgeo);
-    }
-    /* The surrounding cells trail behind at their own weights; their offsets
-       land in the same map as the dragged node's, so they survive rebuilds. */
-    if (d.follow && d.follow.length) {
-      for (var f = 0; f < d.follow.length; f++) {
-        var nb = d.follow[f];
-        var nx = dx * nb.w, ny = dy * nb.w, nz = dz * nb.w;
-        var noff = this._dragOff[nb.key] || {x: 0, y: 0, z: 0};
-        noff.x += nx; noff.y += ny; noff.z += nz;
-        this._dragOff[nb.key] = noff;
-        var px = this.nPos[nb.i * 3] + nx;
-        var py = this.nPos[nb.i * 3 + 1] + ny;
-        var pz = this.nPos[nb.i * 3 + 2] + nz;
-        this.nPos[nb.i * 3] = px;
-        this.nPos[nb.i * 3 + 1] = py;
-        this.nPos[nb.i * 3 + 2] = pz;
-        for (var q = 0; q < nb.edges.length; q += 2) {
-          var nat = nb.edges[q] * 6 + nb.edges[q + 1] * 3;
-          this.ePos[nat] = px;
-          this.ePos[nat + 1] = py;
-          this.ePos[nat + 2] = pz;
-        }
-      }
-      this._mark("position", this.nPos, this.pgeo);
-      if (this.ePos) this._mark("position", this.ePos, this.lgeo);
+    /* Followers aim at a fraction of the main target; their springs are
+       softer, so the cluster ripples out behind the grabbed cell. */
+    for (var f = 0; f < d.follow.length; f++) {
+      var nb = d.follow[f];
+      nb.target.x = d.main.target.x * nb.w;
+      nb.target.y = d.main.target.y * nb.w;
+      nb.target.z = d.main.target.z * nb.w;
     }
   };
 
-  Renderer.prototype.endDrag = function () {
+  /* Writes the current spring offsets into the point/edge buffers. */
+  Renderer.prototype._dragPlace = function (d) {
+    var n = this.nPos, m = d.main;
+    var px = m.base.x + m.cur.x, py = m.base.y + m.cur.y,
+        pz = m.base.z + m.cur.z;
+    n[d.i * 3] = px; n[d.i * 3 + 1] = py; n[d.i * 3 + 2] = pz;
+    var off = this._dragOff[d.key];
+    if (!off) off = this._dragOff[d.key] = {x: 0, y: 0, z: 0};
+    off.x = m.cur.x; off.y = m.cur.y; off.z = m.cur.z;
+    if (this.ePos) {
+      for (var k = 0; k < d.edges.length; k += 2) {
+        var at = d.edges[k] * 6 + d.edges[k + 1] * 3;
+        this.ePos[at] = px; this.ePos[at + 1] = py; this.ePos[at + 2] = pz;
+      }
+    }
+    for (var f = 0; f < d.follow.length; f++) {
+      var nb = d.follow[f];
+      var fx = nb.base.x + nb.cur.x, fy = nb.base.y + nb.cur.y,
+          fz = nb.base.z + nb.cur.z;
+      n[nb.i * 3] = fx; n[nb.i * 3 + 1] = fy; n[nb.i * 3 + 2] = fz;
+      var noff = this._dragOff[nb.key];
+      if (!noff) noff = this._dragOff[nb.key] = {x: 0, y: 0, z: 0};
+      noff.x = nb.cur.x; noff.y = nb.cur.y; noff.z = nb.cur.z;
+      if (this.ePos) {
+        for (var q = 0; q < nb.edges.length; q += 2) {
+          var nat = nb.edges[q] * 6 + nb.edges[q + 1] * 3;
+          this.ePos[nat] = fx; this.ePos[nat + 1] = fy; this.ePos[nat + 2] = fz;
+        }
+      }
+    }
+    this._mark("position", this.nPos, this.pgeo);
+    if (this.ePos) this._mark("position", this.ePos, this.lgeo);
+  };
+
+  /* Integrates the drag springs. Runs every frame while a cell is held or
+     still settling, so the motion is frame-rate independent. */
+  Renderer.prototype.advanceDrag = function (dt) {
+    var d = this._drag;
+    if (!d || !this.live) return;
+    var step = Math.min(0.05, Math.max(0.001, dt || 0.016));
+    /* Tuned in SK.DRAG_SPRING so the feel is unit-tested without WebGL: the
+       cell trails the pointer, then overshoots its drop point and rings out. */
+    var tune = SK.DRAG_SPRING || {stiff: 190, damping: 0.62,
+                                  followStiff: 120, followDamping: 0.54};
+    var stiff = tune.stiff, damp = 2 * Math.sqrt(stiff) * tune.damping;
+    var fStiff = tune.followStiff;
+    var fDamp = 2 * Math.sqrt(fStiff) * tune.followDamping;
+
+    var m = d.main;
+    var ax = SK.springStep(m.cur.x, m.vel.x, m.target.x, stiff, damp, step);
+    var ay = SK.springStep(m.cur.y, m.vel.y, m.target.y, stiff, damp, step);
+    var az = SK.springStep(m.cur.z, m.vel.z, m.target.z, stiff, damp, step);
+    m.cur.x = ax[0]; m.vel.x = ax[1];
+    m.cur.y = ay[0]; m.vel.y = ay[1];
+    m.cur.z = az[0]; m.vel.z = az[1];
+
+    var settled = Math.abs(m.target.x - m.cur.x) < 0.003
+               && Math.abs(m.target.y - m.cur.y) < 0.003
+               && Math.abs(m.target.z - m.cur.z) < 0.003
+               && Math.abs(m.vel.x) + Math.abs(m.vel.y) + Math.abs(m.vel.z) < 0.01;
+    for (var f = 0; f < d.follow.length; f++) {
+      var nb = d.follow[f];
+      var bx = SK.springStep(nb.cur.x, nb.vel.x, nb.target.x, fStiff, fDamp, step);
+      var by = SK.springStep(nb.cur.y, nb.vel.y, nb.target.y, fStiff, fDamp, step);
+      var bz = SK.springStep(nb.cur.z, nb.vel.z, nb.target.z, fStiff, fDamp, step);
+      nb.cur.x = bx[0]; nb.vel.x = bx[1];
+      nb.cur.y = by[0]; nb.vel.y = by[1];
+      nb.cur.z = bz[0]; nb.vel.z = bz[1];
+      if (Math.abs(nb.target.x - nb.cur.x) > 0.003
+          || Math.abs(nb.target.y - nb.cur.y) > 0.003
+          || Math.abs(nb.target.z - nb.cur.z) > 0.003) settled = false;
+    }
+    this._dragPlace(d);
+    if (d.released && settled) this._finishDrag();
+  };
+
+  /* Snap the springs to their targets and stop integrating. */
+  Renderer.prototype._finishDrag = function () {
+    var d = this._drag;
+    if (!d) return;
+    var m = d.main;
+    m.cur.x = m.target.x; m.cur.y = m.target.y; m.cur.z = m.target.z;
+    for (var f = 0; f < d.follow.length; f++) {
+      var nb = d.follow[f];
+      nb.cur.x = nb.target.x; nb.cur.y = nb.target.y; nb.cur.z = nb.target.z;
+      nb.vel.x = nb.vel.y = nb.vel.z = 0;
+    }
+    this._dragPlace(d);
     this._drag = null;
+  };
+
+  Renderer.prototype.endDrag = function () {
+    /* Release the pointer, not the cell: the spring keeps running until the
+       node has overshot and settled where it was dropped. */
+    if (this._drag) this._drag.released = true;
   };
 
   Renderer.prototype.startFinale = function (reduced) {

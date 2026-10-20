@@ -845,3 +845,28 @@ assert.equal(listeners.length, 0, "reduced motion registers no listener");
 assert.equal(launcher2.classList.contains("on"), false);
 assert.equal(launcher2.classList.contains("leave"), false);
 """)
+
+
+def test_spring_step_overshoots_then_settles():
+    """Drag feel: the spring must trail the pointer and, once released, cross
+    the target once before settling — a snap or a limp follow would both fail
+    this."""
+    _run(_prelude(CORE) + """
+const t = SK.DRAG_SPRING, dt = 1 / 60;
+const stiff = t.stiff, damp = 2 * Math.sqrt(stiff) * t.damping;
+let pos = 0, vel = 0, crossed = false, frames = 0;
+for (; frames < 180; frames++) {
+  const next = SK.springStep(pos, vel, 1, stiff, damp, dt);
+  pos = next[0]; vel = next[1];
+  if (pos > 1.001) crossed = true;
+  if (Math.abs(1 - pos) < 0.003 && Math.abs(vel) < 0.01) break;
+}
+assert.ok(crossed, "released node overshoots its target");
+assert.ok(frames < 120, "and settles in under two seconds, took " + frames);
+assert.ok(Math.abs(pos - 1) < 0.01, "at rest, got " + pos);
+
+// while held, the first frame must not jump the whole distance
+let p2 = 0, v2 = 0;
+const first = SK.springStep(p2, v2, 1, stiff, damp, dt);
+assert.ok(first[0] > 0 && first[0] < 0.4, "first frame trails, got " + first[0]);
+""")

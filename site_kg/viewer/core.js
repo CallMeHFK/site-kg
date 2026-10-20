@@ -743,6 +743,22 @@
     };
   }
 
+  /* Feel of a dragged cell. ``damping`` is a fraction of critical (2*sqrt(k)),
+     so the values stay meaningful if the stiffness changes. Under 1 means the
+     cell overshoots on release and rings out. */
+  SK.DRAG_SPRING = {stiff: 190, damping: 0.62, followStiff: 120, followDamping: 0.54};
+
+  /* One step of a damped spring, shared by the per-node drag. Kept here so the
+     feel is testable without a WebGL context: callers own position/velocity
+     and get the next [position, velocity]. Underdamped by default, so a
+     released node overshoots its last target slightly and settles back
+     instead of snapping into place. */
+  SK.springStep = function (pos, vel, target, stiffness, damping, dt) {
+    var accel = (target - pos) * stiffness - vel * damping;
+    var next = vel + accel * dt;
+    return [pos + next * dt, next];
+  };
+
   SK.decodeGraph = decodeGraph;
   SK.decodeLayout = decodeLayout;
   SK.decodeTimeline = decodeTimeline;

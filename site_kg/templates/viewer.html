@@ -34,7 +34,7 @@
  /* ---- live chrome (HUD): a floating command deck over the graph ---- */
  #hud{position:fixed;top:0;left:0;right:0;z-index:5;padding:10px 14px;
       pointer-events:none}
- #bar{display:flex;flex-wrap:wrap;align-items:center;gap:9px 16px;
+ #bar{display:flex;flex-wrap:nowrap;align-items:center;gap:9px 16px;
       min-height:58px;padding:8px 12px;pointer-events:auto;
       background:var(--glass);border:1px solid var(--line);border-radius:15px;
       box-shadow:0 22px 60px rgba(0,0,0,.58),
@@ -55,7 +55,8 @@
       white-space:nowrap}
  #live-target{font-size:12.5px;color:var(--muted);white-space:nowrap;
       overflow:hidden;text-overflow:ellipsis;max-width:34ch;letter-spacing:.015em}
- .hud-live{display:flex;align-items:center;gap:9px;flex-wrap:wrap;min-width:0}
+ .hud-live{display:flex;align-items:center;gap:9px;flex-wrap:wrap;min-width:0;
+      flex:0 1 auto}
  #phase{display:inline-flex;align-items:center;gap:7px;font-size:11px;
       letter-spacing:.1em;text-transform:uppercase;line-height:1;padding:8px 11px;
       border-radius:999px;color:#c6e8ff;white-space:nowrap;
@@ -77,12 +78,12 @@
       display:none}
  #cnt.on{display:inline-block}
  .hud-tools{display:flex;align-items:center;gap:9px;margin-left:auto;
-      min-width:0;flex-wrap:wrap}
+      min-width:0;flex-wrap:nowrap;flex:0 1 auto}
  .t-scenes{display:inline-flex;gap:3px;padding:3px;border-radius:11px;
       background:rgba(255,255,255,.045);border:1px solid rgba(255,255,255,.06)}
  .mb{background:transparent;border:0;color:var(--on-surface-muted);
       padding:7px 11px;border-radius:8px;cursor:pointer;font:inherit;
-      font-size:12.5px;letter-spacing:.035em;white-space:nowrap;
+      font-size:12.5px;letter-spacing:.035em;white-space:nowrap;flex:none;
       transition:color .16s ease,background .16s ease,box-shadow .16s ease}
  .mb:hover{color:var(--ink);background:rgba(255,255,255,.06)}
  .mb.on{background:linear-gradient(180deg,rgba(88,166,255,.34),rgba(88,166,255,.16));
@@ -156,7 +157,7 @@
         font-variant-numeric:tabular-nums}
  @media (max-width:760px){
   #hud{padding:8px}
-  #bar{border-radius:12px}
+  #bar{border-radius:12px;flex-wrap:wrap}
   .hud-live{order:3;width:100%}
   .hud-tools{margin-left:auto}
   .swrap{flex:1 1 150px}
