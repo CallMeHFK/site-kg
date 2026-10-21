@@ -70,7 +70,7 @@
     canvas.addEventListener("webglcontextrestored", this._onContextRestored, false);
     this.scene = new THREE.Scene();
     this.camera = new THREE.PerspectiveCamera(60, 1, 0.1, 1e6);
-    this.scene.background = new THREE.Color(0x0d1117);
+    this.scene.background = new THREE.Color(0x04050b);
 
     /* The cosmos is a shader, not a baked image: three parallax star layers
        twinkle over drifting nebulae, a milky-way band crosses the field, and
@@ -141,18 +141,21 @@
           "  float n2 = fbm(p*1.9 + vec2(-t*0.125, t*0.140) + 7.0);",
           "  float n3 = fbm(p*3.4 + vec2(t*0.082, -t*0.094) + 19.0);",
           "  float mask = smoothstep(0.26, 0.84, n1*0.68 + n2*0.34);",
-          "  vec3 deep = vec3(0.004, 0.006, 0.020);",
-          "  vec3 core = mix(vec3(0.150,0.070,0.400), vec3(0.022,0.165,0.300),",
+          /* Indigo space with a little dust, not a violet candy cloud: the
+             bodies are the colour in this scene, so the nebula stays a
+             backdrop. Magenta and teal are kept to a trace. */
+          "  vec3 deep = vec3(0.0035, 0.0045, 0.0130);",
+          "  vec3 core = mix(vec3(0.095,0.068,0.235), vec3(0.018,0.115,0.190),",
           "                  smoothstep(0.40,1.0,n2));",
-          "  core = mix(core, vec3(0.340,0.075,0.360),",
-          "             smoothstep(0.64,1.0,n1)*0.62);",
-          "  core = mix(core, vec3(0.020,0.245,0.235),",
-          "             smoothstep(0.70,1.0,n3)*0.42);",
-          "  vec3 col = deep + core*mask*1.12;",
-          "  col += vec3(0.070,0.050,0.160)*smoothstep(0.52,1.0,n3)*0.48;",
+          "  core = mix(core, vec3(0.225,0.080,0.220),",
+          "             smoothstep(0.64,1.0,n1)*0.50);",
+          "  core = mix(core, vec3(0.020,0.165,0.160),",
+          "             smoothstep(0.70,1.0,n3)*0.38);",
+          "  vec3 col = deep + core*mask*1.05;",
+          "  col += vec3(0.055,0.052,0.120)*smoothstep(0.52,1.0,n3)*0.44;",
           /* Milky-way band: a diagonal lane of dense dust and small stars. */
           "  float lane = exp(-pow((uv.x*0.78 + uv.y*0.62)*3.1, 2.0));",
-          "  col += vec3(0.105,0.115,0.205)*lane*(0.60+0.40*sin(t*0.12));",
+          "  col += vec3(0.095,0.105,0.175)*lane*(0.60+0.40*sin(t*0.12));",
           /* Each layer streams at its own speed, so the field never sits still:
              the nearest stars travel about nine cells per ten seconds. */
           "  col += stars(uv + u_drift*0.20 + vec2(t*0.0035, t*0.0021),",
@@ -167,19 +170,19 @@
           "  col += vec3(0.80,0.88,1.0)*comet(uv + u_drift*0.12, t);",
           "  return col; }",
           /* Neural: a dark basin, not tissue. The scene already draws bright
-             synapses and halos, so the backdrop stays near-black with one cool
+             synapses and halos, so the backdrop stays near-black with one warm
              radial wash and a few faint motes. Nothing here may compete with
              an edge for attention. */
           "vec3 deepvoid(vec2 uv, float t){",
           "  float r = length(uv);",
-          "  vec3 col = vec3(0.0035, 0.0050, 0.0100);",
-          "  col += vec3(0.011, 0.018, 0.036) * smoothstep(1.02, 0.0, r);",
+          "  vec3 col = vec3(0.0040, 0.0036, 0.0038);",
+          "  col += vec3(0.024, 0.016, 0.018) * smoothstep(1.02, 0.0, r);",
           /* Dust motes: sparse pinpricks, dim enough to read as texture at the
              frame edge while leaving the graph's own glow uncontested. */
           "  vec2 g = uv*175.0; vec2 id = floor(g); vec2 f = fract(g) - 0.5;",
           "  float h = hash(id);",
           "  float mote = step(0.9962, h) * smoothstep(0.42, 0.0, length(f));",
-          "  col += vec3(0.18,0.28,0.44) * mote * (0.50 + 0.50*sin(t*0.8 + h*37.0));",
+          "  col += vec3(0.40,0.30,0.22) * mote * (0.50 + 0.50*sin(t*0.8 + h*37.0));",
           "  return col; }",
           "void main(){",
           "  vec2 uv = (vUv - 0.5) * vec2(u_res.x/max(u_res.y,1.0), 1.0);",
@@ -201,7 +204,8 @@
     this.cortexUni = {u_time: {value: 0}, u_fold: {value: 0},
                       u_opacity: {value: 0.0},
                       u_light: {value: new THREE.Vector3(-0.55, 0.6, 0.75)},
-                      u_color: {value: new THREE.Color(0x2c7f92)}};
+                      u_color: {value: new THREE.Color(0x5b5566)},
+                      u_rim: {value: new THREE.Color(0xffc98a)}};
     this.cortex = new THREE.Mesh(
       new THREE.BufferGeometry(),
       new THREE.ShaderMaterial({
@@ -229,7 +233,7 @@
           "varying vec3 vN; varying vec3 vV; varying float vFold;",
           "varying float vDev;",
           "uniform vec3 u_color; uniform vec3 u_light; uniform float u_opacity;",
-          "uniform float u_time;",
+          "uniform vec3 u_rim; uniform float u_time;",
           "void main(){",
           "  vec3 N = normalize(vN);",
           "  vec3 V = normalize(vV);",
@@ -260,8 +264,10 @@
              surface rather than a painted blob. */
           "  vec3 H = normalize(L + V);",
           "  float spec = pow(max(dot(N, H), 0.0), 26.0) * (1.0 - sulcus);",
-          "  col += vec3(0.80, 0.95, 1.0) * spec * 0.55;",
-          "  col += vec3(0.45, 0.92, 1.0) * fres * 0.75;",
+          "  col += mix(u_rim, vec3(1.0), 0.55) * spec * 0.55;",
+          /* The rim is a rim, not a wash: at 0.75 it lit every fold flank and
+             the membrane took the rim colour instead of its own. */
+          "  col += u_rim * fres * 0.42;",
           /* The tissue is see-through: a thin sheet over the cells, not a body
              of smoke. Facing the camera it is almost clear, so the neurons and
              their axons read through the front of the head; at the silhouette
@@ -280,6 +286,7 @@
                     u_time: {value: 0}, u_neural: {value: 0},
                     u_fly: {value: 1}, u_driftA: {value: 0},
                     u_vol: {value: 0},
+                    u_tint: {value: new THREE.Color(0xffedd0)},
                     u_cam: {value: new THREE.Vector3()},
                     u_light: {value: new THREE.Vector3(-0.55, 0.6, 0.75).normalize()}};
     this.haloUni = {u_px: this.nodeUni.u_px, u_scale: this.nodeUni.u_scale,
@@ -289,6 +296,7 @@
                     u_vol: this.nodeUni.u_vol,
                     u_cam: this.nodeUni.u_cam,
                     u_light: this.nodeUni.u_light,
+                    u_gain: {value: 0.31},
                     u_halo: {value: 3.1}};
     /* Node sprites are shaded as spheres: the point coordinate gives a normal,
        one directional light gives the terminator, and a fixed view vector gives
@@ -375,7 +383,7 @@
       fragmentShader: "varying vec3 vC; varying float vD; varying float vR;"
         + " varying float vAge; varying float vGrow; varying float vSprout;"
         + " varying vec3 vTail; varying float vSeed; varying float vFace;"
-        + " uniform vec3 u_light; uniform float u_neural;"
+        + " uniform vec3 u_light; uniform float u_neural; uniform vec3 u_tint;"
         + " void main(){ vec2 sp = gl_PointCoord*2.0-1.0; vec2 b = sp;"
         /* While a node streaks in the body shrinks toward the leading edge,
            leaving the trailing half of the sprite free for the comet tail. */
@@ -450,8 +458,8 @@
            brighter and the dendrites carry more of it, while the sprite stays
            the size it was. Visibility comes from contrast, not from size. */
         + "     vec3 col = vC*(0.44 + 1.38*arms*(1.0 + 0.22*vSprout))"
-        + "              + mix(vC, vec3(0.86,0.97,1.0), 0.40)*soma*(0.96 + 0.16*vSprout)"
-        + "              + vec3(0.62,0.95,1.0)*(membrane*0.72 + nucleus*1.0)"
+        + "              + mix(vC, u_tint, 0.40)*soma*(0.96 + 0.16*vSprout)"
+        + "              + u_tint*(membrane*0.72 + nucleus*1.0)"
         + "              + vC*aura;"
         + "     float a = clamp(soma*0.98 + arms*0.78 + membrane*0.45"
         + "                    + nucleus*0.9 + aura, 0.0, 1.0);"
@@ -483,7 +491,7 @@
         + "   albedo = mix(albedo, mix(vC, vec3(1.0), 0.5), cloud*0.26);"
         + "   float polar = smoothstep(0.62, 0.95, abs(p.y));"
         + "   albedo = mix(albedo, vec3(0.80,0.90,1.0), polar*0.24*seed);"
-        + "   vec3 rimC = mix(vC, vec3(0.52,0.82,1.0), 0.62);"
+        + "   vec3 rimC = mix(vC, vec3(0.78,0.87,1.0), 0.42);"
         + "   vec3 col = albedo*(0.09+0.91*diff)"
         + "            + vec3(0.80,0.90,1.0)*spec*0.34"
         + "            + rimC*rim*1.05 + vC*0.040;"
@@ -513,7 +521,7 @@
                                 "clamp(size, u_minpx*1.2"),
       fragmentShader: "varying vec3 vC; varying float vD; varying float vR;"
         + " varying float vAge; varying vec3 vTail; varying float vFace;"
-        + " uniform vec3 u_light; uniform float u_neural;"
+        + " uniform vec3 u_light; uniform float u_neural; uniform float u_gain;"
         + " void main(){ vec2 p = gl_PointCoord*2.0-1.0;"
         + "   float r2 = dot(p,p); if(r2 > 1.0) discard;"
         /* Comet tail: while a node streaks in, its glow shrinks to a bright
@@ -528,7 +536,7 @@
         + "   vec3 n = vec3(hp.x,-hp.y,sqrt(max(0.0,1.0-min(hd*hd,1.0))));"
         + "   float lit = 0.22+0.78*max(dot(n,normalize(u_light)),0.0);"
         + "   float sharp = mix(2.2, 1.5, u_neural);"
-        + "   float gain = mix(0.32, 0.30, u_neural);"
+        + "   float gain = u_gain;"
         + "   float shade = mix(lit, 1.0, u_neural*0.75);"
         + "   float body = pow(smoothstep(1.0,0.0,min(hd,1.0)),sharp)"
         + "              *gain*vD*shade;"
@@ -623,6 +631,10 @@
     var ld = cfg.lightDir || [-0.55, 0.6, 0.75];
     this.nodeUni.u_light.value.set(ld[0], ld[1], ld[2]).normalize();
     this.haloUni.u_halo.value = cfg.haloScale;
+    /* How much a halo lifts the pixels behind it. A dense head lights its own
+       tissue: 176 cells at 0.30 washed the whole membrane into their colour,
+       so the neural scene turns the auras down and keeps the membrane dark. */
+    this.haloUni.u_gain.value = cfg.haloGain == null ? 0.31 : cfg.haloGain;
     this.edgeUni.u_opacity.value = cfg.edgeOpacity;
     this.nodeUni.u_scale.value = cfg.nodeScale;
     /* The sky and the node sprites each carry two drawings; a scene picks one
@@ -630,6 +642,9 @@
     if (this.skyUni) this.skyUni.u_mode.value = cfg.sky === "deepvoid" ? 1 : 0;
     this.nodeUni.u_neural.value = cfg.neuralNodes ? 1 : 0;
     this.edgeUni.u_neural.value = cfg.neuralNodes ? 1 : 0;
+    /* The pale colour of a cell's membrane and nucleus; it used to be a hard
+       cyan in the shader, which tinted every palette cool. */
+    this.nodeUni.u_tint.value.setHex(cfg.cellTint == null ? 0xffedd0 : cfg.cellTint);
     /* Volume shading is for the head: the cells are on a closed surface and
        the far side must fall away. Other scenes are open clouds, where a facing
        term would only dim half the picture. */
@@ -659,7 +674,8 @@
     if (cfg.brain) {
       this._buildCortex();
       this.cortexUni.u_opacity.value = cfg.cortexOpacity == null ? 0.32 : cfg.cortexOpacity;
-      this.cortexUni.u_color.value.setHex(cfg.cortexColor == null ? 0x2c7f92 : cfg.cortexColor);
+      this.cortexUni.u_color.value.setHex(cfg.cortexColor == null ? 0x5b5566 : cfg.cortexColor);
+      this.cortexUni.u_rim.value.setHex(cfg.cortexRim == null ? 0xffc98a : cfg.cortexRim);
       this.cortexUni.u_light.value.set(ld[0], ld[1], ld[2]).normalize();
     }
     this._brain = null;

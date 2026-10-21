@@ -2,8 +2,11 @@
 (function (SK) {
   "use strict";
 
-  var PALETTE = [0x7cc4ff, 0x8b7bff, 0x4fe3ff, 0x43e0c8, 0xff6fb5, 0xa78bfa,
-                 0xffc46b, 0x9fb8ff, 0x6ff0d8, 0xff9ad2, 0x5b9dff, 0xd8c2ff];
+  /* Fallback only: each scene carries its own palette. This is the planets
+     set so a scene-less viewer still looks like a star system rather than a
+     bag of neon sweets. */
+  var PALETTE = [0xc87358, 0x9db4d0, 0x74b4ba, 0xe8c07d, 0xe6d5b0, 0xb097c6,
+                 0xf2e6cf, 0x5b90d2, 0xb3656a, 0x8396c4, 0xd8a35f, 0xaab7a4];
   var DERIVED = {mentions_symbol: 1, similar_to: 1, sibling_of: 1,
                  supersedes: 1, shares_entity: 1, semantic_similar: 1};
 
