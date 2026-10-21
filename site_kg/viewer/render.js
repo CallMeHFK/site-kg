@@ -1743,16 +1743,9 @@
     return out.subarray(0, k);
   };
 
-  Renderer.prototype.dispose = function () {
-    if (!this.renderer) return;
-    if (this.canvas) {
-      if (this._onContextLost) {
-        this.canvas.removeEventListener("webglcontextlost", this._onContextLost, false);
-      }
-      if (this._onContextRestored) {
-        this.canvas.removeEventListener("webglcontextrestored", this._onContextRestored, false);
-      }
-    }
+  /* Geometry and materials are backend agnostic: the WebGPU teardown has no
+     WebGLRenderer to dispose, but the scene graph still has to go. */
+  Renderer.prototype._disposeScene = function () {
     this._disposeRings();
     if (this.sky) {
       this.sky.geometry.dispose();
@@ -1771,6 +1764,19 @@
     this.halo.material.dispose();
     this.lines.material.dispose();
     this.egoMat.dispose();
+  };
+
+  Renderer.prototype.dispose = function () {
+    if (!this.renderer) return;
+    if (this.canvas) {
+      if (this._onContextLost) {
+        this.canvas.removeEventListener("webglcontextlost", this._onContextLost, false);
+      }
+      if (this._onContextRestored) {
+        this.canvas.removeEventListener("webglcontextrestored", this._onContextRestored, false);
+      }
+    }
+    this._disposeScene();
     this.renderer.dispose();
   };
 

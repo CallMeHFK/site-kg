@@ -141,7 +141,9 @@ struct VOut {
   return out;
 }
 @fragment fn fs_sky(in: VOut) -> @location(0) vec4f {
-  let aspect = u.b.w / max(u.b.z, 1.0);
+  /* b.z is width and b.w is height, so the wide-screen stretch is w/h, the
+     same scalar the GLSL sky uses. */
+  let aspect = u.b.z / max(u.b.w, 1.0);
   let uv = (in.uv - vec2f(0.5)) * vec2f(aspect, 1.0);
   let t = u.a.x;
   let col = mix(cosmos(uv, t), deepvoid(uv, t), u.a.y);
@@ -621,9 +623,17 @@ struct VOut {
     this.setScene("planets");
     this.resize();
     var self = this;
-    this._initGpu().catch(function (err) {
-      self._fallbackGL(err);
-    });
+    /* The adapter probe is async, so mount cannot throw when WebGPU is
+       missing. ready settles true once something is drawing on the canvas
+       (WebGPU, or WebGL after an adapter failure) and false when neither
+       backend could take it -- the caller then switches to the Canvas2D
+       tier. */
+    this.ready = this._initGpu().then(
+      function () { return true; },
+      function (err) {
+        self._fallbackGL(err);
+        return !!self._gl;
+      });
     return this;
   };
 
@@ -638,10 +648,21 @@ struct VOut {
 
   GpuRenderer.prototype._initGpu = async function () {
     if (!navigator.gpu) throw new Error("navigator.gpu is unavailable");
-    var adapter = await navigator.gpu.requestAdapter({powerPreference: "high-performance"});
+    var timer = 0;
+    var adapter = await Promise.race([
+      navigator.gpu.requestAdapter({powerPreference: "high-performance"})
+        .finally(function () { clearTimeout(timer); }),
+      new Promise(function (resolve, reject) {
+        timer = setTimeout(function () {
+          reject(new Error("WebGPU adapter probe timed out"));
+        }, 8000);
+      })
+    ]);
     if (!adapter) throw new Error("no WebGPU adapter");
     var device = await adapter.requestDevice();
-    if (this._disposed) {
+    /* The probe can outlive the renderer, or lose the race to the WebGL
+       fallback; either way the device has no canvas to draw on. */
+    if (this._disposed || this._gl) {
       try { device.destroy(); } catch (ignored) {}
       return;
     }
@@ -658,6 +679,10 @@ struct VOut {
       if (self._disposed) return;
       self.gpuFailed = info && info.message || "device lost";
       self.contextLost = true;
+      /* A lost device cannot be revived, and the canvas can never hand out a
+         webgl context now, so the page has to say so instead of freezing on
+         the last frame. */
+      if (self.onLost) self.onLost(self.gpuFailed);
     });
     this.gpuReady = true;
     this.colorDirty = true;
@@ -668,6 +693,13 @@ struct VOut {
   GpuRenderer.prototype._fallbackGL = function (err) {
     if (this._gl || this.gpuReady || this._disposed) return;
     this.gpuFailed = String(err && err.message || err);
+    if (this._context) {
+      /* getContext("webgpu") already ran, so this element can never hand out
+         a webgl or 2d context; the caller has to give the fallback tier a
+         fresh canvas. */
+      this.dead = true;
+      return;
+    }
     try {
       this._mountGL();
       this._gl = true;
@@ -675,6 +707,7 @@ struct VOut {
       this.resize();
     } catch (mountErr) {
       this.gpuFailed += " / webgl: " + (mountErr && mountErr.message || mountErr);
+      this.dead = true;
     }
   };
 
@@ -741,6 +774,25 @@ struct VOut {
     }
   };
 
+  /* Drop buffers whose attribute object has left the scene graph. Three
+     replaces whole BufferAttributes on capacity growth, so this is the only
+     way to notice that a cached buffer is unreachable. Runs on a cache miss,
+     which is rare (a growth step), never per frame. */
+  GpuRenderer.prototype._sweep = function (map) {
+    var live = new Set();
+    this.scene.traverse(function (obj) {
+      var geo = obj.geometry;
+      if (!geo) return;
+      for (var name in geo.attributes) live.add(geo.attributes[name]);
+      if (geo.index) live.add(geo.index);
+    });
+    map.forEach(function (cache, attr) {
+      if (live.has(attr)) return;
+      cache.buffer.destroy();
+      map.delete(attr);
+    });
+  };
+
   /* Attribute arrays are owned by the scene layer; a buffer is recreated only
      when the array is replaced (capacity change) and rewritten when Three
      bumps its version. */
@@ -751,6 +803,7 @@ struct VOut {
     var bytes = attr.array.byteLength;
     if (!cache || cache.bytes !== bytes) {
       if (cache) cache.buffer.destroy();
+      else this._sweep(map);
       cache = {
         buffer: this.device.createBuffer({
           size: Math.max(4, bytes),
@@ -1082,6 +1135,7 @@ struct VOut {
   GpuRenderer.prototype.dispose = function () {
     this._disposed = true;
     if (this._gl) return SK.Renderer.prototype.dispose.call(this);
+    this._disposeScene();
     this._vbs.forEach(function (c) { c.buffer.destroy(); });
     this._vbs.clear();
     this._ibs.forEach(function (c) { c.buffer.destroy(); });

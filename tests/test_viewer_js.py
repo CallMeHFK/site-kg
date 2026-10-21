@@ -1027,11 +1027,14 @@ assert.equal(Object.getPrototypeOf(SK.GpuRenderer.prototype),
              SK.Renderer.prototype);
 assert.ok(SK.GpuRenderer.prototype instanceof SK.Renderer);
 
-const missing = Object.getOwnPropertyNames(SK.Renderer.prototype)
+const draw = ["mount", "setScene", "resize", "render", "dispose"];
+const shadowed = Object.getOwnPropertyNames(SK.Renderer.prototype)
   .filter(function (name) {
-    return name !== "constructor" && !(name in SK.GpuRenderer.prototype);
+    return name !== "constructor" && draw.indexOf(name) < 0 &&
+      SK.GpuRenderer.prototype[name] !== SK.Renderer.prototype[name];
   });
-assert.deepEqual(missing, [], "scene API reachable through the subclass");
+assert.deepEqual(shadowed, [],
+  "scene methods must be the base implementation, not a copy");
 
 /* draw calls are overridden; the shared scene machinery is not */
 ["mount", "setScene", "resize", "render", "dispose"].forEach(function (name) {
@@ -1084,7 +1087,92 @@ def test_ui_boots_webgpu_first_and_keeps_the_fallbacks_ordered():
     assert gpu < gl, "WebGPU is tried before WebGL"
     assert "SK.Fallback2D && SK.hasWebGL2 && !SK.hasWebGL2()" in src
     assert src.count("new SK.Fallback2D(canvas)") == 2, "no-WebGL2 and mount failure"
+    # the adapter probe is async, so the Canvas2D tier hangs off ready, on a
+    # canvas element that never held a webgpu context
+    assert "gpu.ready.then" in src
+    assert "flatFallback(gpu.gpuFailed)" in src
+    assert "canvas.cloneNode(false)" in src
+    assert "startView(renderer)" in src
 
     from site_kg.viewer import PRE_SCENE_MODULES
     mods = list(PRE_SCENE_MODULES)
     assert mods.index("gpu.js") == mods.index("render.js") + 1
+
+
+def test_sky_uniform_carries_width_and_height_the_way_the_shader_reads_them():
+    """The sky shader stretches by width/height. The packer writes
+    b.z = width, b.w = height, and the WGSL must divide in that order: the
+    reversed form renders the planets backdrop 3.16x anamorphic on 16:9."""
+    _run(_prelude(CORE, RENDER, GPU) + r"""
+const r = Object.create(SK.GpuRenderer.prototype);
+r.camera = {position: {x: 0, y: 0, z: 2, length: function () { return 2; }}};
+r.time = 1;
+r.skyUni = {u_mode: {value: 0}};
+r._resW = 1920;
+r._resH = 1080;
+const out = new Float32Array(8);
+const ret = r._packSky(out);
+assert.equal(ret, undefined, "packer writes into the caller's block");
+assert.equal(out[6], 1920, "b.z is width");
+assert.equal(out[7], 1080, "b.w is height");
+""")
+    src = GPU.read_text(encoding="utf-8")
+    assert "u.b.z / max(u.b.w, 1.0)" in src, "aspect is width over height"
+    assert "u.b.w / max(u.b.z, 1.0)" not in src
+
+
+def test_fallback_reports_a_dead_canvas_instead_of_pretending_to_draw():
+    """_fallbackGL decides the tier after an async probe. WebGL2 missing must
+    be visible to ui.js (dead), and a canvas that already handed out a webgpu
+    context must be marked dead rather than sent to _mountGL, where
+    getContext('webgl2') can only return null."""
+    _run(_prelude(CORE, RENDER, GPU) + r"""
+const gl = Object.create(SK.GpuRenderer.prototype);
+gl._mountGL = function () { this.mounted = true; };
+gl.resize = function () {};
+gl._fallbackGL(new Error("no WebGPU adapter"));
+assert.equal(gl._gl, true);
+assert.equal(gl.backend, "webgl");
+assert.equal(gl.dead, undefined);
+
+const dead = Object.create(SK.GpuRenderer.prototype);
+dead._mountGL = function () { throw new Error("WebGL2 unavailable"); };
+dead.resize = function () {};
+dead._fallbackGL(new Error("no WebGPU adapter"));
+assert.ok(!dead._gl);
+assert.equal(dead.dead, true, "ui.js needs a signal to reach Canvas2D");
+assert.match(dead.gpuFailed, /no WebGPU adapter \/ webgl: WebGL2 unavailable/);
+
+const locked = Object.create(SK.GpuRenderer.prototype);
+locked._context = {};
+locked._mountGL = function () { throw new Error("must not be attempted"); };
+locked._fallbackGL(new Error("pipeline build failed"));
+assert.equal(locked.dead, true);
+assert.equal(locked.gpuFailed, "pipeline build failed");
+""")
+
+
+def test_buffer_sweep_drops_attributes_that_left_the_scene():
+    """Capacity growth installs new BufferAttributes; the old cache entries
+    are unreachable and, without a sweep, their GPU buffers are never
+    destroyed."""
+    _run(_prelude(CORE, RENDER, GPU) + r"""
+const r = Object.create(SK.GpuRenderer.prototype);
+const liveAttr = {array: new Float32Array(4)};
+const staleAttr = {array: new Float32Array(4)};
+const indexAttr = {array: new Uint16Array(3)};
+r.scene = {traverse: function (fn) {
+  fn({geometry: {attributes: {position: liveAttr}, index: indexAttr}});
+}};
+const destroyed = [];
+const map = new Map([
+  [liveAttr, {buffer: {destroy: function () { destroyed.push("live"); }}}],
+  [staleAttr, {buffer: {destroy: function () { destroyed.push("stale"); }}}],
+  [indexAttr, {buffer: {destroy: function () { destroyed.push("index"); }}}]
+]);
+r._sweep(map);
+assert.deepEqual(destroyed, ["stale"]);
+assert.equal(map.has(liveAttr), true);
+assert.equal(map.has(indexAttr), true);
+assert.equal(map.has(staleAttr), false);
+""")

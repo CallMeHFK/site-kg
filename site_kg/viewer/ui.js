@@ -1083,20 +1083,99 @@
     try {
       var live = new SK.LiveGraph(cfg.mode === "archive" ? 4096 : 1024);
       var canvas = byId("sk-canvas");
-      var renderer;
-      if (SK.GpuRenderer && SK.GpuRenderer.supported()) {
-        /* WebGPU first: the canvas has no context yet, so a missing adapter
-           falls back to WebGL on the same canvas. */
-        renderer = new SK.GpuRenderer();
-        try {
-          renderer.mount(canvas, live);
-          renderer.setScene(cfg.scene || "planets");
-        } catch (gpuErr) {
-          try { if (renderer.dispose) renderer.dispose(); } catch (ignored) {}
-          renderer = null;
+      var started = false;
+
+      function fail(message) {
+        var box = byId("fatal");
+        if (box) {
+          box.textContent = message;
+          box.classList.add("on");
         }
       }
-      if (!renderer && SK.Fallback2D && SK.hasWebGL2 && !SK.hasWebGL2()) {
+
+      /* One wiring path for every backend. The WebGPU decision lands
+         asynchronously (an adapter probe cannot fail synchronously), so the
+         camera, labels and director are built once the backend has settled. */
+      function startView(renderer) {
+        if (started) return;
+        started = true;
+        var camera = new SK.Camera(renderer);
+        camera.attach(live);
+        var labels = new SK.Labels(byId("sk-labels"), renderer);
+        var director = new SK.Director(live, renderer, camera, labels);
+        var ui = new SK.UI();
+        ui.token = token;
+        if (typeof window !== "undefined") window.__sk = {renderer: renderer, ui: ui};
+        ui.mount(byId("hud"), {cfg: cfg, live: live, renderer: renderer,
+                               camera: camera, director: director});
+        director.attach(ui);
+        if (cfg.title) document.title = cfg.title;
+
+        if (cfg.mode === "archive") {
+          loadArchive(cfg).then(function (payload) {
+            director.start("archive", payload);
+            ui.hideLauncher();
+          }).catch(function (err) {
+            ui.fatal(err);
+          });
+        } else {
+          director.start("live", null);
+          if (cfg.liveUrl) ui.connectLive(cfg.liveUrl, cfg.scene);
+          else ui.showLauncher();
+        }
+
+        window.addEventListener("resize", function () {
+          renderer.resize();
+          labels.resize();
+        });
+        var last = performance.now();
+        function frame(now) {
+          requestAnimationFrame(frame);
+          var dt = Math.min(0.1, Math.max(0, (now - last) / 1000));
+          last = now;
+          director.tick(dt);
+        }
+        requestAnimationFrame(frame);
+      }
+
+      /* A canvas that has already handed out a webgpu context can never hand
+         out a 2d one, so the Canvas2D tier gets a replacement element. */
+      function flatFallback(reason) {
+        if (!SK.Fallback2D) {
+          fail("viewer failed: " + reason);
+          return;
+        }
+        var fresh = canvas.cloneNode(false);
+        if (canvas.parentNode) canvas.parentNode.replaceChild(fresh, canvas);
+        var flat = new SK.Fallback2D(fresh);
+        flat.setScene(cfg.scene || "planets");
+        startView(flat);
+      }
+
+      if (SK.GpuRenderer && SK.GpuRenderer.supported()) {
+        var gpu = new SK.GpuRenderer();
+        try {
+          gpu.mount(canvas, live);
+          gpu.setScene(cfg.scene || "planets");
+        } catch (gpuErr) {
+          try { if (gpu.dispose) gpu.dispose(); } catch (ignored) {}
+          gpu = null;
+        }
+        if (gpu) {
+          gpu.onLost = function (message) {
+            fail("viewer failed: " + message + " — reload to retry");
+          };
+          gpu.ready.then(function (ok) {
+            if (ok) startView(gpu);
+            else flatFallback(gpu.gpuFailed);
+          }).catch(function (err) {
+            fail("viewer failed: " + (err && err.message ? err.message : err));
+          });
+          return;
+        }
+      }
+      var renderer;
+      if (SK.Fallback2D && SK.hasWebGL2 && !SK.hasWebGL2()) {
         renderer = new SK.Fallback2D(canvas);
         renderer.setScene(cfg.scene || "planets");
       }
@@ -1112,49 +1191,9 @@
           renderer.setScene(cfg.scene || "planets");
         }
       }
-      var camera = new SK.Camera(renderer);
-      camera.attach(live);
-      var labels = new SK.Labels(byId("sk-labels"), renderer);
-      var director = new SK.Director(live, renderer, camera, labels);
-      var ui = new SK.UI();
-      ui.token = token;
-      if (typeof window !== "undefined") window.__sk = {renderer: renderer, ui: ui};
-      ui.mount(byId("hud"), {cfg: cfg, live: live, renderer: renderer,
-                             camera: camera, director: director});
-      director.attach(ui);
-      if (cfg.title) document.title = cfg.title;
-
-      if (cfg.mode === "archive") {
-        loadArchive(cfg).then(function (payload) {
-          director.start("archive", payload);
-          ui.hideLauncher();
-        }).catch(function (err) {
-          ui.fatal(err);
-        });
-      } else {
-        director.start("live", null);
-        if (cfg.liveUrl) ui.connectLive(cfg.liveUrl, cfg.scene);
-        else ui.showLauncher();
-      }
-
-      window.addEventListener("resize", function () {
-        renderer.resize();
-        labels.resize();
-      });
-      var last = performance.now();
-      function frame(now) {
-        requestAnimationFrame(frame);
-        var dt = Math.min(0.1, Math.max(0, (now - last) / 1000));
-        last = now;
-        director.tick(dt);
-      }
-      requestAnimationFrame(frame);
+      startView(renderer);
     } catch (err) {
-      var fatal = byId("fatal");
-      if (fatal) {
-        fatal.textContent = "viewer failed: " + (err && err.message ? err.message : err);
-        fatal.classList.add("on");
-      }
+      fail("viewer failed: " + (err && err.message ? err.message : err));
       throw err;
     }
   };
