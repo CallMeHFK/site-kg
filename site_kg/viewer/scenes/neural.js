@@ -28,7 +28,7 @@
     /* The head fills the frame better than a live layout does: a 21-unit floor
        (the open-cloud default) frames a 17-unit brain far too small. */
     fitMinRadius: 15,
-    cortexOpacity: 0.46,
+    cortexOpacity: 0.32,
     cortexColor: 0x2c7f92,
     /* Neurons mature in waves instead of all at once, so the head keeps
        sprouting while the scene runs, and they wait for the tissue under

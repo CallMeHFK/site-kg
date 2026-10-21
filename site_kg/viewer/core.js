@@ -813,30 +813,70 @@
 
      The head is a radial function: for a direction, the distance to the skin.
      A sheared ellipsoid gives the cerebrum, tilted so the frontal pole sits
-     lower than the back of the head the way a real one does. Three smooth
-     bumps grow out of it: the cerebellum under the back of the skull, the
-     brainstem below that, and the temporal lobe at the lower front of each
-     side. Bumps are added to the radius rather than unioned as separate
-     solids, because a union leaves a crease where two solids meet and a
-     crease reads as a crack in the tissue from every angle.
+     lower than the back of the head the way a real one does, and long front
+     to back the way a brain is: an egg is the one shape it must not be.
+     Three things make that ellipsoid a brain rather than a ball:
+
+     - the basal plane. A cerebrum rests on the floor of the skull, so under
+       a plane in the head's own frame the surface is rolled flat instead of
+       hanging round. The join is a smooth minimum, so the corner is a fillet
+       and the normals stay continuous across it;
+     - the interhemispheric fissure. A narrow, deep cleft on the midline,
+       carved out of the volume and not out of the folds, so the two
+       hemispheres are separate from the first frame of the build. This is
+       what the eye reads as "two hemispheres"; a groove painted on a ball
+       does not do it;
+     - the lobes. The temporal lobe swells each side under the Sylvian
+       fissure, the cerebellum hangs under the occiput as its own mass, and
+       the brainstem drops from the midline, a little posterior. Bumps are
+       added to the radius rather than unioned as separate solids, because a
+       union leaves a crease where two solids meet and a crease reads as a
+       crack in the tissue from every angle.
 
      The folds are carved into the same radius. Two families of noise make
      the gyri: the zero contour of a smooth field is the sulcus, and the
-     ground between two of them is the gyrus. A valley down the midline is
-     the longitudinal fissure, and two grooves running the way the central
-     and Sylvian fissures do divide the lobes. Every carve is radial, so the
-     surface stays star-shaped and can never fold inside out.
+     ground between two of them is the gyrus. Two grooves running the way the
+     central and Sylvian fissures do divide the lobes. The gyri belong to the
+     cerebrum: the cerebellum keeps fine horizontal folia instead, and the
+     stalk is smooth. Every carve is radial, so the surface stays star-shaped
+     and can never fold inside out.
 
      Each patch of the head also has an age. The brainstem and the back of
      the head mature first, the frontal pole last, and the tissue forms in
      that order, so the scene grows the way a brain does.
 
-     Canonical units: the cerebrum is about 1.5 long, 1.2 wide and 1.0 high,
-     roughly the proportions of a human head. */
-  var BRAIN_AX = 0.60, BRAIN_AY = 0.52, BRAIN_AZ = 0.78;
+     Canonical units: the cerebrum is about 1.8 long, 1.2 wide and 1.0 high,
+     roughly the proportions of a human brain. */
+  var BRAIN_AX = 0.58, BRAIN_AY = 0.50, BRAIN_AZ = 0.92;
   /* The head tips forward: the frontal pole hangs lower than the back. */
   var BRAIN_TILT = 0.17;
+  /* The floor of the skull, in the head's own frame. Under it the cerebrum is
+     flat; the cerebellum and the track of the temporal lobes hang below it. */
+  var BRAIN_BASE_Y = -0.28;
+  /* How wide the fillet is that joins the flat base to the wall. Smaller is a
+     crisper edge, but too small and the normals crease at the corner. */
+  var BRAIN_BASE_K = 0.085;
+  /* The interhemispheric fissure: half-width and depth, canonical. Deep and
+     narrow, so the two hemispheres read from the front, the top and the side.
+     It fades out where the basal plane takes over. */
+  var FISSURE_W = 0.062, FISSURE_DEPTH = 0.125;
+  /* Each hemisphere is a convex mass: the surface climbs away from the cleft
+     instead of dropping straight off both sides of it. */
+  var HEMI_LIFT = 0.022, HEMI_W = 0.10;
+  /* The temporal lobe: lateral-inferior, in the middle third of the
+     anterior-posterior axis, and reaching a little past the parietal wall. */
+  var TEMPORAL_AMP = 0.075;
+  var TEMPORAL_W = [0.34, 0.36, 0.46];
+  /* The cerebellum: its own mass under the occiput, set back so it hangs
+     behind the temporal lobe as well as below the cerebrum. The widths are
+     per axis, so it is wide and fairly flat, the way the real one is. */
+  var CEREB_AMP = 0.32;
+  var CEREB_W = [0.46, 0.28, 0.30];
+  /* The brainstem: a short tapered stalk under the midline, angled a little
+     posterior, and smooth. */
+  var STEM_AMP = 0.23, STEM_W = 0.25;
   var _brainProf = [0, 0, 0, 0, 0];
+  var _brainBase = [0, 0, 0];
   var _brainFrame = [0, 0, 0];
   var _brainGyri = [0, 0];
   /* How the gyri are cut. The cortex is a folded sheet, and the folds are the
@@ -847,10 +887,10 @@
      of the cleft and the scale of the crown, in the same units as the
      field, so the fold is always centred: sulci below zero, crowns above. */
   var GYRI_FREQ1 = 3.4, GYRI_FREQ2 = 7.6;
-  var GYRI_CLEFT1 = 0.075, GYRI_CLEFT2 = 0.045;
-  var GYRI_CROWN1 = 0.170, GYRI_CROWN2 = 0.090;
-  var GYRI_UP1 = 0.070, GYRI_UP2 = 0.014;
-  var GYRI_DOWN1 = 0.084, GYRI_DOWN2 = 0.026;
+  var GYRI_CLEFT1 = 0.115, GYRI_CLEFT2 = 0.072;
+  var GYRI_CROWN1 = 0.130, GYRI_CROWN2 = 0.078;
+  var GYRI_UP1 = 0.056, GYRI_UP2 = 0.020;
+  var GYRI_DOWN1 = 0.074, GYRI_DOWN2 = 0.030;
 
   function brainSmooth(x, a, b) {
     var t = (x - a) / (b - a);
@@ -858,24 +898,65 @@
     return t * t * (3 - 2 * t);
   }
 
-  /* A smooth bump of angular radius ``width`` (radians) around an axis. */
-  function brainBump(dx, dy, dz, ax, ay, az, width, amp) {
-    var al = Math.sqrt(ax * ax + ay * ay + az * az);
-    if (!(al > 1e-9)) return 0;
-    var c = (dx * ax + dy * ay + dz * az) / al;
-    var cosw = Math.cos(width);
-    if (c <= cosw) return 0;
-    var t = (c - cosw) / (1 - cosw);
-    return amp * t * t * (3 - 2 * t);
+  /* Smooth minimum: exactly min away from the join, C1 everywhere, so the
+     fillet between the basal plane and the wall has no crease. */
+  function brainSmin(a, b, k) {
+    var d = a - b;
+    return 0.5 * (a + b - Math.sqrt(d * d + k * k));
   }
 
-  /* The radius of the bare cerebrum along a unit direction, in the tilted
-     frame of the head. */
-  function brainBase(dx, dy, dz) {
-    var bx = dx, by = dy + BRAIN_TILT * dz, bz = dz;
-    return 1 / Math.sqrt((bx * bx) / (BRAIN_AX * BRAIN_AX) +
-                          (by * by) / (BRAIN_AY * BRAIN_AY) +
-                          (bz * bz) / (BRAIN_AZ * BRAIN_AZ));
+  /* A soft mass on the unit direction: a Gaussian around an axis in the
+     head's frame, with its own width along each axis, so a lobe can be wide
+     and flat while another is tall. Smooth everywhere, so it can be added to
+     the radius without a seam. */
+  function brainMass(ux, uy, uz, ax, ay, az, wx, wy, wz) {
+    var ex = (ux - ax) / wx, ey = (uy - ay) / wy, ez = (uz - az) / wz;
+    return Math.exp(-(ex * ex + ey * ey + ez * ez));
+  }
+
+  /* The radius of the cerebrum along a unit direction, before the lobes: the
+     tilted ellipsoid, rolled flat on the skull base. */
+  function brainBase(dx, dy, dz, out) {
+    /* The direction in the head's own frame. The tilt is a shear, so a world
+       ray is the canonical ray scaled by the radius; the ellipsoid root is
+       then already the world radius. */
+    var ux = dx, uy = dy + BRAIN_TILT * dz, uz = dz;
+    var r = 1 / Math.sqrt((ux * ux) / (BRAIN_AX * BRAIN_AX) +
+                          (uy * uy) / (BRAIN_AY * BRAIN_AY) +
+                          (uz * uz) / (BRAIN_AZ * BRAIN_AZ));
+    /* The basal plane is y = BRAIN_BASE_Y; along this ray it is that far
+       away when uy < 0. The smooth minimum with the ellipsoid radius rolls
+       the underside flat and leaves a fillet at the edge of the base. */
+    if (uy < -1e-3) r = brainSmin(r, BRAIN_BASE_Y / uy, BRAIN_BASE_K);
+    /* The temporal lobe of each side, under the Sylvian fissure. */
+    var temporal = brainMass(ux, uy, uz, 0.80, -0.44, 0.22,
+                             TEMPORAL_W[0], TEMPORAL_W[1], TEMPORAL_W[2]) +
+                   brainMass(ux, uy, uz, -0.80, -0.44, 0.22,
+                             TEMPORAL_W[0], TEMPORAL_W[1], TEMPORAL_W[2]);
+    r += TEMPORAL_AMP * temporal;
+    /* The interhemispheric fissure. It is cut here, not into the folds: the
+       two hemispheres must be separate at every stage of the build. The mask
+       fades only near the basal plane, where the underside takes over and the
+       fissure has nowhere to go. */
+    var xc = dx * r, yc = uy * r;
+    var high = brainSmooth(yc, BRAIN_BASE_Y - 0.01, BRAIN_BASE_Y + 0.10);
+    var cleft = Math.exp(-(xc * xc) / (FISSURE_W * FISSURE_W));
+    r -= FISSURE_DEPTH * cleft * high;
+    /* And each hemisphere climbs away from the cleft, so the midline is a
+       valley between two convex masses instead of a scratch on one. */
+    r += HEMI_LIFT * (1 - Math.exp(-(xc * xc) / (HEMI_W * HEMI_W))) * high;
+    /* The cerebellum: a wide, low mass under the occiput. It is what makes
+       the back of the head look like a head and not the back of an egg. */
+    var cereb = brainMass(ux, uy, uz, 0.0, -0.52, -0.85,
+                          CEREB_W[0], CEREB_W[1], CEREB_W[2]);
+    /* The brainstem: a stalk from the midline, angled a little posterior. */
+    var stem = brainMass(ux, uy, uz, 0.0, -0.96, -0.30,
+                         STEM_W, STEM_W, STEM_W);
+    r += CEREB_AMP * cereb + STEM_AMP * stem;
+    out[0] = r;
+    out[1] = cereb;
+    out[2] = stem;
+    return out;
   }
 
   /* The position of the surface point in the head's own frame, used to carve
@@ -911,18 +992,9 @@
   /* out = [radius, fold, age] for a unit direction: the distance to the skin,
      how far the folds push the surface in or out, and the age of the patch. */
   function brainProfile(dx, dy, dz, out) {
-    var r = brainBase(dx, dy, dz);
-    /* Cerebellum: the ridged mass under the back of the brain. It only shows
-       where it reaches past the cerebrum, which is what makes the back of the
-       head look like a head. */
-    var cerebellum = brainBump(dx, dy, dz, 0.0, -0.62, -0.78, 0.40, 0.17);
-    /* Brainstem: the stalk under the middle. */
-    var stem = brainBump(dx, dy, dz, 0.0, -0.97, -0.24, 0.20, 0.24);
-    /* Temporal lobes: the lower front of each side, under the Sylvian
-       fissure. */
-    var temporal = brainBump(dx, dy, dz, 0.66, -0.58, 0.48, 0.46, 0.11) +
-                   brainBump(dx, dy, dz, -0.66, -0.58, 0.48, 0.46, 0.11);
-    r += cerebellum + stem + temporal;
+    var base = brainBase(dx, dy, dz, _brainBase);
+    var r = base[0];
+    var cereb = base[1], stem = base[2];
     var f = _brainFrame;
     brainFrame(dx, dy, dz, r, f);
     var fx = f[0], fy = f[1], fz = f[2];
@@ -939,27 +1011,39 @@
     var cleft2 = Math.exp(-(w2 * w2) / (GYRI_CLEFT2 * GYRI_CLEFT2));
     var crown1 = 1 - Math.exp(-(w1 * w1) / (GYRI_CROWN1 * GYRI_CROWN1));
     var crown2 = 1 - Math.exp(-(w2 * w2) / (GYRI_CROWN2 * GYRI_CROWN2));
-    var cortex = 1 - Math.min(1, (cerebellum + stem) / 0.22);
+    /* The gyri belong to the cerebrum. The cerebellum has folia and the stalk
+       is smooth, so both are masked out of the folded sheet. Without the
+       mask the foliation used to be painted over the whole lower half of the
+       head, which is what made the side view read as a cinnamon bun. */
+    var cortex = (1 - brainSmooth(cereb, 0.05, 0.45)) * (1 - 0.88 * stem);
+    /* On the flat base the radius is nearly tangent to the surface, so a
+       radial fold would slide the skin sideways and fold it over itself in
+       thin fins. The orbital surface is shallow anyway, so the gyri fade out
+       before they reach the basal plane. */
+    cortex *= brainSmooth(fy, BRAIN_BASE_Y - 0.02, BRAIN_BASE_Y + 0.14);
     var fold = (GYRI_UP1 * crown1 + GYRI_UP2 * crown2 -
                 GYRI_DOWN1 * cleft1 - GYRI_DOWN2 * cleft2) * cortex;
-    /* The cerebellum has fine horizontal folia instead of gyri. */
-    fold += cerebellum * 0.010 * Math.sin(fy * 150.0 + fz * 16.0);
-    /* The longitudinal fissure: a valley down the midline of the top. It is
-       soft, not a cut, so it reads as a groove and not as a crack. */
-    var top = brainSmooth(fy, 0.05, 0.42);
-    fold -= Math.exp(-(fx * fx) / 0.010) * top * 0.062;
+    /* Fine horizontal folia, only on the cerebellum, and only where it is
+       actually the surface: at the edge of the mass they fade out with it.
+       The period has to stay coarser than the grid, or the folia alias into
+       flat shelves instead of reading as ridges. */
+    fold += brainSmooth(cereb, 0.10, 0.55) * 0.009 *
+            Math.sin(fy * 112.0 + fz * 16.0);
     /* The Sylvian fissure: the groove that separates the temporal lobe from
-       the frontal and parietal lobes. */
-    var sylv = brainSeg(fz, fy, 0.44, -0.06, -0.24, -0.22);
-    var sylvMask = brainSmooth(Math.abs(fx), 0.16, 0.30) *
-                   (1 - brainSmooth(fy, 0.10, 0.34));
-    fold -= Math.exp(-(sylv * sylv) / 0.0032) * sylvMask * 0.062;
+       the frontal and parietal lobes. It starts low at the temporal pole and
+       climbs a little as it runs back, which is the one diagonal the eye uses
+       to find the temporal lobe. */
+    var sylv = brainSeg(fz, fy, 0.46, -0.19, -0.28, -0.02);
+    var sylvMask = brainSmooth(Math.abs(fx), 0.14, 0.28) *
+                   (1 - brainSmooth(fy, 0.16, 0.38));
+    fold -= Math.exp(-(sylv * sylv) / 0.0030) * sylvMask * 0.062;
     /* The central sulcus: the groove that divides the frontal lobe from the
-       parietal one. */
-    var centr = brainSeg(fz, fy, 0.06, 0.50, 0.34, -0.04);
-    var centrMask = brainSmooth(Math.abs(fx), 0.10, 0.24) +
-                    brainSmooth(fy, 0.26, 0.40);
-    fold -= Math.exp(-(centr * centr) / 0.0026) * Math.min(1, centrMask) * 0.054;
+       parietal one. Shallow, because the gyri field already supplies most of
+       the folds; this is a landmark, not a canyon. */
+    var centr = brainSeg(fz, fy, 0.02, 0.46, 0.28, -0.06);
+    var centrMask = brainSmooth(Math.abs(fx), 0.12, 0.26) *
+                    brainSmooth(fy, 0.16, 0.36);
+    fold -= Math.exp(-(centr * centr) / 0.0030) * centrMask * 0.034;
     out[0] = r;
     out[1] = fold;
     out[2] = brainAge(fx, fy, fz);

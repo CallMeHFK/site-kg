@@ -238,7 +238,10 @@
           /* Wrapped light: tissue scatters, so the shadow side never goes
              black and the folds keep a hint of light in them. */
           "  float wrap = max((dot(N, L) + 0.45) / 1.45, 0.0);",
-          "  float fres = pow(1.0 - max(dot(N, V), 0.0), 2.6);",
+          /* A tight rim: only the true silhouette glows. A broad fresnel
+             also lit every fold flank, and the head read as a wireframe
+             instead of as a sheet of tissue. */
+          "  float fres = pow(1.0 - max(dot(N, V), 0.0), 4.0);",
           /* The fold field is signed: negative is a cleft, positive is a
              crown. The sulci are the low end of that field, so they are
              read off it directly. A single threshold used to hide half the
@@ -247,18 +250,24 @@
           "  float crown  = smoothstep(-0.012, 0.050, vFold);",
           "  float pulse = 0.92 + 0.08*sin(u_time*0.8 + vDev*9.0);",
           /* A cavity: the cleft is in shadow, the crown catches the light. */
-          "  vec3 col = u_color * (0.14 + 0.70*diff + 0.26*wrap) * pulse;",
-          "  col = mix(col, col*0.30, sulcus);",
-          "  col += u_color * crown * 0.28;",
+          /* A thin sheet still has colour of its own: without a lit body the
+             only thing that showed was the rim of each fold, and the head read
+             as a wireframe rather than as tissue. */
+          "  vec3 col = u_color * (0.40 + 0.72*diff + 0.34*wrap) * pulse;",
+          "  col = mix(col, col*0.46, sulcus);",
+          "  col += u_color * crown * 0.34;",
           /* The wet sheen on the gyri: a highlight is what reads as a folded
              surface rather than a painted blob. */
           "  vec3 H = normalize(L + V);",
           "  float spec = pow(max(dot(N, H), 0.0), 26.0) * (1.0 - sulcus);",
           "  col += vec3(0.80, 0.95, 1.0) * spec * 0.55;",
           "  col += vec3(0.45, 0.92, 1.0) * fres * 0.75;",
-          /* The tissue is see-through, but it is a surface: it has a body of
-             its own, not just a rim. */
-          "  float a = u_opacity * (0.66 + 0.60*fres) * (1.0 - 0.30*sulcus);",
+          /* The tissue is see-through: a thin sheet over the cells, not a body
+             of smoke. Facing the camera it is almost clear, so the neurons and
+             their axons read through the front of the head; at the silhouette
+             the path through the sheet is long and the rim glows. That ratio,
+             not the overall level, is what makes it a membrane. */
+          "  float a = u_opacity * (0.58 + 1.20*fres) * (1.0 - 0.34*sulcus);",
           "  gl_FragColor = vec4(col, clamp(a, 0.0, 1.0)); }"
         ].join("\n")
       }));
@@ -436,10 +445,13 @@
         + "                    - smoothstep(cellR-0.03, cellR-0.13, r);"
         + "     vec2 nu = b - vec2(0.035, 0.045);"
         + "     float nucleus = smoothstep(0.115, 0.0, length(nu));"
-        + "     float aura = exp(-r*2.8)*0.18;"
-        + "     vec3 col = vC*(0.30 + 1.05*arms*(1.0 + 0.22*vSprout))"
-        + "              + mix(vC, vec3(0.86,0.97,1.0), 0.24)*soma*(0.86 + 0.14*vSprout)"
-        + "              + vec3(0.62,0.95,1.0)*(membrane*0.50 + nucleus*0.92)"
+        + "     float aura = exp(-r*2.8)*0.24;"
+        /* The cell has to hold its own against the tissue: the core is
+           brighter and the dendrites carry more of it, while the sprite stays
+           the size it was. Visibility comes from contrast, not from size. */
+        + "     vec3 col = vC*(0.44 + 1.38*arms*(1.0 + 0.22*vSprout))"
+        + "              + mix(vC, vec3(0.86,0.97,1.0), 0.40)*soma*(0.96 + 0.16*vSprout)"
+        + "              + vec3(0.62,0.95,1.0)*(membrane*0.72 + nucleus*1.0)"
         + "              + vC*aura;"
         + "     float a = clamp(soma*0.98 + arms*0.78 + membrane*0.45"
         + "                    + nucleus*0.9 + aura, 0.0, 1.0);"
@@ -516,7 +528,7 @@
         + "   vec3 n = vec3(hp.x,-hp.y,sqrt(max(0.0,1.0-min(hd*hd,1.0))));"
         + "   float lit = 0.22+0.78*max(dot(n,normalize(u_light)),0.0);"
         + "   float sharp = mix(2.2, 1.5, u_neural);"
-        + "   float gain = mix(0.32, 0.20, u_neural);"
+        + "   float gain = mix(0.32, 0.30, u_neural);"
         + "   float shade = mix(lit, 1.0, u_neural*0.75);"
         + "   float body = pow(smoothstep(1.0,0.0,min(hd,1.0)),sharp)"
         + "              *gain*vD*shade;"
@@ -646,7 +658,7 @@
        and the cells that grow on it. */
     if (cfg.brain) {
       this._buildCortex();
-      this.cortexUni.u_opacity.value = cfg.cortexOpacity == null ? 0.46 : cfg.cortexOpacity;
+      this.cortexUni.u_opacity.value = cfg.cortexOpacity == null ? 0.32 : cfg.cortexOpacity;
       this.cortexUni.u_color.value.setHex(cfg.cortexColor == null ? 0x2c7f92 : cfg.cortexColor);
       this.cortexUni.u_light.value.set(ld[0], ld[1], ld[2]).normalize();
     }

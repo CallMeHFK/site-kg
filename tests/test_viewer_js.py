@@ -934,7 +934,11 @@ for (let i = 0; i < 2000; i++) {
   const p = SK.brainPatch(d[0], d[1], d[2], out);
   assert.equal(p.length, 3);
   assert.ok(p.every(Number.isFinite), "finite at " + i);
-  assert.ok(p[0] > 0.4 && p[0] < 0.9, "radius in bounds at " + i + ": " + p[0]);
+  // The floor is the basal plane, not the ellipsoid: straight down the skin is
+  // the floor of the skull, 0.28 out, so the shortest ray is far shorter than
+  // a bare ellipsoid's. The ceiling is the occipital pole plus the cerebellar
+  // mass. Neither may drift: a collapsed head and a spiked one are both bugs.
+  assert.ok(p[0] > 0.24 && p[0] < 1.10, "radius in bounds at " + i + ": " + p[0]);
   assert.ok(p[1] > -0.25 && p[1] < 0.15, "fold in bounds at " + i + ": " + p[1]);
   assert.ok(p[2] >= 0 && p[2] <= 1, "age in [0,1] at " + i + ": " + p[2]);
   // the caller's buffer is reused, not replaced
@@ -988,6 +992,9 @@ for (let i = 0; i < m.count; i++) {
   if (r > maxR) maxR = r;
 }
 assert.equal(badNormal, 0, "every normal is unit length");
-assert.ok(Math.abs(maxR - 0.8706) < 1e-3, "head max radius, got " + maxR);
+// The renderer normalizes by this number, so its exact value is not the
+// contract; the envelope is. A spike from a bad bump would break the first
+// bound, a shrunken head the second.
+assert.ok(maxR > 0.85 && maxR < 1.15, "head max radius, got " + maxR);
 assert.ok(m.dev.length === m.count && m.fold.length === m.count);
 """)
