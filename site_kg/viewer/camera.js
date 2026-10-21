@@ -47,9 +47,9 @@
   Camera.prototype._placeBrain = function (zoom) {
     var THREE = T3.THREE;
     var cfg = this.renderer.cfg || {};
-    /* The fit zoom is the same margin fitLive() uses, so the head does not
-       shrink the moment the user picks the scene again. */
-    var d = (cfg.brainRadius || 17) * 2.3 * (zoom || 1) * (cfg.fitZoom || 1);
+    /* 2.3 radii clears the brainstem: the head is taller than its cortical
+       radius, and at the fit zoom the bottom of the stem sat off-screen. */
+    var d = (cfg.brainRadius || 17) * 2.3 * (zoom || 1);
     var p = new THREE.Vector3(-0.52, 0.30, 0.80).normalize()
       .multiplyScalar(d);
     p.y += 1.5;
@@ -62,7 +62,7 @@
     if (!this.renderer.cfg || !this.renderer.cfg.brain) return;
     var THREE = T3.THREE;
     var cfg = this.renderer.cfg;
-    var d = (cfg.brainRadius || 17) * 2.3 * (cfg.fitZoom || 1);
+    var d = (cfg.brainRadius || 17) * 2.3;
     var p = new THREE.Vector3(-0.52, 0.30, 0.80).normalize()
       .multiplyScalar(d);
     p.y += 1.5;
