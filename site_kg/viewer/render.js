@@ -257,17 +257,26 @@
           /* A thin sheet still has colour of its own: without a lit body the
              only thing that showed was the rim of each fold, and the head read
              as a wireframe rather than as tissue. */
-          "  vec3 col = u_color * (0.40 + 0.72*diff + 0.34*wrap) * pulse;",
-          "  col = mix(col, col*0.46, sulcus);",
-          "  col += u_color * crown * 0.34;",
+          /* Colours arrive in linear space and this shader writes straight to
+             the sRGB buffer, so the raw product is about half as bright as the
+             swatch. The gain restores the putty the palette asks for; without
+             it the head sat at a fifth of the value and read as a burnt shell. */
+          "  vec3 col = u_color * (0.50 + 0.80*diff + 0.36*wrap) * 1.9 * pulse;",
+          /* A little body on the shadow side: without it the far hemisphere
+             went to pure black and the head lost its silhouette. */
+          "  col += u_color * 0.10 * (0.5 + 0.5*max(dot(N, V), 0.0));",
+          /* A sulcus is a groove, not a hole: at 0.42 the clefts read as torn
+             gashes and the surface looked like bark. */
+          "  col = mix(col, col*0.62, sulcus);",
+          "  col += u_color * crown * 0.14;",
           /* The wet sheen on the gyri: a highlight is what reads as a folded
              surface rather than a painted blob. */
           "  vec3 H = normalize(L + V);",
           "  float spec = pow(max(dot(N, H), 0.0), 26.0) * (1.0 - sulcus);",
-          "  col += mix(u_rim, vec3(1.0), 0.55) * spec * 0.55;",
+          "  col += mix(u_rim, vec3(1.0), 0.55) * spec * 0.32;",
           /* The rim is a rim, not a wash: at 0.75 it lit every fold flank and
              the membrane took the rim colour instead of its own. */
-          "  col += u_rim * fres * 0.42;",
+          "  col += u_rim * fres * 0.34;",
           /* The tissue is see-through: a thin sheet over the cells, not a body
              of smoke. Facing the camera it is almost clear, so the neurons and
              their axons read through the front of the head; at the silhouette
@@ -303,20 +312,20 @@
        the specular highlight. a_birth grows a node in when it is first revealed;
        nodes present at load keep birth 0 so no wall of animation fires. */
     var vs = "attribute float a_size; attribute float a_dim; attribute float a_ring;"
-      + " attribute float a_birth; attribute vec3 color;"
+      + " attribute float a_birth; attribute float a_seed; attribute vec3 color;"
       + " uniform float u_px; uniform float u_scale; uniform float u_minpx;"
       + " uniform float u_time; uniform float u_fly; uniform float u_driftA;"
       + " uniform float u_vol; uniform vec3 u_cam;"
       + " varying vec3 vC; varying float vD; varying float vR; varying float vAge;"
       + " varying float vGrow; varying float vSprout;"
       + " varying vec3 vTail; varying float vSeed; varying float vFace;"
-      /* One hash per node position: the node sprite and the two edge endpoints
-         that share the position read the same phase, so a drifting cell never
-         tears away from its axons. */
-      + " float skHash(vec3 p){"
-      + "   return fract(sin(dot(p, vec3(12.9898, 78.233, 37.719)))*43758.5453); }"
+      /* The phase is a stable per-cell seed, never a hash of the position: a
+         position hash changes as soon as the cell moves, so a dragged or
+         springing node re-rolled its drift every frame and shook itself apart.
+         The seed arrives as an attribute, and the two edge endpoints that
+         share a cell carry the same seed, so an axon never tears off its soma. */
       + " void main(){ vC=color; vD=a_dim; vR=a_ring;"
-      + "   float ph = skHash(position);"
+      + "   float ph = a_seed;"
       /* The seed is per cell, not per colour: a cluster of a hundred nodes
          would otherwise be a hundred copies of the same neuron. */
       + "   vSeed = ph;"
@@ -375,6 +384,11 @@
       + "   vec4 mv = modelViewMatrix*vec4(p,1.0);"
       + "   float size = a_size*u_scale*u_px*(300.0/max(-mv.z,1.0));"
       + "   size *= mix(1.0,1.42,vR)*grow*(1.0+flight*5.0);"
+      /* On the closed head the near hemisphere carries the eye: the cells
+         facing the camera keep their size and the far side shrinks back, so
+         the front of the head reads as a surface of neurons instead of a flat
+         scatter of dots. */
+      + "   if (u_vol > 0.5) size *= mix(0.62, 1.0, face);"
       + "   gl_PointSize = clamp(size, u_minpx*0.7, (220.0 + 280.0*flight)*u_px);"
       + "   gl_Position = projectionMatrix*mv; }";
     this.pgeo = new THREE.BufferGeometry();
@@ -414,7 +428,7 @@
            made all 176 cells of the dominant cluster identical copies. */
         + "     float sd = vSeed;"
         + "     float r = length(b);"
-        + "     float coreR = 0.30 + 0.02*sin(sd*9.0);"
+        + "     float coreR = 0.38 + 0.02*sin(sd*9.0);"
         /* Maturation: the cell body swells from a bud to a soma, the primary
            dendrites reach further out, and the finer branches and the beads
            arrive later, in the order a neuron actually puts itself together. */
@@ -427,14 +441,14 @@
         + "                + sin(ang*7.0 - sd*11.0)*0.10;"
         + "     float rr = r*(1.0 + bend*smoothstep(0.18, 0.95, r));"
         + "     float ad = atan(b.y, b.x) + bend*0.55*smoothstep(0.2, 1.0, r);"
-        + "     float taper = 1.0 - 0.38*smoothstep(cellR*1.2, 1.0, rr);"
+        + "     float taper = 1.0 - 0.24*smoothstep(cellR*1.2, 1.0, rr);"
         /* How far the dendrites have reached: early they stop just past the
            soma, later they reach the edge of the sprite. */
-        + "     float reach = mix(cellR*0.85, 0.92 + 0.08*vSprout,"
+        + "     float reach = mix(cellR*0.85, 0.80 + 0.10*vSprout,"
         + "                         smoothstep(0.0, 0.72, grow));"
         + "     float rrm = min(rr, reach);"
         /* six primary dendrites, then twelve shorter branches */
-        + "     float a6 = smoothstep(0.52, 0.98, cos(ad*6.0 + sd*6.283));"
+        + "     float a6 = smoothstep(0.40, 0.96, cos(ad*6.0 + sd*6.283));"
         + "     float arms = a6 * smoothstep(reach, cellR*0.55, rrm)"
         + "                * smoothstep(cellR*0.35, cellR*1.45, rrm);"
         + "     float a12 = smoothstep(0.70, 0.99, cos(ad*12.0 - sd*9.0));"
@@ -447,19 +461,22 @@
         + "       sin(rr*15.0 - sd*7.0)*0.5 + 0.5);"
         + "     arms *= taper*(1.0 + 0.55*bead*smoothstep(0.55, 1.0, grow)"
         + "                      *(0.35 + 0.65*vSprout));"
+        /* The branches fade as they reach the edge of the sprite: at full
+           strength the six straight spokes read as a star, not as a cell. */
+        + "     arms *= 1.0 - 0.42*smoothstep(0.55, 1.0, rrm);"
         /* the soma: a filled body with a brighter membrane and nucleus */
         + "     float soma = smoothstep(cellR+0.07, cellR-0.03, r);"
         + "     float membrane = smoothstep(cellR+0.07, cellR-0.01, r)"
         + "                    - smoothstep(cellR-0.03, cellR-0.13, r);"
         + "     vec2 nu = b - vec2(0.035, 0.045);"
-        + "     float nucleus = smoothstep(0.115, 0.0, length(nu));"
+        + "     float nucleus = smoothstep(0.130, 0.0, length(nu));"
         + "     float aura = exp(-r*2.8)*0.24;"
         /* The cell has to hold its own against the tissue: the core is
            brighter and the dendrites carry more of it, while the sprite stays
            the size it was. Visibility comes from contrast, not from size. */
         + "     vec3 col = vC*(0.44 + 1.38*arms*(1.0 + 0.22*vSprout))"
-        + "              + mix(vC, u_tint, 0.40)*soma*(0.96 + 0.16*vSprout)"
-        + "              + u_tint*(membrane*0.72 + nucleus*1.0)"
+        + "              + mix(vC, u_tint, 0.55)*soma*(1.02 + 0.16*vSprout)"
+        + "              + u_tint*(membrane*0.80 + nucleus*1.18)"
         + "              + vC*aura;"
         + "     float a = clamp(soma*0.98 + arms*0.78 + membrane*0.45"
         + "                    + nucleus*0.9 + aura, 0.0, 1.0);"
@@ -563,17 +580,15 @@
     this.lines = new THREE.LineSegments(this.lgeo, new THREE.ShaderMaterial({
       uniforms: this.edgeUni, transparent: true, depthWrite: false,
       vertexShader: "attribute float a_base; attribute float a_dim; attribute vec3 color;"
-        + " attribute float a_birth; attribute float a_t;"
+        + " attribute float a_birth; attribute float a_t; attribute float a_seed;"
         + " uniform float u_cull; uniform float u_opacity; uniform vec3 u_cam;"
         + " uniform float u_sweepX; uniform float u_sweepAmp; uniform float u_time;"
         + " uniform float u_neural; uniform float u_fly; uniform float u_driftA;"
         + " varying vec3 vC; varying float vA;"
-        /* Same hash and the same flight/drift maths as the node sprite, so an
-           axon endpoint never detaches from the cell it belongs to. */
-        + " float skHash(vec3 p){"
-        + "   return fract(sin(dot(p, vec3(12.9898, 78.233, 37.719)))*43758.5453); }"
+        /* Same flight/drift maths as the node sprite, and the same stable seed,
+           so an axon endpoint never detaches from the cell it belongs to. */
         + " void main(){ vC=color;"
-        + "   float ph = skHash(position);"
+        + "   float ph = a_seed;"
         + "   float age = max(0.0, u_time-a_birth);"
         + "   float k = clamp(age/1.15, 0.0, 1.0);"
         + "   float ease = 1.0 - pow(1.0-k, 2.4);"
@@ -591,10 +606,14 @@
         + "   float fade = 1.0 - smoothstep(u_cull*0.55, u_cull, d);"
         + "   float wave = smoothstep(0.0,0.5,age-a_t*0.22);"
         + "   vA = a_base*u_opacity*a_dim*fade*wave;"
+        /* A connectome needs its wires: on a dark head the structural base of
+           0.08 is invisible, so the neural scene lifts every axon into view
+           while the planets scene keeps its faint orbital threads. */
+        + "   vA *= mix(1.0, 2.6, u_neural);"
         + "   vA += u_sweepAmp*exp(-abs(pos.x-u_sweepX)*0.18)*0.9;"
         /* Neural scene: action potentials travel along the axons as a spatial
            wave, so the web reads as living tissue rather than static lines. */
-        + "   vA += u_neural * a_base * 0.5 *"
+        + "   vA += u_neural * a_base * 0.85 *"
         + "         (0.5+0.5*sin(pos.x*0.55 + pos.y*0.38"
         + "                     + pos.z*0.31 + u_time*2.1 + a_t*4.0));"
         + "   gl_Position = projectionMatrix*modelViewMatrix*vec4(pos,1.0); }",
@@ -815,12 +834,20 @@
       this.nDim = new Float32Array(this.cap);
       this.nRing = new Float32Array(this.cap);
       this.nBirth = new Float32Array(this.cap);
+      /* A stable phase per cell, independent of where the cell currently is.
+         See the vertex shader: a position-derived phase makes a moving cell
+         shake, because the phase re-rolls with every frame of the drag. */
+      this.nSeed = new Float32Array(this.cap);
+      for (var sd = 0; sd < this.cap; sd++) {
+        this.nSeed[sd] = SK.hashSeed(sd * 7.13 + 1.71);
+      }
       this.pgeo.setAttribute("position", new THREE.BufferAttribute(this.nPos, 3));
       this.pgeo.setAttribute("color", new THREE.BufferAttribute(this.nCol, 3));
       this.pgeo.setAttribute("a_size", new THREE.BufferAttribute(this.nSize, 1));
       this.pgeo.setAttribute("a_dim", new THREE.BufferAttribute(this.nDim, 1));
       this.pgeo.setAttribute("a_ring", new THREE.BufferAttribute(this.nRing, 1));
       this.pgeo.setAttribute("a_birth", new THREE.BufferAttribute(this.nBirth, 1));
+      this.pgeo.setAttribute("a_seed", new THREE.BufferAttribute(this.nSeed, 1));
       if (this._birthQueue) {
         for (var q = 0; q < this._birthQueue.length; q++) {
           var bq = this._birthQueue[q];
@@ -840,6 +867,9 @@
       this.eDim = new Float32Array(this.capE * 2);
       this.eBirth = new Float32Array(this.capE * 2);
       this.eT = new Float32Array(this.capE * 2);
+      /* One seed per endpoint: an axon inherits the phase of the soma at each
+         end, so both drift together instead of sliding off the cell. */
+      this.eSeed = new Float32Array(this.capE * 2);
       for (var t = 0; t < this.capE; t++) {
         this.eT[t * 2] = 0;
         this.eT[t * 2 + 1] = 1;
@@ -852,6 +882,7 @@
       this.lgeo.setAttribute("a_dim", new THREE.BufferAttribute(this.eDim, 1));
       this.lgeo.setAttribute("a_birth", new THREE.BufferAttribute(this.eBirth, 1));
       this.lgeo.setAttribute("a_t", new THREE.BufferAttribute(this.eT, 1));
+      this.lgeo.setAttribute("a_seed", new THREE.BufferAttribute(this.eSeed, 1));
       if (this._edgeBirthQueue) {
         for (var eq = 0; eq < this._edgeBirthQueue.length; eq++) {
           var eb = this._edgeBirthQueue[eq];
@@ -1022,7 +1053,7 @@
            quad, so the point must be bigger than a planet to read as a cell.
            On the cortex the cells are packed shoulder to shoulder, so they
            have to be small enough to leave the tissue visible between them. */
-        else if (neural) this.nSize[i] = 1.6 + 1.9 * degPart;
+        else if (neural) this.nSize[i] = 2.0 + 2.3 * degPart;
         else this.nSize[i] = 2.2 + 3.4 * degPart;
         /* giant worlds carry a visible band; leaves stay smooth spheres */
         this.nRing[i] = shells && (0.7 * rankPart + 0.3 * degPart) >=
@@ -1059,6 +1090,8 @@
           var base = structuralBase(live.kinds[live.eKind[e]]);
           this.eBase[e * 2] = base;
           this.eBase[e * 2 + 1] = base;
+          this.eSeed[e * 2] = this.nSeed[a];
+          this.eSeed[e * 2 + 1] = this.nSeed[b];
         }
       }
       this._mark("position", this.nPos, this.pgeo);
@@ -1068,6 +1101,7 @@
       this._mark("position", this.ePos, this.lgeo);
       this._mark("color", this.eCol, this.lgeo);
       this._mark("a_base", this.eBase, this.lgeo);
+      this._mark("a_seed", this.eSeed, this.lgeo);
       this.pgeo.setDrawRange(0, live.n);
       this.lgeo.setDrawRange(0, this._drawEdges * 2);
       this._ensureRings(live);
@@ -1108,6 +1142,8 @@
       var base = structuralBase(live.kinds[live.eKind[e]]);
       this.eBase[k * 2] = base;
       this.eBase[k * 2 + 1] = base;
+      this.eSeed[k * 2] = this.nSeed[a];
+      this.eSeed[k * 2 + 1] = this.nSeed[b];
       this._edgeSlots[e] = k;
       k++;
     }

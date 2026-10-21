@@ -233,6 +233,11 @@
     if (!SK.scenes || !SK.scenes[name]) return;
     this.renderer.setScene(name);
     this.renderer.sync(this.live);
+    /* Chosen again is still a choice: put the head back on its three-quarter
+       view instead of keeping whatever orbit the last scene was left in. */
+    if (this.renderer.cfg && this.renderer.cfg.brain && this.camera.frameBrain) {
+      this.camera.frameBrain();
+    }
     this.camera.setAutoRotate(!this.camera.userInteracting);
     this.finaleDone = false;
     this._lodVersion = -1;

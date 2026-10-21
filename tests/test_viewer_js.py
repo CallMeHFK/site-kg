@@ -872,6 +872,20 @@ assert.ok(first[0] > 0 && first[0] < 0.4, "first frame trails, got " + first[0])
 """)
 
 
+def test_drag_phase_is_a_stable_seed_not_a_position_hash():
+    """Dragging must not shake. The drift phase used to be hashed from the
+    node position, so every frame of a drag re-rolled it and the cell jumped
+    by up to two drift amplitudes; it is now an immutable per-cell attribute
+    that the edge endpoints inherit."""
+    src = (ROOT / "site_kg" / "viewer" / "render.js").read_text(encoding="utf-8")
+    assert "skHash" not in src, "a position hash puts the shake back"
+    assert src.count("attribute float a_seed") == 2, "node and edge shaders"
+    assert src.count("float ph = a_seed;") == 2
+    assert src.count('setAttribute("a_seed"') == 2
+    assert "this.eSeed[e * 2] = this.nSeed[a];" in src
+    assert "this.eSeed[e * 2 + 1] = this.nSeed[b];" in src
+
+
 def test_brain_sequence_is_deterministic_and_on_the_unit_sphere():
     """R2 has to be a pure function of the index: the head is cached per node
     count, but a rebuild after the graph grows must not move the cells that

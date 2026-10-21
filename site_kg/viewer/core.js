@@ -862,10 +862,10 @@
   /* The interhemispheric fissure: half-width and depth, canonical. Deep and
      narrow, so the two hemispheres read from the front, the top and the side.
      It fades out where the basal plane takes over. */
-  var FISSURE_W = 0.062, FISSURE_DEPTH = 0.125;
+  var FISSURE_W = 0.092, FISSURE_DEPTH = 0.160;
   /* Each hemisphere is a convex mass: the surface climbs away from the cleft
      instead of dropping straight off both sides of it. */
-  var HEMI_LIFT = 0.022, HEMI_W = 0.10;
+  var HEMI_LIFT = 0.036, HEMI_W = 0.12;
   /* The temporal lobe: lateral-inferior, in the middle third of the
      anterior-posterior axis, and reaching a little past the parietal wall. */
   var TEMPORAL_AMP = 0.075;
@@ -888,12 +888,18 @@
      twice. How close it is to zero says how deep the cleft is, and how far
      from zero says how high the crown stands. The two widths are the scale
      of the cleft and the scale of the crown, in the same units as the
-     field, so the fold is always centred: sulci below zero, crowns above. */
-  var GYRI_FREQ1 = 3.4, GYRI_FREQ2 = 7.6;
-  var GYRI_CLEFT1 = 0.115, GYRI_CLEFT2 = 0.072;
-  var GYRI_CROWN1 = 0.130, GYRI_CROWN2 = 0.078;
-  var GYRI_UP1 = 0.056, GYRI_UP2 = 0.020;
-  var GYRI_DOWN1 = 0.074, GYRI_DOWN2 = 0.030;
+     field, so the fold is always centred: sulci below zero, crowns above.
+     The frequencies are what make it read as a brain: at 3.4 the field gave
+     four continents of light and shadow, which looked like lava on a rock.
+     A human brain carries ten or so gyri across its width, so the folds are
+     finer and the sulci narrower. The amplitudes stay low: deep carves made
+     the silhouette ragged, like dripping wax, and a brain is a smooth wall
+     of rounded gyri with thin grooves between them. */
+  var GYRI_FREQ1 = 5.4, GYRI_FREQ2 = 9.5;
+  var GYRI_CLEFT1 = 0.082, GYRI_CLEFT2 = 0.052;
+  var GYRI_CROWN1 = 0.100, GYRI_CROWN2 = 0.060;
+  var GYRI_UP1 = 0.040, GYRI_UP2 = 0.012;
+  var GYRI_DOWN1 = 0.050, GYRI_DOWN2 = 0.022;
 
   function brainSmooth(x, a, b) {
     var t = (x - a) / (b - a);
@@ -1008,7 +1014,7 @@
        says how high the crown stands. A ridge transform cannot do this: it
        is one-sided, so the folds all lean the same way and the sulci never
        read as clefts at all. */
-    var w1 = SK.fbm3(fx * GYRI_FREQ1, fy * GYRI_FREQ1, fz * GYRI_FREQ1, 3) - 0.5;
+    var w1 = SK.fbm3(fx * GYRI_FREQ1, fy * GYRI_FREQ1, fz * GYRI_FREQ1, 2) - 0.5;
     var w2 = SK.fbm3(fx * GYRI_FREQ2 + 7.0, fy * GYRI_FREQ2, fz * GYRI_FREQ2, 2) - 0.5;
     var cleft1 = Math.exp(-(w1 * w1) / (GYRI_CLEFT1 * GYRI_CLEFT1));
     var cleft2 = Math.exp(-(w2 * w2) / (GYRI_CLEFT2 * GYRI_CLEFT2));
@@ -1032,6 +1038,12 @@
        flat shelves instead of reading as ridges. */
     fold += brainSmooth(cereb, 0.10, 0.55) * 0.009 *
             Math.sin(fy * 112.0 + fz * 16.0);
+    /* The transverse fissure: the crease between the cerebrum and the
+       cerebellum. Without it the two masses blend into one lump from the
+       side, and the back of the head stops reading as a head. */
+    var tent = brainSmooth(-fz, 0.26, 0.60) *
+               Math.exp(-Math.pow((fy + 0.30) / 0.060, 2));
+    fold -= tent * 0.055;
     /* The Sylvian fissure: the groove that separates the temporal lobe from
        the frontal and parietal lobes. It starts low at the temporal pole and
        climbs a little as it runs back, which is the one diagonal the eye uses

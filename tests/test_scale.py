@@ -171,7 +171,7 @@ console.log(JSON.stringify({{bestMs: best, cap: g.cap, capE: g.capE,
 
 
 def test_label_budgets_are_capped():
-    budgets = {"planets": (40, 12), "neural": (18, 8)}
+    budgets = {"planets": (40, 12), "neural": (6, 4)}
     for name, (desktop, mobile) in budgets.items():
         src = (SCENES / f"{name}.js").read_text(encoding="utf-8")
         found_desktop = int(re.search(r"labelBudget:\s*(\d+)", src).group(1))
