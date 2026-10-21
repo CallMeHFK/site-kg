@@ -46,28 +46,20 @@
   }
 
   Renderer.prototype.mount = function (canvas, live) {
+    this._initState(canvas, live);
+    this._mountGL();
+    this.setScene("planets");
+    this.resize();
+    return this;
+  };
+
+  /* Everything here is scene data, not drawing: the WebGPU backend reuses it
+     verbatim and replaces only the draw calls, so the two backends cannot
+     drift apart on layout, colour or animation state. */
+  Renderer.prototype._initState = function (canvas, live) {
     var THREE = T3.THREE;
     this.canvas = canvas;
     this.live = live;
-    this.renderer = new THREE.WebGLRenderer({canvas: canvas, antialias: true,
-                                             powerPreference: "high-performance"});
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-    var self = this;
-    this._onContextLost = function (event) {
-      if (event && event.preventDefault) event.preventDefault();
-      self.contextLost = true;
-    };
-    this._onContextRestored = function () {
-      self.contextLost = false;
-      self.colorDirty = true;
-      self.lastVersion = -1;
-      self.lastDimVersion = -1;
-      self._clearEdgeIndex();
-      self.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-      self.resize();
-    };
-    canvas.addEventListener("webglcontextlost", this._onContextLost, false);
-    canvas.addEventListener("webglcontextrestored", this._onContextRestored, false);
     this.scene = new THREE.Scene();
     this.camera = new THREE.PerspectiveCamera(60, 1, 0.1, 1e6);
     this.scene.background = new THREE.Color(0x04050b);
@@ -634,9 +626,28 @@
     this._dummy = new THREE.Object3D();
 
     this._v = new THREE.Vector3();
-    this.setScene("planets");
-    this.resize();
-    return this;
+  };
+
+  Renderer.prototype._mountGL = function () {
+    var THREE = T3.THREE, self = this;
+    this.renderer = new THREE.WebGLRenderer({canvas: this.canvas, antialias: true,
+                                             powerPreference: "high-performance"});
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    this._onContextLost = function (event) {
+      if (event && event.preventDefault) event.preventDefault();
+      self.contextLost = true;
+    };
+    this._onContextRestored = function () {
+      self.contextLost = false;
+      self.colorDirty = true;
+      self.lastVersion = -1;
+      self.lastDimVersion = -1;
+      self._clearEdgeIndex();
+      self.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+      self.resize();
+    };
+    this.canvas.addEventListener("webglcontextlost", this._onContextLost, false);
+    this.canvas.addEventListener("webglcontextrestored", this._onContextRestored, false);
   };
 
   Renderer.prototype.setScene = function (name) {

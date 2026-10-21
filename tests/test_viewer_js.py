@@ -10,6 +10,8 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 CORE = ROOT / "site_kg" / "viewer" / "core.js"
+RENDER = ROOT / "site_kg" / "viewer" / "render.js"
+GPU = ROOT / "site_kg" / "viewer" / "gpu.js"
 DIRECTOR = ROOT / "site_kg" / "viewer" / "director.js"
 LAUNCHER = ROOT / "site_kg" / "viewer" / "launcher.js"
 PLANETS = ROOT / "site_kg" / "viewer" / "scenes" / "planets.js"
@@ -1012,3 +1014,77 @@ assert.equal(badNormal, 0, "every normal is unit length");
 assert.ok(maxR > 0.85 && maxR < 1.15, "head max radius, got " + maxR);
 assert.ok(m.dev.length === m.count && m.fold.length === m.count);
 """)
+
+
+def test_gpu_backend_inherits_the_renderer_contract():
+    """The WebGPU backend is a subclass on purpose: layout, births, drag
+    springs and finale state are built by SK.Renderer._initState/sync, so every
+    method the camera, labels and director call must still resolve. Only the
+    drawing path may be replaced."""
+    _run(_prelude(CORE, RENDER, GPU) + r"""
+assert.equal(typeof SK.GpuRenderer, "function");
+assert.equal(Object.getPrototypeOf(SK.GpuRenderer.prototype),
+             SK.Renderer.prototype);
+assert.ok(SK.GpuRenderer.prototype instanceof SK.Renderer);
+
+const missing = Object.getOwnPropertyNames(SK.Renderer.prototype)
+  .filter(function (name) {
+    return name !== "constructor" && !(name in SK.GpuRenderer.prototype);
+  });
+assert.deepEqual(missing, [], "scene API reachable through the subclass");
+
+/* draw calls are overridden; the shared scene machinery is not */
+["mount", "setScene", "resize", "render", "dispose"].forEach(function (name) {
+  assert.ok(Object.prototype.hasOwnProperty.call(SK.GpuRenderer.prototype, name),
+            name + " is the WebGPU draw path");
+});
+["sync", "beginDrag", "moveDrag", "endDrag", "advanceDrag", "startFinale",
+ "advanceFinale", "pick", "samplePoints", "ensureBrain"].forEach(function (name) {
+  assert.ok(!Object.prototype.hasOwnProperty.call(SK.GpuRenderer.prototype, name),
+            name + " must stay shared, or the backends can drift");
+});
+
+/* the probe only checks for the API; a missing adapter is the mount's job */
+assert.equal(SK.GpuRenderer.supported(), false, "node has no navigator.gpu");
+assert.equal(SK.hasWebGPU, SK.GpuRenderer.supported);
+Object.defineProperty(global, "navigator", {
+  value: {gpu: {}}, configurable: true
+});
+assert.equal(SK.GpuRenderer.supported(), true);
+assert.equal(SK.hasWebGPU(), true);
+""")
+
+
+def test_gpu_backend_ships_wgsl_and_point_quads():
+    """No WebGPURenderer in the vendored Three, and WebGPU has no
+    gl_PointSize: every scene element needs its own WGSL entry point, and the
+    node sprite is an instanced quad whose size is a diameter in device
+    pixels."""
+    src = GPU.read_text(encoding="utf-8")
+    for entry in ("fn vs_sky", "fn fs_sky", "fn vs_cortex", "fn fs_cortex",
+                  "fn vs_node", "fn fs_node", "fn fs_halo",
+                  "fn vs_edge", "fn fs_edge", "fn vs_ring", "fn fs_ego"):
+        assert entry in src, entry
+    # the halo is the node quad with an additive blend and its own fragment
+    # stage, so it has no vertex entry point of its own
+    assert "fn vs_halo" not in src
+    assert src.count("@vertex") == 6 and src.count("@fragment") == 7
+    assert "multisample: {count: 4}" in src, "pipelines must match the MSAA pass"
+    assert "navigator.gpu" in src
+    # gl_PointSize is a diameter; the quad's half-extent is size/res, not
+    # twice that. Getting this wrong renders the scene four times too large.
+    assert "size / u.res.xy" in src
+    assert "2.0 * size / u.res.xy" not in src
+
+
+def test_ui_boots_webgpu_first_and_keeps_the_fallbacks_ordered():
+    src = UI.read_text(encoding="utf-8")
+    gpu = src.index("SK.GpuRenderer.supported()")
+    gl = src.index("renderer = new SK.Renderer()")
+    assert gpu < gl, "WebGPU is tried before WebGL"
+    assert "SK.Fallback2D && SK.hasWebGL2 && !SK.hasWebGL2()" in src
+    assert src.count("new SK.Fallback2D(canvas)") == 2, "no-WebGL2 and mount failure"
+
+    from site_kg.viewer import PRE_SCENE_MODULES
+    mods = list(PRE_SCENE_MODULES)
+    assert mods.index("gpu.js") == mods.index("render.js") + 1

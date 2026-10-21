@@ -1084,10 +1084,23 @@
       var live = new SK.LiveGraph(cfg.mode === "archive" ? 4096 : 1024);
       var canvas = byId("sk-canvas");
       var renderer;
-      if (SK.Fallback2D && SK.hasWebGL2 && !SK.hasWebGL2()) {
+      if (SK.GpuRenderer && SK.GpuRenderer.supported()) {
+        /* WebGPU first: the canvas has no context yet, so a missing adapter
+           falls back to WebGL on the same canvas. */
+        renderer = new SK.GpuRenderer();
+        try {
+          renderer.mount(canvas, live);
+          renderer.setScene(cfg.scene || "planets");
+        } catch (gpuErr) {
+          try { if (renderer.dispose) renderer.dispose(); } catch (ignored) {}
+          renderer = null;
+        }
+      }
+      if (!renderer && SK.Fallback2D && SK.hasWebGL2 && !SK.hasWebGL2()) {
         renderer = new SK.Fallback2D(canvas);
         renderer.setScene(cfg.scene || "planets");
-      } else {
+      }
+      if (!renderer) {
         renderer = new SK.Renderer();
         try {
           renderer.mount(canvas, live);
