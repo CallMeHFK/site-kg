@@ -1119,6 +1119,10 @@ assert.equal(out[7], 1080, "b.w is height");
     src = GPU.read_text(encoding="utf-8")
     assert "u.b.z / max(u.b.w, 1.0)" in src, "aspect is width over height"
     assert "u.b.w / max(u.b.z, 1.0)" not in src
+    # out[6]/out[7] only land in b.z/b.w because a is declared first; a field
+    # reorder would silently put the resolution in the wrong slot
+    sky = src[src.index("struct U {"):src.index("fn hash2")]
+    assert sky.index("a: vec4f") < sky.index("b: vec4f")
 
 
 def test_fallback_reports_a_dead_canvas_instead_of_pretending_to_draw():
@@ -1140,7 +1144,7 @@ dead._mountGL = function () { throw new Error("WebGL2 unavailable"); };
 dead.resize = function () {};
 dead._fallbackGL(new Error("no WebGPU adapter"));
 assert.ok(!dead._gl);
-assert.equal(dead.dead, true, "ui.js needs a signal to reach Canvas2D");
+assert.equal(dead.dead, true, "dead marks a canvas no backend can take");
 assert.match(dead.gpuFailed, /no WebGPU adapter \/ webgl: WebGL2 unavailable/);
 
 const locked = Object.create(SK.GpuRenderer.prototype);
