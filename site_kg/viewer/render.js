@@ -12,6 +12,123 @@
     return 0.08;
   }
 
+  /* ------------------------------------------------------------------------
+     City shaders.
+
+     One box per node, merged into a single indexed mesh: the geometry is
+     built once per node count and rewritten when the layout moves, so the
+     whole city is one draw call on both backends. The windows are not
+     geometry -- the fragment shader cuts a grid out of each facade, which is
+     what keeps a 200-tower city at 4,800 vertices.
+
+     Face ids: 0..3 are the four walls, 4 the roof, 5 the underside and 6 the
+     ground quad that all the towers stand on. */
+  var CITY_VS = [
+    "attribute vec3 a_local; attribute float a_face;",
+    "attribute vec4 a_spec; attribute float a_birth; attribute vec3 color;",
+    "varying vec3 vLocal; varying float vFace; varying vec4 vSpec;",
+    "varying vec3 vCol; varying vec3 vNrm; varying vec3 vWorld;",
+    "varying float vDepth;",
+    "uniform float u_time;",
+    "void main(){",
+    /* A tower is built, not placed: the vertex shader lifts it out of its
+       plot, so the skyline assembles floor by floor while the crawl runs. */
+    "  float grow = smoothstep(0.0, 0.85, max(0.0, u_time - a_birth));",
+    "  vec3 p = position;",
+    "  p.y *= grow + 0.00001;",
+    "  vLocal = a_local; vFace = a_face; vSpec = a_spec; vCol = color;",
+    "  vNrm = normal; vWorld = p;",
+    "  vec4 mv = modelViewMatrix * vec4(p, 1.0);",
+    "  vDepth = -mv.z;",
+    "  gl_Position = projectionMatrix * mv; }"
+  ].join("\n");
+
+  var CITY_FS = [
+    "varying vec3 vLocal; varying float vFace; varying vec4 vSpec;",
+    "varying vec3 vCol; varying vec3 vNrm; varying vec3 vWorld;",
+    "varying float vDepth;",
+    "uniform float u_time; uniform float u_lit; uniform float u_finale;",
+    "uniform float u_cityR; uniform float u_pitch;",
+    "float h21(vec2 p){",
+    "  p = fract(p*vec2(127.31, 311.7));",
+    "  p += dot(p, p + 34.23);",
+    "  return fract(p.x*p.y); }",
+    "vec3 hazeCol(){ return vec3(0.030, 0.034, 0.056); }",
+    "void main(){",
+    "  vec3 col;",
+    "  float alpha = 1.0;",
+    "  if (vFace > 5.5) {",
+    /* The ground: asphalt with a sodium grid where the streets run. The
+       lattice puts every tower on a plot centre, so the street lines fall
+       exactly on the plot edges. */
+    "    vec2 g = vLocal.xy;",
+    "    float P = max(u_pitch, 0.5);",
+    "    float dx = abs(mod(g.x + P*0.5, P) - P*0.5);",
+    "    float dz = abs(mod(g.y + P*0.5, P) - P*0.5);",
+    "    float lane = smoothstep(0.18, 0.03, dx) + smoothstep(0.18, 0.03, dz);",
+    /* Wet asphalt under sodium lamps: the street is the only thing that
+       explains where the towers stand, so it has to be legible, not loud. */
+    "    col = vec3(0.017, 0.020, 0.029);",
+    "    col += vec3(0.30, 0.19, 0.086) * lane * 0.22;",
+    "    float r = length(g) / max(u_cityR, 1.0);",
+    "    col = mix(col, hazeCol(), smoothstep(0.85, 1.60, r));",
+    /* The plane has to dissolve before its own edge, or the city sits on a
+       floating square of tarmac with a straight horizon. */
+    "    alpha = 1.0 - smoothstep(1.15, 1.85, r);",
+    "  } else if (vFace > 4.5) {",
+    "    col = vCol * 0.012;",
+    "  } else if (vFace > 3.5) {",
+    /* Roof: gravel, a lit parapet, and a beacon whose brightness is the
+       node's fan-out -- the same number the windows carry. */
+    "    float e = max(abs(vLocal.x), abs(vLocal.y));",
+    "    col = vCol * 0.085 + vec3(0.012, 0.014, 0.020);",
+    "    col += vCol * 0.26 * smoothstep(0.84, 1.0, e);",
+    "    float beacon = smoothstep(0.13, 0.0, length(vLocal.xy));",
+    "    beacon *= 0.40 + 1.45 * vSpec.y;",
+    "    beacon *= 0.70 + 0.30 * sin(u_time * 2.1 + vSpec.z * 31.0);",
+    "    col += vec3(1.0, 0.74, 0.42) * beacon * 1.25;",
+    "  } else {",
+    /* Facade: a floor grid of glass. ``vSpec.x`` is the floor count, so every
+       row of windows is one storey of the building, and ``vSpec.y`` is the
+       lit fraction the node's outgoing links bought it. */
+    "    vec3 N = normalize(vNrm);",
+    "    float facing = 0.55 + 0.45 * abs(dot(N, normalize(vec3(0.45, 0.72, 0.33))));",
+    "    col = vCol * (0.20 * facing) * (0.55 + 0.45 * vLocal.y);",
+    /* The corner columns catch the sky: without them two neighbouring slabs
+       of the same concrete read as one building. */
+    "    col += vCol * 0.24 * smoothstep(0.87, 1.0, abs(vLocal.x));",
+    /* Street light spills up the ground floor, which is what makes a tower
+       meet the road instead of hovering over it. */
+    "    float up = 1.0 - vLocal.y;",
+    "    col += vec3(0.26, 0.17, 0.085) * up * up * up * 0.18;",
+    "    float floors = max(vSpec.x, 1.0);",
+    "    float u = (vLocal.x * 0.5 + 0.5) * 4.0;",
+    "    float v = vLocal.y * floors;",
+    "    vec2 cell = floor(vec2(u, v));",
+    "    vec2 f = fract(vec2(u, v));",
+    "    float win = smoothstep(0.24, 0.30, f.x) * smoothstep(0.76, 0.70, f.x)",
+    "              * smoothstep(0.28, 0.36, f.y) * smoothstep(0.78, 0.70, f.y);",
+    "    float seed = vSpec.z;",
+    "    float pick = h21(cell + vec2(seed*37.0, seed*11.0));",
+    "    float lit = step(pick, vSpec.y * u_lit);",
+    /* Finale: a ring of light travels out from the centre. The windows it
+       passes switch on, sparkle and fall dark again behind it. */
+    "    float ring = u_finale * 1.95 - 0.35;",
+    "    float dist = length(vWorld.xz) / max(u_cityR, 1.0);",
+    "    float band = smoothstep(ring - 0.24, ring, dist)",
+    "               * (1.0 - smoothstep(ring, ring + 0.15, dist));",
+    "    lit = max(lit, band * step(0.42, pick));",
+    "    vec3 lamp = mix(vec3(1.0, 0.82, 0.56), vCol, 0.30);",
+    "    float flick = 0.86 + 0.14 * sin(u_time*1.6 + cell.x*2.7 + cell.y*1.9",
+    "                                  + seed*9.0);",
+    "    col += vec3(0.013, 0.016, 0.023) * win;",
+    "    col += lamp * win * lit * flick * 1.45;",
+    "  }",
+    "  float haze = smoothstep(u_cityR * 1.05, u_cityR * 2.30, vDepth);",
+    "  col = mix(col, hazeCol(), haze * 0.88);",
+    "  gl_FragColor = vec4(col, alpha); }"
+  ].join("\n");
+
   function Renderer() {
     this.SCALE = SCALE;
     this.posScale = SCALE;
@@ -176,10 +293,27 @@
           "  float mote = step(0.9962, h) * smoothstep(0.42, 0.0, length(f));",
           "  col += vec3(0.40,0.30,0.22) * mote * (0.50 + 0.50*sin(t*0.8 + h*37.0));",
           "  return col; }",
+          /* City: a night sky lit from below by the streets. The glow sits
+             where the skyline will be and the stars only survive above it, so
+             the towers stand against haze rather than against a black plate. */
+          "vec3 skyline(vec2 uv, float t){",
+          "  float h = uv.y;",
+          "  vec3 zenith = vec3(0.006, 0.008, 0.022);",
+          "  vec3 low = vec3(0.044, 0.038, 0.068);",
+          "  vec3 col = mix(low, zenith, smoothstep(-0.10, 0.52, h));",
+          "  float glow = exp(-pow(max(0.0, h + 0.04) * 3.4, 2.0));",
+          "  col += vec3(0.30, 0.17, 0.070) * glow * 0.50;",
+          "  col += stars(uv + vec2(t*0.0022, 0.0), 170.0, 0.40, 0.042, 13.0,",
+          "               t*0.55) * smoothstep(0.04, 0.42, h);",
+          "  float band = sin(h*9.0 + uv.x*1.3 + t*0.05)*0.5 + 0.5;",
+          "  col += vec3(0.022, 0.019, 0.030) * pow(band, 3.0)",
+          "         * smoothstep(0.42, 0.02, abs(h - 0.12));",
+          "  return col; }",
           "void main(){",
           "  vec2 uv = (vUv - 0.5) * vec2(u_res.x/max(u_res.y,1.0), 1.0);",
           "  float t = u_time;",
-          "  vec3 col = mix(cosmos(uv, t), deepvoid(uv, t), u_mode);",
+          "  vec3 col = u_mode > 1.5 ? skyline(uv, t)",
+          "           : (u_mode > 0.5 ? deepvoid(uv, t) : cosmos(uv, t));",
           "  float vig = smoothstep(1.32, 0.26, length(vUv-0.5));",
           "  col *= mix(0.45, 1.0, vig);",
           "  gl_FragColor = vec4(col, 1.0); }"
@@ -282,6 +416,24 @@
     this.cortex.renderOrder = 0;
     this.cortex.visible = false;
     this.scene.add(this.cortex);
+
+    /* The city: one merged mesh of towers plus its ground. It writes depth,
+       so the towers occlude each other and the edges behind them; the ground
+       is the only translucent part, fading out before its own rim. Everything
+       else in the scene is transparent and depth-write off. */
+    this.cityUni = {u_time: {value: 0}, u_lit: {value: 1},
+                    u_finale: {value: 0}, u_cityR: {value: 30},
+                    u_pitch: {value: 3}};
+    this.cityGeo = new THREE.BufferGeometry();
+    this.cityMesh = new THREE.Mesh(this.cityGeo, new THREE.ShaderMaterial({
+      uniforms: this.cityUni, vertexShader: CITY_VS, fragmentShader: CITY_FS,
+      transparent: true, depthTest: true, depthWrite: true, side: THREE.FrontSide
+    }));
+    this.cityMesh.frustumCulled = false;
+    this.cityMesh.renderOrder = -1;
+    this.cityMesh.visible = false;
+    this.scene.add(this.cityMesh);
+    this._cityN = -1;
 
     this.nodeUni = {u_px: {value: 1}, u_scale: {value: 1}, u_minpx: {value: 2},
                     u_time: {value: 0}, u_neural: {value: 0},
@@ -667,9 +819,12 @@
     this.haloUni.u_gain.value = cfg.haloGain == null ? 0.31 : cfg.haloGain;
     this.edgeUni.u_opacity.value = cfg.edgeOpacity;
     this.nodeUni.u_scale.value = cfg.nodeScale;
-    /* The sky and the node sprites each carry two drawings; a scene picks one
-       without adding a draw call or a second material. */
-    if (this.skyUni) this.skyUni.u_mode.value = cfg.sky === "deepvoid" ? 1 : 0;
+    /* The sky and the node sprites each carry three drawings; a scene picks
+       one without adding a draw call or a second material. */
+    if (this.skyUni) {
+      this.skyUni.u_mode.value = cfg.sky === "deepvoid" ? 1
+        : (cfg.sky === "skyline" ? 2 : 0);
+    }
     this.nodeUni.u_neural.value = cfg.neuralNodes ? 1 : 0;
     this.edgeUni.u_neural.value = cfg.neuralNodes ? 1 : 0;
     /* The pale colour of a cell's membrane and nucleus; it used to be a hard
@@ -710,13 +865,23 @@
     }
     this._brain = null;
     this.brainAge = null;
+    /* A city is a different layout, not a different colour: switching back
+       has to rebuild the towers on the lattice. */
+    this._cityN = -1;
+    this.cityUni.u_pitch.value = cfg.cityPitch || 3;
+    this.cityUni.u_finale.value = 0;
   };
 
   Renderer.prototype._syncVisibility = function () {
     var people = !!(this.cfg && this.cfg.nodeMode === "instanced");
-    if (this.cloud) this.cloud.visible = !people;
-    if (this.halo) this.halo.visible = !people;
+    var city = !!(this.cfg && this.cfg.city);
+    /* In the city the towers are the nodes, so the sprite cloud and its halos
+       step aside; leaving them on would print a second, floating copy of every
+       building over the roofs. */
+    if (this.cloud) this.cloud.visible = !people && !city;
+    if (this.halo) this.halo.visible = !people && !city;
     if (this.egoMesh) this.egoMesh.visible = people;
+    if (this.cityMesh) this.cityMesh.visible = city;
     if (this.cortex) this.cortex.visible = !!(this.cfg && this.cfg.brain);
   };
 
@@ -832,6 +997,202 @@
     this._brain = {n: n, point: point, age: age};
     this.brainAge = age;
     return this._brain;
+  };
+
+  /* ---- city geometry -----------------------------------------------------
+
+     Six quads per tower (four walls, roof, underside) plus one ground quad,
+     merged into a single indexed mesh. The vertex table is the unit cube:
+     ``_writeCity`` scales it by the building's footprint and height, so a
+     layout change rewrites coordinates without reallocating buffers. */
+  var CELL_ZERO = [0, 0];
+  var CITY_QUADS = [    {n: [1, 0, 0], face: 0,
+     c: [[0.5, -0.5, -0.5], [0.5, -0.5, 0.5], [0.5, 0.5, 0.5], [0.5, 0.5, -0.5]]},
+    {n: [-1, 0, 0], face: 1,
+     c: [[-0.5, -0.5, -0.5], [-0.5, 0.5, -0.5], [-0.5, 0.5, 0.5], [-0.5, -0.5, 0.5]]},
+    {n: [0, 0, 1], face: 2,
+     c: [[-0.5, -0.5, 0.5], [0.5, -0.5, 0.5], [0.5, 0.5, 0.5], [-0.5, 0.5, 0.5]]},
+    {n: [0, 0, -1], face: 3,
+     c: [[0.5, -0.5, -0.5], [-0.5, -0.5, -0.5], [-0.5, 0.5, -0.5], [0.5, 0.5, -0.5]]},
+    {n: [0, 1, 0], face: 4,
+     c: [[-0.5, 0.5, -0.5], [0.5, 0.5, -0.5], [0.5, 0.5, 0.5], [-0.5, 0.5, 0.5]]},
+    {n: [0, -1, 0], face: 5,
+     c: [[-0.5, -0.5, -0.5], [-0.5, -0.5, 0.5], [0.5, -0.5, 0.5], [0.5, -0.5, -0.5]]}
+  ];
+
+  /* The static half of a tower: corners, normals, facade coordinates and the
+     face id. Winding is decided by the cross product rather than by hand, so
+     a face can never end up inside out. */
+  function cityVertexTable() {
+    var unit = new Float32Array(24 * 3);
+    var nrm = new Float32Array(24 * 3);
+    var loc = new Float32Array(24 * 3);
+    var face = new Float32Array(24);
+    var ground = null;
+    var v = 0;
+    for (var q = 0; q < CITY_QUADS.length; q++) {
+      var quad = CITY_QUADS[q];
+      var c = quad.c;
+      var ax = c[1][0] - c[0][0], ay = c[1][1] - c[0][1], az = c[1][2] - c[0][2];
+      var bx = c[2][0] - c[0][0], by = c[2][1] - c[0][1], bz = c[2][2] - c[0][2];
+      var nx = ay * bz - az * by, ny = az * bx - ax * bz, nz = ax * by - ay * bx;
+      var order = (nx * quad.n[0] + ny * quad.n[1] + nz * quad.n[2]) >= 0
+        ? [0, 1, 2, 3] : [0, 3, 2, 1];
+      /* The ground reuses the roof quad, so it has to keep exactly this
+         winding: writing the raw corners instead makes the plane back-facing
+         and the streets vanish. */
+      if (quad.face === 4) {
+        ground = order.map(function (k) { return c[k]; });
+      }
+      for (var k = 0; k < 4; k++) {
+        var p = c[order[k]];
+        unit[v * 3] = p[0]; unit[v * 3 + 1] = p[1]; unit[v * 3 + 2] = p[2];
+        nrm[v * 3] = quad.n[0]; nrm[v * 3 + 1] = quad.n[1]; nrm[v * 3 + 2] = quad.n[2];
+        /* Facade coordinates: u runs across the wall, v runs up it. The roof
+           and the underside use the footprint instead. */
+        if (quad.face > 3) {
+          loc[v * 3] = p[0] * 2; loc[v * 3 + 1] = p[2] * 2;
+        } else if (quad.face < 2) {
+          loc[v * 3] = p[2] * 2; loc[v * 3 + 1] = p[1] + 0.5;
+        } else {
+          loc[v * 3] = p[0] * 2; loc[v * 3 + 1] = p[1] + 0.5;
+        }
+        loc[v * 3 + 2] = 0;
+        face[v] = quad.face;
+        v++;
+      }
+    }
+    return {unit: unit, nrm: nrm, loc: loc, face: face, ground: ground};
+  }
+
+  Renderer.prototype._ensureCity = function (live) {
+    var n = live.n;
+    if (this._cityN === n && this.cityGeo.getAttribute("position")) return;
+    var THREE = T3.THREE;
+    var table = cityVertexTable();
+    var verts = n * 24 + 4;
+    this._cityN = n;
+    this._cityTable = table;
+    this._cityH = new Float32Array(n);
+    this._cityW = new Float32Array(n);
+    this._cityD = new Float32Array(n);
+    this._cityFloors = new Float32Array(n);
+    this._cityLit = new Float32Array(n);
+    this._cityPos = new Float32Array(verts * 3);
+    this._cityCol = new Float32Array(verts * 3);
+    this._cityLoc = new Float32Array(verts * 3);
+    this._cityNrm = new Float32Array(verts * 3);
+    this._cityFace = new Float32Array(verts);
+    this._citySpec = new Float32Array(verts * 4);
+    this._cityBirth = new Float32Array(verts);
+    var idx = new Uint32Array(n * 36 + 6);
+    for (var i = 0; i < n; i++) {
+      var o = i * 24;
+      for (var k = 0; k < 24; k++) {
+        this._cityLoc[(o + k) * 3] = table.loc[k * 3];
+        this._cityLoc[(o + k) * 3 + 1] = table.loc[k * 3 + 1];
+        this._cityNrm[(o + k) * 3] = table.nrm[k * 3];
+        this._cityNrm[(o + k) * 3 + 1] = table.nrm[k * 3 + 1];
+        this._cityNrm[(o + k) * 3 + 2] = table.nrm[k * 3 + 2];
+        this._cityFace[o + k] = table.face[k];
+      }
+      for (var f = 0; f < 6; f++) {
+        var src = o + f * 4, dst = (i * 6 + f) * 6;
+        idx[dst] = src; idx[dst + 1] = src + 1; idx[dst + 2] = src + 2;
+        idx[dst + 3] = src; idx[dst + 4] = src + 2; idx[dst + 5] = src + 3;
+      }
+    }
+    var g = n * 24;
+    idx[n * 36] = g; idx[n * 36 + 1] = g + 1; idx[n * 36 + 2] = g + 2;
+    idx[n * 36 + 3] = g; idx[n * 36 + 4] = g + 2; idx[n * 36 + 5] = g + 3;
+    for (var gi = 0; gi < 4; gi++) {
+      this._cityFace[g + gi] = 6;
+      this._cityNrm[(g + gi) * 3 + 1] = 1;
+    }
+    var geo = this.cityGeo;
+    geo.setAttribute("position", new THREE.BufferAttribute(this._cityPos, 3));
+    geo.setAttribute("normal", new THREE.BufferAttribute(this._cityNrm, 3));
+    geo.setAttribute("color", new THREE.BufferAttribute(this._cityCol, 3));
+    geo.setAttribute("a_local", new THREE.BufferAttribute(this._cityLoc, 3));
+    geo.setAttribute("a_face", new THREE.BufferAttribute(this._cityFace, 1));
+    geo.setAttribute("a_spec", new THREE.BufferAttribute(this._citySpec, 4));
+    geo.setAttribute("a_birth", new THREE.BufferAttribute(this._cityBirth, 1));
+    geo.setIndex(new THREE.BufferAttribute(idx, 1));
+  };
+
+  /* Writes the towers into the vertex buffers. Called whenever the layout or
+     the graph's numbers change, never per frame. */
+  Renderer.prototype._writeCity = function (live) {
+    var n = live.n;
+    if (!this._cityPos || this._cityN !== n) return;
+    var table = this._cityTable;
+    var pos = this._cityPos, col = this._cityCol, spec = this._citySpec;
+    var birth = this._cityBirth;
+    var maxR = 4;
+    for (var i = 0; i < n; i++) {
+      var cx = this.nPos[i * 3], cy = this.nPos[i * 3 + 1], cz = this.nPos[i * 3 + 2];
+      var h = this._cityH[i], w = this._cityW[i], d = this._cityD[i];
+      var y0 = cy - h * 0.5;
+      var c = this._color(live._nodeCluster ? live._nodeCluster[i] : 0, i);
+      var lit = this._cityLit[i];
+      var floors = this._cityFloors[i];
+      var seed = SK.hashSeed(i * 1.71 + 0.37);
+      var b = this.nBirth ? this.nBirth[i] : 0;
+      var base = i * 24;
+      for (var k = 0; k < 24; k++) {
+        var v = base + k, o = v * 3;
+        pos[o] = cx + table.unit[k * 3] * w;
+        pos[o + 1] = y0 + (table.unit[k * 3 + 1] + 0.5) * h;
+        pos[o + 2] = cz + table.unit[k * 3 + 2] * d;
+        col[o] = c.r; col[o + 1] = c.g; col[o + 2] = c.b;
+        spec[v * 4] = floors; spec[v * 4 + 1] = lit;
+        spec[v * 4 + 2] = seed; spec[v * 4 + 3] = h;
+        birth[v] = b;
+      }
+      var rr = Math.hypot(cx, cz) + Math.max(w, d) * 0.5;
+      if (rr > maxR) maxR = rr;
+    }
+    /* The ground reaches past the last block and fades into the haze, so the
+       city has no visible edge floating in the sky. */
+    var R = Math.max(26, maxR * 1.55);
+    this.cityUni.u_cityR.value = R;
+    var g = n * 24;
+    var roof = this._cityTable.ground || CITY_QUADS[4].c;
+    for (var gi = 0; gi < 4; gi++) {
+      var p = roof[gi], vg = g + gi;
+      pos[vg * 3] = p[0] * R * 4;
+      pos[vg * 3 + 1] = -0.03;
+      pos[vg * 3 + 2] = p[2] * R * 4;
+      col[vg * 3] = 0.05; col[vg * 3 + 1] = 0.05; col[vg * 3 + 2] = 0.06;
+      this._cityLoc[vg * 3] = p[0] * R * 4;
+      this._cityLoc[vg * 3 + 1] = p[2] * R * 4;
+      spec[vg * 4] = 0; spec[vg * 4 + 1] = 0; spec[vg * 4 + 2] = 0;
+      birth[vg] = 0;
+    }
+    var geo = this.cityGeo;
+    var names = ["position", "color", "a_local", "a_spec", "a_birth"];
+    for (var a = 0; a < names.length; a++) {
+      var attr = geo.getAttribute(names[a]);
+      if (attr) attr.needsUpdate = true;
+    }
+  };
+
+  /* A drag moves one tower (and its neighbours): rewrite just those vertices
+     instead of the whole city buffer. */
+  Renderer.prototype._cityMove = function (i) {
+    if (!this._cityPos || this._cityN <= 0 || i < 0 || i >= this._cityN) return;
+    var table = this._cityTable, pos = this._cityPos;
+    var cx = this.nPos[i * 3], cy = this.nPos[i * 3 + 1], cz = this.nPos[i * 3 + 2];
+    var h = this._cityH[i], w = this._cityW[i], d = this._cityD[i];
+    var y0 = cy - h * 0.5, base = i * 24;
+    for (var k = 0; k < 24; k++) {
+      var o = (base + k) * 3;
+      pos[o] = cx + table.unit[k * 3] * w;
+      pos[o + 1] = y0 + (table.unit[k * 3 + 1] + 0.5) * h;
+      pos[o + 2] = cz + table.unit[k * 3 + 2] * d;
+    }
+    var attr = this.cityGeo.getAttribute("position");
+    if (attr) attr.needsUpdate = true;
   };
 
   Renderer.prototype._ensure = function () {
@@ -1008,6 +1369,27 @@
       /* The neural scene is a brain, not a blob: the cells are neurons on a
          cortex, and the tissue around them carries the silhouette. */
       var brain = !!(this.cfg && this.cfg.brain);
+      /* The city is a lattice, not a layout: every node gets a plot, the plot
+         decides the coordinates, and the graph's numbers decide the tower.
+         Children are the links the page emits -- the windows they light. */
+      var city = !!(this.cfg && this.cfg.city);
+      var pitch = city ? (this.cfg.cityPitch || 3) : 0;
+      var cells = city ? SK.cityCells(live.n) : null;
+      var kids = null, kidsMax = 1;
+      if (city) {
+        if (!this._cityKids || this._cityKids.length < live.n) {
+          this._cityKids = new Uint16Array(live.n);
+        } else {
+          this._cityKids.fill(0, 0, live.n);
+        }
+        kids = this._cityKids;
+        for (e = 0; e < live.m; e++) {
+          var src = live.eSrc[e];
+          if (src < live.n && kids[src] < 65535) kids[src]++;
+        }
+        for (i = 0; i < live.n; i++) if (kids[i] > kidsMax) kidsMax = kids[i];
+        this._ensureCity(live);
+      }
       var maxR = 1;
       for (i = 0; i < live.n; i++) {
         var x = live.x[i] * this.posScale, y = live.y[i] * this.posScale,
@@ -1038,6 +1420,23 @@
             y = place.point[i * 3 + 1] * this._brainScale;
             z = place.point[i * 3 + 2] * this._brainScale;
           }
+        } else if (city) {
+          var spec = SK.citySpec({rank: live.rank[i], rankMax: rmax,
+                                  degree: live.degree[i], degreeMax: gmax,
+                                  kids: kids[i], kidsMax: kidsMax, seed: i,
+                                  floor: this.cfg.cityFloor});
+          var cell = cells[i] || CELL_ZERO;
+          x = (cell[0] + 0.5) * pitch;
+          z = (cell[1] + 0.5) * pitch;
+          /* The node sits at the middle of its tower, not at street level:
+             labels, picking, the camera fit and the links all use one point,
+             and that point has to be the building. */
+          y = spec.h * 0.5;
+          this._cityH[i] = spec.h;
+          this._cityW[i] = spec.w;
+          this._cityD[i] = spec.d;
+          this._cityFloors[i] = spec.floors;
+          this._cityLit[i] = spec.lit;
         }
         var cluster = live._nodeCluster ? live._nodeCluster[i] : 0;
         var dragKey = live.ids && live.ids[i] ? live.ids[i] : i;
@@ -1065,6 +1464,9 @@
            On the cortex the cells are packed shoulder to shoulder, so they
            have to be small enough to leave the tissue visible between them. */
         else if (neural) this.nSize[i] = 2.0 + 2.3 * degPart;
+        /* Nothing is drawn for a tower, but the hit box and the label anchor
+           still read the size: a tall building gets a bigger target. */
+        else if (city) this.nSize[i] = 2.6 + 4.4 * rankPart;
         else this.nSize[i] = 2.2 + 3.4 * degPart;
         /* giant worlds carry a visible band; leaves stay smooth spheres */
         this.nRing[i] = shells && (0.7 * rankPart + 0.3 * degPart) >=
@@ -1074,6 +1476,7 @@
       }
       this.sceneRadius = maxR;
       this.sceneN = live.n;
+      if (city) this._writeCity(live);
       if (this.cfg && this.cfg.ego) {
         this._packEgo(live, rmax);
       } else {
@@ -1433,6 +1836,12 @@
     }
     this._mark("position", this.nPos, this.pgeo);
     if (this.ePos) this._mark("position", this.ePos, this.lgeo);
+    /* The towers follow their nodes: a dragged building has to move with the
+       hit point that grabbed it. */
+    if (this.cfg && this.cfg.city) {
+      this._cityMove(d.i);
+      for (var g = 0; g < d.follow.length; g++) this._cityMove(d.follow[g].i);
+    }
   };
 
   /* Integrates the drag springs. Runs every frame while a cell is held or
@@ -1509,6 +1918,7 @@
       this.edgeUni.u_sweepAmp.value = reduced ? 0 : 1;
       this.edgeUni.u_sweepX.value = -this.sceneRadius * 1.1;
     }
+    if (this.name === "city") this.cityUni.u_finale.value = reduced ? 0 : 0.001;
   };
 
   Renderer.prototype.resetFinale = function () {
@@ -1519,6 +1929,7 @@
       this.edgeUni.u_sweepAmp.value = 0;
       this.edgeUni.u_sweepX.value = 0;
     }
+    if (this.cityUni) this.cityUni.u_finale.value = 0;
     if (this.ringMesh) this.ringMesh.rotation.y = 0;
     if (this._egoItems) this._applyEgo(0);
   };
@@ -1554,6 +1965,10 @@
     } else if (this.finaleMode === "neural") {
       this.edgeUni.u_sweepX.value = -this.sceneRadius * 1.1
         + e * this.sceneRadius * 2.2;
+    } else if (this.finaleMode === "city") {
+      /* A ring of light crosses the city: each tower it reaches switches its
+         windows on, then falls dark again as the wave moves on. */
+      this.cityUni.u_finale.value = 0.001 + e * 1.0;
     }
     if (k >= 1) {
       this.finaleActive = false;
@@ -1638,6 +2053,7 @@
     if (this.contextLost) return;
     this.nodeUni.u_time.value = this.time || 0;
     this.edgeUni.u_time.value = this.time || 0;
+    this.cityUni.u_time.value = this.time || 0;
     if (this.cortex && this.cortex.visible) {
       /* The folds grow in with the build: the gyri of the brainstem are there
          before the frontal pole has folded, and the head is still smooth
@@ -1756,6 +2172,12 @@
       this.cortex.geometry.dispose();
       this.cortex.material.dispose();
       this.cortex = null;
+    }
+    if (this.cityMesh) {
+      this.cityGeo.dispose();
+      this.cityMesh.material.dispose();
+      this.scene.remove(this.cityMesh);
+      this.cityMesh = null;
     }
     this.pgeo.dispose();
     this.lgeo.dispose();

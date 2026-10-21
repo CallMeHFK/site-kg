@@ -238,6 +238,11 @@
     if (this.renderer.cfg && this.renderer.cfg.brain && this.camera.frameBrain) {
       this.camera.frameBrain();
     }
+    /* The city opens from the air: the orbit the last scene was left in can
+       be an overhead or a ground-level shot, and neither frames a skyline. */
+    if (this.renderer.cfg && this.renderer.cfg.city && this.camera.frameCity) {
+      this.camera.frameCity();
+    }
     this.camera.setAutoRotate(!this.camera.userInteracting);
     this.finaleDone = false;
     this._lodVersion = -1;

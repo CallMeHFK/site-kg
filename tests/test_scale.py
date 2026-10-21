@@ -190,14 +190,15 @@ def test_renderer_draw_call_and_object_budget():
     meshes = len(re.findall(r"new THREE\.Mesh\(", src))
     assert (points, lines, instanced) == (2, 2, 1), (
         "renderer must keep one cloud+halo, one edge mesh and one merged ring mesh")
-    # Two meshes: the fullscreen sky shader, and the cortex the neural scene
-    # grows its neurons on. The cortex is the one deliberate addition to the
-    # budget, because the silhouette of a brain cannot be carried by points
-    # and lines: it has to be a surface.
-    assert meshes == 2 and "this.sky = new THREE.Mesh(" in src, (
-        "the meshes are the fullscreen sky shader and the cortex substrate")
+    # Three meshes: the fullscreen sky shader, the cortex the neural scene
+    # grows its neurons on, and the merged city the city scene grows towers
+    # from. Each is deliberate: a brain silhouette cannot be carried by
+    # points, and a thousand buildings must be one draw call.
+    assert meshes == 3 and "this.sky = new THREE.Mesh(" in src, (
+        "the meshes are the sky shader, the cortex substrate and the city")
     assert "this.cortex = new THREE.Mesh(" in src
-    assert points + lines + instanced + meshes <= 7
+    assert "this.cityMesh = new THREE.Mesh(" in src
+    assert points + lines + instanced + meshes <= 8
     rings = src[src.index("Renderer.prototype._ensureRings"):
                 src.index("Renderer.prototype._disposeRings")]
     assert len(re.findall(r"new THREE\.LineSegments\b", rings)) == 1, (

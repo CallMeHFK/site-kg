@@ -113,7 +113,7 @@ python -m site_kg.cli live --local ./docs --scene planets
 python -m site_kg.cli live my-site --replay
 ```
 
-The page streams the build over SSE while the server crawls and lays the graph out incrementally: nodes arrive in corpus order, edges bind as pages are parsed, and derived relation dimensions stay hidden by default and never participate in layout springs, so they cannot distort the picture. Scenes: **Planets** (1) chapters as worlds in orbit, **Neural** (2) a dense field of synapses. `#scene=`, the last-picked scene in localStorage, and the MCP `scene=` argument are presets once a scene has been chosen — they never replace the address-first start.
+The page streams the build over SSE while the server crawls and lays the graph out incrementally: nodes arrive in corpus order, edges bind as pages are parsed, and derived relation dimensions stay hidden by default and never participate in layout springs, so they cannot distort the picture. Scenes: **Planets** (1) chapters as worlds in orbit, **Neural** (2) a dense field of synapses, **City** (3) one page per tower — floors follow the page's rank, and the lit windows are the links it emits. `#scene=`, the last-picked scene in localStorage, and the MCP `scene=` argument are presets once a scene has been chosen — they never replace the address-first start.
 
 Limits and fallbacks:
 

@@ -13,12 +13,13 @@
     placeholder: "docs.example.com",
     steps: [
       ["Give it an address", "Paste any URL. The crawl starts the moment you launch."],
-      ["Pick a world", "Two ways to see the same graph: planets or synapses."],
+      ["Pick a world", "Three ways to see the same graph: planets, synapses or a city."],
       ["Watch it build", "Pages arrive as worlds, links as orbits, in real time."]
     ],
     scenes: {
       neural: "Synapses — links light up as signals between pages.",
-      planets: "Orbits — clusters settle into shells around a core."
+      planets: "Orbits — clusters settle into shells around a core.",
+      city: "Skyline — one page per tower, lit windows for its links."
     },
     ctaNote: "Runs on your machine. No account, no upload.",
     worldIdle: "Switch to this view",

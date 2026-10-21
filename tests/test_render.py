@@ -150,6 +150,7 @@ def test_viewer_file_is_self_contained(tmp_path: Path):
                    "SK.Director", "SK.UI"):
         assert marker in s  # modules assembled into the bundle
     assert "fn vs_node" in s  # the WebGPU backend ships its WGSL, not an import
+    assert "fn vs_city" in s  # the city scene rides in the same bundle
     assert '"scene":"neural"' in s
     assert "T3" in s  # vendor bundle embedded
     assert "<script src" not in s and "<link" not in s  # no external resources
@@ -179,6 +180,23 @@ def test_live_viewer_carries_no_baked_stats(tmp_path: Path):
     s = out.read_text(encoding="utf-8")
     assert '"stats":""' in s
     assert "0 pages" not in s and "verdict ?" not in s
+
+
+def test_city_scene_bundles_and_selects(tmp_path: Path):
+    """The city is a first-class world: its module ships, its name validates,
+    and the shell records the scene so the launcher lands on it."""
+    from site_kg.viewer import SCENES, render_viewer
+
+    assert "city" in SCENES
+    out = render_viewer({"nodes": [], "edges": []}, {"url": "http://x/"},
+                        tmp_path / "city.html", scene="city", mode="live")
+    s = out.read_text(encoding="utf-8")
+    assert '"scene":"city"' in s
+    assert "SK.cityCells" in s and "SK.citySpec" in s
+    assert 'sky: "skyline"' in s
+    with pytest.raises(ValueError):
+        render_viewer({"nodes": [], "edges": []}, {"url": "http://x/"},
+                      tmp_path / "bad.html", scene="atlantis")
 
 
 def test_launcher_art_is_live_only(tmp_path: Path):

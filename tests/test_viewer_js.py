@@ -16,6 +16,7 @@ DIRECTOR = ROOT / "site_kg" / "viewer" / "director.js"
 LAUNCHER = ROOT / "site_kg" / "viewer" / "launcher.js"
 PLANETS = ROOT / "site_kg" / "viewer" / "scenes" / "planets.js"
 NEURAL = ROOT / "site_kg" / "viewer" / "scenes" / "neural.js"
+CITY = ROOT / "site_kg" / "viewer" / "scenes" / "city.js"
 UI = ROOT / "site_kg" / "viewer" / "ui.js"
 
 pytestmark = pytest.mark.skipif(shutil.which("node") is None,
@@ -264,7 +265,7 @@ assert.equal(g.dangling, 1);
 
 
 def test_scene_selection_and_derived_edge_visibility():
-    _run(_prelude(CORE, DIRECTOR, PLANETS, NEURAL) + """
+    _run(_prelude(CORE, DIRECTOR, PLANETS, NEURAL, CITY) + """
 const g = new SK.LiveGraph(256);
 for (let i = 0; i < 160; i++) {
   g.nodeAdded("n" + i, {t: "N" + i, c: i % 4, g: i === 0 ? 150 : 1,
@@ -273,9 +274,11 @@ for (let i = 0; i < 160; i++) {
 for (let i = 1; i <= 150; i++) g.edgeAdded("n0", "n" + i, "ref");
 assert.equal(SK.scenes.planets.select(g, -1).length, 160);
 assert.equal(SK.scenes.neural.select(g, 5).length, 160);
+assert.equal(SK.scenes.city.select(g, 5).length, 160);
 assert.equal(SK.scenes.planets.ego, false);
 assert.equal(SK.scenes.neural.ego, false);
-assert.deepEqual(SK.sceneOrder, ["planets", "neural"]);
+assert.equal(SK.scenes.city.ego, false);
+assert.deepEqual(SK.sceneOrder, ["planets", "neural", "city"]);
 
 g.edgeAdded("n1", "n2", "mentions_symbol");
 const derivedEdge = g.m - 1;
@@ -306,6 +309,81 @@ director.toggleKind("mentions_symbol");
 director._recomputeDims();
 assert.ok(g.eDim[derivedEdge] > 0);
 """)
+
+
+def test_city_scene_plots_and_tower_spec():
+    """The city must give every page a stable plot and a height it deserves."""
+    _run(_prelude(CORE, CITY) + """
+const cfg = SK.scenes.city;
+assert.equal(cfg.city, true);
+assert.equal(cfg.sky, "skyline");
+assert.equal(cfg.ego, false);
+assert.equal(cfg.labelBudget > 0 && cfg.labelBudget <= 8, true);
+assert.equal(cfg.cityPitch > 0, true);
+assert.equal(cfg.cityFloor > 0, true);
+
+/* Plots are a pure function of the index: growing the crawl never re-flows
+   a building that already stands. */
+const cells = SK.cityCells(200);
+assert.equal(cells.length, 200);
+assert.deepEqual(SK.cityCells(200), cells);
+assert.deepEqual(SK.cityCells(20), cells);
+assert.deepEqual(cells[0], [0, 0]);
+const seen = new Set(cells.map(function (c) { return c[0] + "," + c[1]; }));
+assert.equal(seen.size, 200, "every page gets its own plot");
+let minX = 0, maxX = 0, minZ = 0, maxZ = 0;
+for (const c of cells) {
+  if (c[0] < minX) minX = c[0];
+  if (c[0] > maxX) maxX = c[0];
+  if (c[1] < minZ) minZ = c[1];
+  if (c[1] > maxZ) maxZ = c[1];
+}
+/* A square spiral fills a square block, not a lopsided wedge. */
+assert.ok(Math.abs((maxX - minX) - (maxZ - minZ)) <= 1,
+          "footprint stays square, got " + (maxX - minX) + "x" + (maxZ - minZ));
+
+function spec(o) {
+  return SK.citySpec(Object.assign({floor: 0.62, seed: 7, kids: 0,
+                                    kidsMax: 9, degreeMax: 9}, o));
+}
+const short = spec({rank: 0.001, rankMax: 0.03, degree: 0});
+const tall = spec({rank: 0.03, rankMax: 0.03, degree: 9});
+assert.ok(short.floors >= 3, "the smallest building still has floors");
+assert.ok(tall.floors <= 30, "the tallest tower is capped");
+assert.ok(tall.floors > short.floors, "rank raises the skyline");
+assert.equal(tall.h, tall.floors * 0.62);
+assert.equal(short.h, short.floors * 0.62);
+assert.ok(short.w >= 1.05 && short.w <= 1.5);
+assert.ok(short.d >= 1.05 && short.d <= 1.5);
+
+/* Lit windows are the children: no links, no lights. */
+assert.ok(spec({rank: 0.02, rankMax: 0.03, degree: 1}).lit < 0.1);
+const few = spec({rank: 0.02, rankMax: 0.03, degree: 1, kids: 1, kidsMax: 9});
+const many = spec({rank: 0.02, rankMax: 0.03, degree: 1, kids: 9, kidsMax: 9});
+assert.ok(few.lit > 0 && few.lit < many.lit);
+assert.ok(many.lit <= 0.8);
+
+/* Floors are quantised, so the facade grid is whole storeys of glass. */
+const odd = spec({rank: 0.017, rankMax: 0.03, degree: 3, kids: 2, kidsMax: 9});
+assert.equal(odd.floors, Math.round(odd.floors));
+""")
+
+
+def test_city_gpu_pipeline_is_declared():
+    """The WebGPU backend must carry the city, depth buffer included."""
+    js = GPU.read_text(encoding="utf-8")
+    assert "var CITY_WGSL" in js
+    assert "fn vs_city" in js and "fn fs_city" in js
+    assert "city: pipeline(modules.city" in js
+    assert 'depthCompare: "less"' in js
+    assert "depthStencilAttachment" in js
+    assert '"depth24plus"' in js
+    assert "GpuRenderer.prototype._packCity" in js
+    assert "fn skyline(" in js
+    # The city is the only pass that reads and writes depth.
+    assert "depthWriteEnabled: true" in js
+    # And it is drawn with its own index buffer.
+    assert 'this._bind("city", CITY_SLOTS, cityGeo)' in js
 
 
 def test_connect_events_resumes_and_resets_on_new_run():
@@ -1066,12 +1144,13 @@ def test_gpu_backend_ships_wgsl_and_point_quads():
     src = GPU.read_text(encoding="utf-8")
     for entry in ("fn vs_sky", "fn fs_sky", "fn vs_cortex", "fn fs_cortex",
                   "fn vs_node", "fn fs_node", "fn fs_halo",
-                  "fn vs_edge", "fn fs_edge", "fn vs_ring", "fn fs_ego"):
+                  "fn vs_edge", "fn fs_edge", "fn vs_ring", "fn fs_ego",
+                  "fn vs_city", "fn fs_city"):
         assert entry in src, entry
     # the halo is the node quad with an additive blend and its own fragment
     # stage, so it has no vertex entry point of its own
     assert "fn vs_halo" not in src
-    assert src.count("@vertex") == 6 and src.count("@fragment") == 7
+    assert src.count("@vertex") == 7 and src.count("@fragment") == 8
     assert "multisample: {count: 4}" in src, "pipelines must match the MSAA pass"
     assert "navigator.gpu" in src
     # gl_PointSize is a diameter; the quad's half-extent is size/res, not
