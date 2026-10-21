@@ -323,14 +323,17 @@ assert.equal(cfg.cityPitch > 0, true);
 assert.equal(cfg.cityFloor > 0, true);
 
 /* Plots are a pure function of the index: growing the crawl never re-flows
-   a building that already stands. */
-const cells = SK.cityCells(200);
-assert.equal(cells.length, 200);
-assert.deepEqual(SK.cityCells(200), cells);
-assert.deepEqual(SK.cityCells(20), cells);
+   a building that already stands. The ladder is cached and extended in
+   place, so asking for five plots and then five hundred returns one array
+   whose first entries never move. */
+const cells = SK.cityCells(500);
+assert.equal(SK.cityCells(5), cells, "the ladder is cached, not rebuilt");
+assert.deepEqual(cells.slice(0, 4), [[0, 0], [1, 0], [1, 1], [0, 1]]);
+assert.deepEqual(SK.cityCells(200), cells, "a prefix is the same ladder");
+assert.equal(cells.length, 500);
 assert.deepEqual(cells[0], [0, 0]);
 const seen = new Set(cells.map(function (c) { return c[0] + "," + c[1]; }));
-assert.equal(seen.size, 200, "every page gets its own plot");
+assert.equal(seen.size, 500, "every page gets its own plot");
 let minX = 0, maxX = 0, minZ = 0, maxZ = 0;
 for (const c of cells) {
   if (c[0] < minX) minX = c[0];
@@ -348,13 +351,21 @@ function spec(o) {
 }
 const short = spec({rank: 0.001, rankMax: 0.03, degree: 0});
 const tall = spec({rank: 0.03, rankMax: 0.03, degree: 9});
-assert.ok(short.floors >= 3, "the smallest building still has floors");
-assert.ok(tall.floors <= 30, "the tallest tower is capped");
+const floorless = spec({rank: 0, rankMax: 0.03, degree: 0});
+/* Pinned, not bounded: the clamp is part of the law, so both ends must be
+   reachable, and the middle must land on the storey grid. */
+assert.equal(short.floors, 6);
+assert.equal(tall.floors, 30, "the tallest tower is capped");
+assert.equal(floorless.floors, 3, "an unknown page still gets three floors");
 assert.ok(tall.floors > short.floors, "rank raises the skyline");
 assert.equal(tall.h, tall.floors * 0.62);
 assert.equal(short.h, short.floors * 0.62);
 assert.ok(short.w >= 1.05 && short.w <= 1.5);
 assert.ok(short.d >= 1.05 && short.d <= 1.5);
+/* The footprint is seeded: two pages of the same height still differ. */
+assert.ok(spec({rank: 0.02, rankMax: 0.03, degree: 1, seed: 7}).w
+          !== spec({rank: 0.02, rankMax: 0.03, degree: 1, seed: 11}).w,
+          "the footprint is seeded per plot");
 
 /* Lit windows are the children: no links, no lights. */
 assert.ok(spec({rank: 0.02, rankMax: 0.03, degree: 1}).lit < 0.1);
@@ -380,8 +391,15 @@ def test_city_gpu_pipeline_is_declared():
     assert '"depth24plus"' in js
     assert "GpuRenderer.prototype._packCity" in js
     assert "fn skyline(" in js
-    # The city is the only pass that reads and writes depth.
-    assert "depthWriteEnabled: true" in js
+    # The city is the only pass that writes depth, and the only one that
+    # rejects fragments: links and rings test "less-equal" so a tower hides
+    # what is behind it, and every other pass ignores the buffer.
+    assert js.count("depthWriteEnabled: true") == 1
+    assert js.count('depthCompare: "less"') == 1
+    assert js.count('depthCompare: "less-equal"') == 2
+    assert js.count('depthCompare: "always"') == 1
+    # Reversed smoothstep edges are undefined in GLSL ES; the twin uses 1-ss.
+    assert "ss(0.76, 0.70" not in js and "ss(0.78, 0.70" not in js
     # And it is drawn with its own index buffer.
     assert 'this._bind("city", CITY_SLOTS, cityGeo)' in js
 

@@ -93,7 +93,10 @@
     var floor = o.floor || 0.62;
     var rankPart = Math.sqrt(clamp01(o.rank / Math.max(o.rankMax, 1e-9)));
     var degPart = Math.sqrt(clamp01(o.degree / Math.max(o.degreeMax, 1)));
-    var floors = Math.round((2.4 + 10.4 * rankPart + 3.0 * degPart) / floor);
+    /* The coefficients are chosen so the clamp is load-bearing at both ends:
+       an unknown page lands on the three-floor minimum and the top-ranked hub
+       on the thirty-floor maximum at the default floor height. */
+    var floors = Math.round((1.2 + 14.2 * rankPart + 3.2 * degPart) / floor);
     floors = Math.max(3, Math.min(30, floors));
     var h = floors * floor;
     /* Footprint varies per plot: a city of identical squares reads as a

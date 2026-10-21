@@ -47,7 +47,7 @@
     "varying vec3 vLocal; varying float vFace; varying vec4 vSpec;",
     "varying vec3 vCol; varying vec3 vNrm; varying vec3 vWorld;",
     "varying float vDepth;",
-    "uniform float u_time; uniform float u_lit; uniform float u_finale;",
+    "uniform float u_time; uniform float u_finale;",
     "uniform float u_cityR; uniform float u_pitch;",
     "float h21(vec2 p){",
     "  p = fract(p*vec2(127.31, 311.7));",
@@ -65,7 +65,8 @@
     "    float P = max(u_pitch, 0.5);",
     "    float dx = abs(mod(g.x + P*0.5, P) - P*0.5);",
     "    float dz = abs(mod(g.y + P*0.5, P) - P*0.5);",
-    "    float lane = smoothstep(0.18, 0.03, dx) + smoothstep(0.18, 0.03, dz);",
+    "    float lane = (1.0 - smoothstep(0.03, 0.18, dx))"
+      + " + (1.0 - smoothstep(0.03, 0.18, dz));",
     /* Wet asphalt under sodium lamps: the street is the only thing that
        explains where the towers stand, so it has to be legible, not loud. */
     "    col = vec3(0.017, 0.020, 0.029);",
@@ -83,7 +84,7 @@
     "    float e = max(abs(vLocal.x), abs(vLocal.y));",
     "    col = vCol * 0.085 + vec3(0.012, 0.014, 0.020);",
     "    col += vCol * 0.26 * smoothstep(0.84, 1.0, e);",
-    "    float beacon = smoothstep(0.13, 0.0, length(vLocal.xy));",
+    "    float beacon = 1.0 - smoothstep(0.0, 0.13, length(vLocal.xy));",
     "    beacon *= 0.40 + 1.45 * vSpec.y;",
     "    beacon *= 0.70 + 0.30 * sin(u_time * 2.1 + vSpec.z * 31.0);",
     "    col += vec3(1.0, 0.74, 0.42) * beacon * 1.25;",
@@ -106,15 +107,17 @@
     "    float v = vLocal.y * floors;",
     "    vec2 cell = floor(vec2(u, v));",
     "    vec2 f = fract(vec2(u, v));",
-    "    float win = smoothstep(0.24, 0.30, f.x) * smoothstep(0.76, 0.70, f.x)",
-    "              * smoothstep(0.28, 0.36, f.y) * smoothstep(0.78, 0.70, f.y);",
+    "    float win = smoothstep(0.24, 0.30, f.x) * (1.0 - smoothstep(0.70, 0.76, f.x))",
+    "              * smoothstep(0.28, 0.36, f.y) * (1.0 - smoothstep(0.70, 0.78, f.y));",
     "    float seed = vSpec.z;",
     "    float pick = h21(cell + vec2(seed*37.0, seed*11.0));",
-    "    float lit = step(pick, vSpec.y * u_lit);",
+    "    float lit = step(pick, vSpec.y);",
     /* Finale: a ring of light travels out from the centre. The windows it
        passes switch on, sparkle and fall dark again behind it. */
     "    float ring = u_finale * 1.95 - 0.35;",
-    "    float dist = length(vWorld.xz) / max(u_cityR, 1.0);",
+    /* Plots start half a pitch in, so the wave has to start there too. */
+    "    vec2 q = vWorld.xz - vec2(max(u_pitch, 0.5) * 0.5);",
+    "    float dist = length(q) / max(u_cityR, 1.0);",
     "    float band = smoothstep(ring - 0.24, ring, dist)",
     "               * (1.0 - smoothstep(ring, ring + 0.15, dist));",
     "    lit = max(lit, band * step(0.42, pick));",
@@ -421,9 +424,8 @@
        so the towers occlude each other and the edges behind them; the ground
        is the only translucent part, fading out before its own rim. Everything
        else in the scene is transparent and depth-write off. */
-    this.cityUni = {u_time: {value: 0}, u_lit: {value: 1},
-                    u_finale: {value: 0}, u_cityR: {value: 30},
-                    u_pitch: {value: 3}};
+    this.cityUni = {u_time: {value: 0}, u_finale: {value: 0},
+                    u_cityR: {value: 30}, u_pitch: {value: 3}};
     this.cityGeo = new THREE.BufferGeometry();
     this.cityMesh = new THREE.Mesh(this.cityGeo, new THREE.ShaderMaterial({
       uniforms: this.cityUni, vertexShader: CITY_VS, fragmentShader: CITY_FS,
@@ -1146,7 +1148,8 @@
         pos[o + 2] = cz + table.unit[k * 3 + 2] * d;
         col[o] = c.r; col[o + 1] = c.g; col[o + 2] = c.b;
         spec[v * 4] = floors; spec[v * 4 + 1] = lit;
-        spec[v * 4 + 2] = seed; spec[v * 4 + 3] = h;
+        /* .w is padding: a vec4 keeps the attribute 16-byte aligned. */
+        spec[v * 4 + 2] = seed;
         birth[v] = b;
       }
       var rr = Math.hypot(cx, cz) + Math.max(w, d) * 0.5;

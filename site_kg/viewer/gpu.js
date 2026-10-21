@@ -575,7 +575,7 @@ struct VOut {
      rest of the pass is painter-ordered and writes no depth. */
   var CITY_WGSL = WGSL_COMMON + `
 struct U {
-  a: vec4f,     /* time, window gain, finale, city radius */
+  a: vec4f,     /* time, padding, finale, city radius */
   b: vec4f,     /* street pitch */
   view: mat4x4f,
   proj: mat4x4f,
@@ -632,7 +632,7 @@ fn hazeCol() -> vec3f { return vec3f(0.030, 0.034, 0.056); }
     let P = max(u.b.x, 0.5);
     let dx = abs(fract(g.x / P + 0.5) - 0.5) * P;
     let dz = abs(fract(g.y / P + 0.5) - 0.5) * P;
-    let lane = ss(0.18, 0.03, dx) + ss(0.18, 0.03, dz);
+    let lane = (1.0 - ss(0.03, 0.18, dx)) + (1.0 - ss(0.03, 0.18, dz));
     col = vec3f(0.017, 0.020, 0.029);
     col = col + vec3f(0.30, 0.19, 0.086) * lane * 0.22;
     let r = length(g) / max(u.a.w, 1.0);
@@ -644,7 +644,7 @@ fn hazeCol() -> vec3f { return vec3f(0.030, 0.034, 0.056); }
     let e = max(abs(i.local.x), abs(i.local.y));
     col = i.col * 0.085 + vec3f(0.012, 0.014, 0.020);
     col = col + i.col * 0.26 * ss(0.84, 1.0, e);
-    var beacon = ss(0.13, 0.0, length(i.local.xy));
+    var beacon = 1.0 - ss(0.0, 0.13, length(i.local.xy));
     beacon = beacon * (0.40 + 1.45 * i.spec.y);
     beacon = beacon * (0.70 + 0.30 * sin(u.a.x * 2.1 + i.spec.z * 31.0));
     col = col + vec3f(1.0, 0.74, 0.42) * beacon * 1.25;
@@ -660,13 +660,15 @@ fn hazeCol() -> vec3f { return vec3f(0.030, 0.034, 0.056); }
     let vv = i.local.y * floors;
     let cell = floor(vec2f(uu, vv));
     let f = fract(vec2f(uu, vv));
-    let win = ss(0.24, 0.30, f.x) * ss(0.76, 0.70, f.x)
-            * ss(0.28, 0.36, f.y) * ss(0.78, 0.70, f.y);
+    let win = ss(0.24, 0.30, f.x) * (1.0 - ss(0.70, 0.76, f.x))
+            * ss(0.28, 0.36, f.y) * (1.0 - ss(0.70, 0.78, f.y));
     let seed = i.spec.z;
     let pick = h21(cell + vec2f(seed * 37.0, seed * 11.0));
-    var lit = step(pick, i.spec.y * u.a.y);
+    var lit = step(pick, i.spec.y);
     let ring = u.a.z * 1.95 - 0.35;
-    let dist = length(i.world.xz) / max(u.a.w, 1.0);
+    /* Plots start half a pitch in, so the wave has to start there too. */
+    let q = i.world.xz - vec2f(max(u.b.x, 0.5) * 0.5);
+    let dist = length(q) / max(u.a.w, 1.0);
     let band = ss(ring - 0.24, ring, dist) * (1.0 - ss(ring, ring + 0.15, dist));
     lit = max(lit, band * step(0.42, pick));
     let lamp = mix(vec3f(1.0, 0.82, 0.56), i.col, 0.30);
@@ -869,9 +871,10 @@ fn hazeCol() -> vec3f { return vec3f(0.030, 0.034, 0.056); }
         fragment: {module: module, entryPoint: fs,
                    targets: [{format: format, blend: blend || undefined}]},
         primitive: {topology: topology, cullMode: cull || "none"},
-        /* Every other pass is painter-ordered and does not touch depth; the
-           city writes it so its towers hide each other (and the edges behind
-           them) without changing what the other scenes draw. */
+        /* The city writes depth so its towers hide each other and the links
+           behind them; every other pass is painter-ordered and leaves depth
+           alone, so the buffer stays at its cleared 1.0 for them. Links and
+           rings are the exception: they test depth without writing it. */
         depthStencil: depth || {format: "depth24plus", depthWriteEnabled: false,
                                 depthCompare: "always"},
         multisample: {count: 4}
@@ -885,12 +888,20 @@ fn hazeCol() -> vec3f { return vec3f(0.030, 0.034, 0.056); }
                      layoutOf(NODE_SLOTS, "instance"), ALPHA_BLEND),
       halo: pipeline(modules.node, "vs_node", "fs_halo", "triangle-list",
                      layoutOf(NODE_SLOTS, "instance"), ADD_BLEND),
+      /* Links and rings test depth but never write it: in the city a link
+         disappears behind a tower, and in the other scene modules the buffer
+         is the cleared 1.0, so "less-equal" passes and the painter order
+         stands unchanged. */
       edge: pipeline(modules.edge, "vs_edge", "fs_edge", "line-list",
-                     layoutOf(EDGE_SLOTS), ALPHA_BLEND),
+                     layoutOf(EDGE_SLOTS), ALPHA_BLEND, "none",
+                     {format: "depth24plus", depthWriteEnabled: false,
+                      depthCompare: "less-equal"}),
       ring: pipeline(modules.ring, "vs_ring", "fs_ring", "line-list",
                      layoutOf([{stride: 12, format: "float32x3", loc: 0},
                                {stride: 12, format: "float32x3", loc: 1}]),
-                     ALPHA_BLEND),
+                     ALPHA_BLEND, "none",
+                     {format: "depth24plus", depthWriteEnabled: false,
+                      depthCompare: "less-equal"}),
       ego: pipeline(modules.ego, "vs_ego", "fs_ego", "triangle-list",
                     [{arrayStride: 12, stepMode: "vertex",
                       attributes: [{shaderLocation: 0, offset: 0, format: "float32x3"}]},
@@ -1107,7 +1118,7 @@ fn hazeCol() -> vec3f { return vec3f(0.030, 0.034, 0.056); }
     var view = this.camera.matrixWorldInverse.elements;
     var proj = this.camera.projectionMatrix.elements;
     out[0] = this.time || 0;
-    out[1] = cu.u_lit.value;
+    /* a.y is padding: the lights are the node's own lit fraction (a_spec.y). */
     out[2] = cu.u_finale.value;
     out[3] = cu.u_cityR.value;
     out[4] = cu.u_pitch.value;
