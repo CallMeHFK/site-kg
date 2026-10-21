@@ -119,7 +119,7 @@ Limits and fallbacks:
 
 - The scale floor is the measured 75,415-node / 61,615-edge corpus; layout runs on the server (no browser-side force layout at that size). `--max-nodes` trims the preview only.
 - Labels are budgeted at most 40 chapter / 12 tick labels, and the scene is merged point/line batches — no per-node objects or DOM labels.
-- Without WebGL2 the page falls back to a canvas-2D view capped at 5,000 nodes and points at the offline archive for the full graph. WebGL context loss is restored in place.
+- The live scene draws on **WebGPU** first (hand-written WGSL; the same layout, birth, drag and finale state feeds both backends, so the two cannot drift). A browser with no `navigator.gpu` or no usable adapter falls back to WebGL2 on the same canvas, and without WebGL2 to a canvas-2D view capped at 5,000 nodes that points at the offline archive for the full graph. WebGL context loss is restored in place.
 - The archive viewer (`site-kg render <site_id>`) is a single offline HTML file (binary payloads embedded by default; `--external-data` writes `sk-*.bin` beside it) and replays the same scenes.
 
 Security: the server binds `127.0.0.1` only, sends no CORS headers, rejects non-loopback `Host` values, refuses path traversal, serves no corpus files, and offers an optional shared token (`--token`). With a token, the printed URL carries `?token=…` and the page forwards it on snapshot, SSE and start calls. The Three.js r186 bundle is committed and pinned; normal development and offline use need no npm — see `tools/build_viewer_bundle.mjs` for the deliberate upgrade path.

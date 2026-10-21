@@ -46,31 +46,23 @@
   }
 
   Renderer.prototype.mount = function (canvas, live) {
+    this._initState(canvas, live);
+    this._mountGL();
+    this.setScene("planets");
+    this.resize();
+    return this;
+  };
+
+  /* Everything here is scene data, not drawing: the WebGPU backend reuses it
+     verbatim and replaces only the draw calls, so the two backends cannot
+     drift apart on layout, colour or animation state. */
+  Renderer.prototype._initState = function (canvas, live) {
     var THREE = T3.THREE;
     this.canvas = canvas;
     this.live = live;
-    this.renderer = new THREE.WebGLRenderer({canvas: canvas, antialias: true,
-                                             powerPreference: "high-performance"});
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-    var self = this;
-    this._onContextLost = function (event) {
-      if (event && event.preventDefault) event.preventDefault();
-      self.contextLost = true;
-    };
-    this._onContextRestored = function () {
-      self.contextLost = false;
-      self.colorDirty = true;
-      self.lastVersion = -1;
-      self.lastDimVersion = -1;
-      self._clearEdgeIndex();
-      self.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-      self.resize();
-    };
-    canvas.addEventListener("webglcontextlost", this._onContextLost, false);
-    canvas.addEventListener("webglcontextrestored", this._onContextRestored, false);
     this.scene = new THREE.Scene();
     this.camera = new THREE.PerspectiveCamera(60, 1, 0.1, 1e6);
-    this.scene.background = new THREE.Color(0x0d1117);
+    this.scene.background = new THREE.Color(0x04050b);
 
     /* The cosmos is a shader, not a baked image: three parallax star layers
        twinkle over drifting nebulae, a milky-way band crosses the field, and
@@ -141,18 +133,21 @@
           "  float n2 = fbm(p*1.9 + vec2(-t*0.125, t*0.140) + 7.0);",
           "  float n3 = fbm(p*3.4 + vec2(t*0.082, -t*0.094) + 19.0);",
           "  float mask = smoothstep(0.26, 0.84, n1*0.68 + n2*0.34);",
-          "  vec3 deep = vec3(0.004, 0.006, 0.020);",
-          "  vec3 core = mix(vec3(0.150,0.070,0.400), vec3(0.022,0.165,0.300),",
+          /* Indigo space with a little dust, not a violet candy cloud: the
+             bodies are the colour in this scene, so the nebula stays a
+             backdrop. Magenta and teal are kept to a trace. */
+          "  vec3 deep = vec3(0.0035, 0.0045, 0.0130);",
+          "  vec3 core = mix(vec3(0.095,0.068,0.235), vec3(0.018,0.115,0.190),",
           "                  smoothstep(0.40,1.0,n2));",
-          "  core = mix(core, vec3(0.340,0.075,0.360),",
-          "             smoothstep(0.64,1.0,n1)*0.62);",
-          "  core = mix(core, vec3(0.020,0.245,0.235),",
-          "             smoothstep(0.70,1.0,n3)*0.42);",
-          "  vec3 col = deep + core*mask*1.12;",
-          "  col += vec3(0.070,0.050,0.160)*smoothstep(0.52,1.0,n3)*0.48;",
+          "  core = mix(core, vec3(0.225,0.080,0.220),",
+          "             smoothstep(0.64,1.0,n1)*0.50);",
+          "  core = mix(core, vec3(0.020,0.165,0.160),",
+          "             smoothstep(0.70,1.0,n3)*0.38);",
+          "  vec3 col = deep + core*mask*1.05;",
+          "  col += vec3(0.055,0.052,0.120)*smoothstep(0.52,1.0,n3)*0.44;",
           /* Milky-way band: a diagonal lane of dense dust and small stars. */
           "  float lane = exp(-pow((uv.x*0.78 + uv.y*0.62)*3.1, 2.0));",
-          "  col += vec3(0.105,0.115,0.205)*lane*(0.60+0.40*sin(t*0.12));",
+          "  col += vec3(0.095,0.105,0.175)*lane*(0.60+0.40*sin(t*0.12));",
           /* Each layer streams at its own speed, so the field never sits still:
              the nearest stars travel about nine cells per ten seconds. */
           "  col += stars(uv + u_drift*0.20 + vec2(t*0.0035, t*0.0021),",
@@ -167,19 +162,19 @@
           "  col += vec3(0.80,0.88,1.0)*comet(uv + u_drift*0.12, t);",
           "  return col; }",
           /* Neural: a dark basin, not tissue. The scene already draws bright
-             synapses and halos, so the backdrop stays near-black with one cool
+             synapses and halos, so the backdrop stays near-black with one warm
              radial wash and a few faint motes. Nothing here may compete with
              an edge for attention. */
           "vec3 deepvoid(vec2 uv, float t){",
           "  float r = length(uv);",
-          "  vec3 col = vec3(0.0035, 0.0050, 0.0100);",
-          "  col += vec3(0.011, 0.018, 0.036) * smoothstep(1.02, 0.0, r);",
+          "  vec3 col = vec3(0.0040, 0.0036, 0.0038);",
+          "  col += vec3(0.024, 0.016, 0.018) * smoothstep(1.02, 0.0, r);",
           /* Dust motes: sparse pinpricks, dim enough to read as texture at the
              frame edge while leaving the graph's own glow uncontested. */
           "  vec2 g = uv*175.0; vec2 id = floor(g); vec2 f = fract(g) - 0.5;",
           "  float h = hash(id);",
           "  float mote = step(0.9962, h) * smoothstep(0.42, 0.0, length(f));",
-          "  col += vec3(0.18,0.28,0.44) * mote * (0.50 + 0.50*sin(t*0.8 + h*37.0));",
+          "  col += vec3(0.40,0.30,0.22) * mote * (0.50 + 0.50*sin(t*0.8 + h*37.0));",
           "  return col; }",
           "void main(){",
           "  vec2 uv = (vUv - 0.5) * vec2(u_res.x/max(u_res.y,1.0), 1.0);",
@@ -194,35 +189,165 @@
     this.sky.renderOrder = -1000;
     this.scene.add(this.sky);
 
+    /* The cortex: the tissue the cells live on. A brain has to be geometry,
+       not a backdrop, because the silhouette the eye reads is the gyri of a
+       head. One mesh carries the folds, and the shader grows them in as the
+       tissue matures, so the head keeps changing while the build runs. */
+    this.cortexUni = {u_time: {value: 0}, u_fold: {value: 0},
+                      u_opacity: {value: 0.0},
+                      u_light: {value: new THREE.Vector3(-0.55, 0.6, 0.75)},
+                      u_color: {value: new THREE.Color(0x5b5566)},
+                      u_rim: {value: new THREE.Color(0xffc98a)}};
+    this.cortex = new THREE.Mesh(
+      new THREE.BufferGeometry(),
+      new THREE.ShaderMaterial({
+        uniforms: this.cortexUni, transparent: true, depthWrite: false,
+        side: THREE.FrontSide,
+        vertexShader: [
+          "attribute vec3 a_flat; attribute vec3 a_flatN;",
+          "attribute float a_dev; attribute float a_fold;",
+          "varying vec3 vN; varying vec3 vV; varying float vFold;",
+          "varying float vDev;",
+          "uniform float u_fold;",
+          "void main(){",
+          /* A young cortex is smooth: the folds grow in as the tissue matures,
+             oldest first, so the gyri of the brainstem are there before the
+             frontal pole has folded. */
+          "  float w = smoothstep(a_dev - 0.25, a_dev + 0.05, u_fold);",
+          "  vec3 p = mix(a_flat, position, w);",
+          "  vec3 n = normalize(mix(a_flatN, normal, w));",
+          "  vN = n; vFold = a_fold; vDev = a_dev;",
+          "  vec4 mv = modelViewMatrix * vec4(p, 1.0);",
+          "  vV = -mv.xyz;",
+          "  gl_Position = projectionMatrix * mv; }"
+        ].join("\n"),
+        fragmentShader: [
+          "varying vec3 vN; varying vec3 vV; varying float vFold;",
+          "varying float vDev;",
+          "uniform vec3 u_color; uniform vec3 u_light; uniform float u_opacity;",
+          "uniform vec3 u_rim; uniform float u_time;",
+          "void main(){",
+          "  vec3 N = normalize(vN);",
+          "  vec3 V = normalize(vV);",
+          "  vec3 L = normalize(u_light);",
+          "  float diff = max(dot(N, L), 0.0);",
+          /* Wrapped light: tissue scatters, so the shadow side never goes
+             black and the folds keep a hint of light in them. */
+          "  float wrap = max((dot(N, L) + 0.45) / 1.45, 0.0);",
+          /* A tight rim: only the true silhouette glows. A broad fresnel
+             also lit every fold flank, and the head read as a wireframe
+             instead of as a sheet of tissue. */
+          "  float fres = pow(1.0 - max(dot(N, V), 0.0), 4.0);",
+          /* The fold field is signed: negative is a cleft, positive is a
+             crown. The sulci are the low end of that field, so they are
+             read off it directly. A single threshold used to hide half the
+             sheet and flatten the whole head. */
+          "  float sulcus = 1.0 - smoothstep(-0.085, -0.012, vFold);",
+          "  float crown  = smoothstep(-0.012, 0.050, vFold);",
+          "  float pulse = 0.92 + 0.08*sin(u_time*0.8 + vDev*9.0);",
+          /* A cavity: the cleft is in shadow, the crown catches the light. */
+          /* A thin sheet still has colour of its own: without a lit body the
+             only thing that showed was the rim of each fold, and the head read
+             as a wireframe rather than as tissue. */
+          /* Colours arrive in linear space and this shader writes straight to
+             the sRGB buffer, so the raw product is about half as bright as the
+             swatch. The gain restores the putty the palette asks for; without
+             it the head sat at a fifth of the value and read as a burnt shell. */
+          "  vec3 col = u_color * (0.50 + 0.80*diff + 0.36*wrap) * 1.9 * pulse;",
+          /* A little body on the shadow side: without it the far hemisphere
+             went to pure black and the head lost its silhouette. */
+          "  col += u_color * 0.10 * (0.5 + 0.5*max(dot(N, V), 0.0));",
+          /* A sulcus is a groove, not a hole: at 0.42 the clefts read as torn
+             gashes and the surface looked like bark. */
+          "  col = mix(col, col*0.62, sulcus);",
+          "  col += u_color * crown * 0.14;",
+          /* The wet sheen on the gyri: a highlight is what reads as a folded
+             surface rather than a painted blob. */
+          "  vec3 H = normalize(L + V);",
+          "  float spec = pow(max(dot(N, H), 0.0), 26.0) * (1.0 - sulcus);",
+          "  col += mix(u_rim, vec3(1.0), 0.55) * spec * 0.32;",
+          /* The rim is a rim, not a wash: at 0.75 it lit every fold flank and
+             the membrane took the rim colour instead of its own. */
+          "  col += u_rim * fres * 0.34;",
+          /* The tissue is see-through: a thin sheet over the cells, not a body
+             of smoke. Facing the camera it is almost clear, so the neurons and
+             their axons read through the front of the head; at the silhouette
+             the path through the sheet is long and the rim glows. That ratio,
+             not the overall level, is what makes it a membrane. */
+          "  float a = u_opacity * (0.58 + 1.20*fres) * (1.0 - 0.34*sulcus);",
+          "  gl_FragColor = vec4(col, clamp(a, 0.0, 1.0)); }"
+        ].join("\n")
+      }));
+    this.cortex.frustumCulled = false;
+    this.cortex.renderOrder = 0;
+    this.cortex.visible = false;
+    this.scene.add(this.cortex);
+
     this.nodeUni = {u_px: {value: 1}, u_scale: {value: 1}, u_minpx: {value: 2},
                     u_time: {value: 0}, u_neural: {value: 0},
                     u_fly: {value: 1}, u_driftA: {value: 0},
+                    u_vol: {value: 0},
+                    u_tint: {value: new THREE.Color(0xffedd0)},
+                    u_cam: {value: new THREE.Vector3()},
                     u_light: {value: new THREE.Vector3(-0.55, 0.6, 0.75).normalize()}};
     this.haloUni = {u_px: this.nodeUni.u_px, u_scale: this.nodeUni.u_scale,
                     u_minpx: this.nodeUni.u_minpx, u_time: this.nodeUni.u_time,
                     u_neural: this.nodeUni.u_neural,
                     u_fly: this.nodeUni.u_fly, u_driftA: this.nodeUni.u_driftA,
+                    u_vol: this.nodeUni.u_vol,
+                    u_cam: this.nodeUni.u_cam,
                     u_light: this.nodeUni.u_light,
+                    u_gain: {value: 0.31},
                     u_halo: {value: 3.1}};
     /* Node sprites are shaded as spheres: the point coordinate gives a normal,
        one directional light gives the terminator, and a fixed view vector gives
        the specular highlight. a_birth grows a node in when it is first revealed;
        nodes present at load keep birth 0 so no wall of animation fires. */
     var vs = "attribute float a_size; attribute float a_dim; attribute float a_ring;"
-      + " attribute float a_birth; attribute vec3 color;"
+      + " attribute float a_birth; attribute float a_seed; attribute vec3 color;"
       + " uniform float u_px; uniform float u_scale; uniform float u_minpx;"
       + " uniform float u_time; uniform float u_fly; uniform float u_driftA;"
+      + " uniform float u_vol; uniform vec3 u_cam;"
       + " varying vec3 vC; varying float vD; varying float vR; varying float vAge;"
-      + " varying vec3 vTail;"
-      /* One hash per node position: the node sprite and the two edge endpoints
-         that share the position read the same phase, so a drifting cell never
-         tears away from its axons. */
-      + " float skHash(vec3 p){"
-      + "   return fract(sin(dot(p, vec3(12.9898, 78.233, 37.719)))*43758.5453); }"
+      + " varying float vGrow; varying float vSprout;"
+      + " varying vec3 vTail; varying float vSeed; varying float vFace;"
+      /* The phase is a stable per-cell seed, never a hash of the position: a
+         position hash changes as soon as the cell moves, so a dragged or
+         springing node re-rolled its drift every frame and shook itself apart.
+         The seed arrives as an attribute, and the two edge endpoints that
+         share a cell carry the same seed, so an axon never tears off its soma. */
       + " void main(){ vC=color; vD=a_dim; vR=a_ring;"
-      + "   float ph = skHash(position);"
+      + "   float ph = a_seed;"
+      /* The seed is per cell, not per colour: a cluster of a hundred nodes
+         would otherwise be a hundred copies of the same neuron. */
+      + "   vSeed = ph;"
       + "   float age = max(0.0, u_time-a_birth);"
       + "   float born = smoothstep(0.0,0.45,age); vAge = born;"
+      /* Maturation runs on a longer clock than the fade-in: a neuron is born
+         as a soma and keeps extending its dendrites for a couple of seconds
+         after that, so tissue grows instead of merely appearing. */
+      + "   vGrow = clamp(age/2.2, 0.0, 1.0);"
+      /* A cell does not stop when it has finished its first growth: the fine
+         branches and the beads keep arriving for as long as the scene runs,
+         so the tissue thickens instead of merely being there. */
+      + "   vSprout = clamp((age - 1.4) / 16.0, 0.0, 1.0);"
+      /* Depth cue: on a closed shell the cells on the far side must recede,
+         or the head reads as a flat disc of dots instead of a volume. The
+         outward normal of the cell and the direction to the camera give the
+         facing term; the far side is dimmed rather than hidden, so the web
+         behind the tissue still shows through. */
+      + "   float face = 1.0;"
+      + "   if (u_vol > 0.5) {"
+      + "     float pl = length(position);"
+      + "     if (pl > 1e-4) {"
+      + "       vec3 nrm = position/pl;"
+      + "       vec3 toCam = u_cam - position;"
+      + "       float tl = length(toCam);"
+      + "       float f = tl > 1e-4 ? dot(nrm, toCam/tl) : 1.0;"
+      + "       face = mix(0.13, 1.0, smoothstep(-0.55, 0.90, f));"
+      + "     }"
+      + "   }"
+      + "   vFace = face;"
       /* Birth flight: a new node streaks in from outside the frame and settles
          onto its layout slot, so the build reads as matter arriving rather
          than sprites fading up where they stand. */
@@ -251,14 +376,20 @@
       + "   vec4 mv = modelViewMatrix*vec4(p,1.0);"
       + "   float size = a_size*u_scale*u_px*(300.0/max(-mv.z,1.0));"
       + "   size *= mix(1.0,1.42,vR)*grow*(1.0+flight*5.0);"
+      /* On the closed head the near hemisphere carries the eye: the cells
+         facing the camera keep their size and the far side shrinks back, so
+         the front of the head reads as a surface of neurons instead of a flat
+         scatter of dots. */
+      + "   if (u_vol > 0.5) size *= mix(0.62, 1.0, face);"
       + "   gl_PointSize = clamp(size, u_minpx*0.7, (220.0 + 280.0*flight)*u_px);"
       + "   gl_Position = projectionMatrix*mv; }";
     this.pgeo = new THREE.BufferGeometry();
     this.cloud = new THREE.Points(this.pgeo, new THREE.ShaderMaterial({
       uniforms: this.nodeUni, vertexShader: vs,
       fragmentShader: "varying vec3 vC; varying float vD; varying float vR;"
-        + " varying float vAge; varying vec3 vTail;"
-        + " uniform vec3 u_light; uniform float u_neural;"
+        + " varying float vAge; varying float vGrow; varying float vSprout;"
+        + " varying vec3 vTail; varying float vSeed; varying float vFace;"
+        + " uniform vec3 u_light; uniform float u_neural; uniform vec3 u_tint;"
         + " void main(){ vec2 sp = gl_PointCoord*2.0-1.0; vec2 b = sp;"
         /* While a node streaks in the body shrinks toward the leading edge,
            leaving the trailing half of the sprite free for the comet tail. */
@@ -284,9 +415,17 @@
            finer branches between them. Everything lives inside the point
            sprite, so the scene still costs one draw call. */
         + "   if (u_neural > 0.5) {"
-        + "     float sd = fract(dot(vC, vec3(12.9898, 78.233, 37.719)));"
+        /* The phase comes from the cell's own seed, not from its colour: every
+           node of a cluster shares one palette entry, so a colour-derived phase
+           made all 176 cells of the dominant cluster identical copies. */
+        + "     float sd = vSeed;"
         + "     float r = length(b);"
-        + "     float coreR = 0.30 + 0.02*sin(sd*9.0);"
+        + "     float coreR = 0.38 + 0.02*sin(sd*9.0);"
+        /* Maturation: the cell body swells from a bud to a soma, the primary
+           dendrites reach further out, and the finer branches and the beads
+           arrive later, in the order a neuron actually puts itself together. */
+        + "     float grow = vGrow;"
+        + "     float cellR = coreR*(0.42 + 0.58*smoothstep(0.0, 0.30, grow));"
         /* Bend the polar frame so dendrites wander instead of forming a
            perfect snowflake; the displacement is zero at the soma. */
         + "     float ang = atan(b.y, b.x);"
@@ -294,32 +433,49 @@
         + "                + sin(ang*7.0 - sd*11.0)*0.10;"
         + "     float rr = r*(1.0 + bend*smoothstep(0.18, 0.95, r));"
         + "     float ad = atan(b.y, b.x) + bend*0.55*smoothstep(0.2, 1.0, r);"
-        + "     float taper = 1.0 - 0.38*smoothstep(coreR*1.2, 1.0, rr);"
+        + "     float taper = 1.0 - 0.24*smoothstep(cellR*1.2, 1.0, rr);"
+        /* How far the dendrites have reached: early they stop just past the
+           soma, later they reach the edge of the sprite. */
+        + "     float reach = mix(cellR*0.85, 0.80 + 0.10*vSprout,"
+        + "                         smoothstep(0.0, 0.72, grow));"
+        + "     float rrm = min(rr, reach);"
         /* six primary dendrites, then twelve shorter branches */
-        + "     float a6 = smoothstep(0.52, 0.98, cos(ad*6.0 + sd*6.283));"
-        + "     float arms = a6 * smoothstep(1.0, coreR*0.55, rr)"
-        + "                * smoothstep(coreR*0.35, coreR*1.45, rr);"
+        + "     float a6 = smoothstep(0.40, 0.96, cos(ad*6.0 + sd*6.283));"
+        + "     float arms = a6 * smoothstep(reach, cellR*0.55, rrm)"
+        + "                * smoothstep(cellR*0.35, cellR*1.45, rrm);"
         + "     float a12 = smoothstep(0.70, 0.99, cos(ad*12.0 - sd*9.0));"
-        + "     arms += a12 * smoothstep(0.88, coreR*1.3, rr)"
-        + "             * smoothstep(coreR*0.55, coreR*1.9, rr) * 0.38;"
+        + "     arms += a12 * smoothstep(reach*0.88, cellR*1.3, rrm)"
+        + "             * smoothstep(cellR*0.55, cellR*1.9, rrm) * 0.38"
+        + "             * smoothstep(0.30, 0.85, grow)"
+        + "             * (0.30 + 0.70*vSprout);"
         /* varicosities: small swellings along the branches */
         + "     float bead = smoothstep(0.72, 1.0,"
         + "       sin(rr*15.0 - sd*7.0)*0.5 + 0.5);"
-        + "     arms *= taper*(1.0 + 0.55*bead);"
+        + "     arms *= taper*(1.0 + 0.55*bead*smoothstep(0.55, 1.0, grow)"
+        + "                      *(0.35 + 0.65*vSprout));"
+        /* The branches fade as they reach the edge of the sprite: at full
+           strength the six straight spokes read as a star, not as a cell. */
+        + "     arms *= 1.0 - 0.42*smoothstep(0.55, 1.0, rrm);"
         /* the soma: a filled body with a brighter membrane and nucleus */
-        + "     float soma = smoothstep(coreR+0.07, coreR-0.03, r);"
-        + "     float membrane = smoothstep(coreR+0.07, coreR-0.01, r)"
-        + "                    - smoothstep(coreR-0.03, coreR-0.13, r);"
+        + "     float soma = smoothstep(cellR+0.07, cellR-0.03, r);"
+        + "     float membrane = smoothstep(cellR+0.07, cellR-0.01, r)"
+        + "                    - smoothstep(cellR-0.03, cellR-0.13, r);"
         + "     vec2 nu = b - vec2(0.035, 0.045);"
-        + "     float nucleus = smoothstep(0.115, 0.0, length(nu));"
-        + "     float aura = exp(-r*2.8)*0.18;"
-        + "     vec3 col = vC*(0.30 + 1.05*arms)"
-        + "              + mix(vC, vec3(0.86,0.97,1.0), 0.24)*soma*0.86"
-        + "              + vec3(0.62,0.95,1.0)*(membrane*0.50 + nucleus*0.92)"
+        + "     float nucleus = smoothstep(0.130, 0.0, length(nu));"
+        + "     float aura = exp(-r*2.8)*0.24;"
+        /* The cell has to hold its own against the tissue: the core is
+           brighter and the dendrites carry more of it, while the sprite stays
+           the size it was. Visibility comes from contrast, not from size. */
+        + "     vec3 col = vC*(0.44 + 1.38*arms*(1.0 + 0.22*vSprout))"
+        + "              + mix(vC, u_tint, 0.55)*soma*(1.02 + 0.16*vSprout)"
+        + "              + u_tint*(membrane*0.80 + nucleus*1.18)"
         + "              + vC*aura;"
         + "     float a = clamp(soma*0.98 + arms*0.78 + membrane*0.45"
         + "                    + nucleus*0.9 + aura, 0.0, 1.0);"
         + "     col = mix(col, sC, sA*(1.0-soma)); a = max(a, sA*(1.0-soma));"
+        /* The far hemisphere recedes instead of reading as a second, equally
+           bright layer of dots on top of the near one. */
+        + "     col *= vFace; a *= vFace;"
         + "     if (a < 0.02) discard;"
         + "     gl_FragColor = vec4(col, a*(0.18+0.82*vD)*vAge);"
         + "     return;"
@@ -344,7 +500,7 @@
         + "   albedo = mix(albedo, mix(vC, vec3(1.0), 0.5), cloud*0.26);"
         + "   float polar = smoothstep(0.62, 0.95, abs(p.y));"
         + "   albedo = mix(albedo, vec3(0.80,0.90,1.0), polar*0.24*seed);"
-        + "   vec3 rimC = mix(vC, vec3(0.52,0.82,1.0), 0.62);"
+        + "   vec3 rimC = mix(vC, vec3(0.78,0.87,1.0), 0.42);"
         + "   vec3 col = albedo*(0.09+0.91*diff)"
         + "            + vec3(0.80,0.90,1.0)*spec*0.34"
         + "            + rimC*rim*1.05 + vC*0.040;"
@@ -373,8 +529,8 @@
                        .replace("clamp(size, u_minpx*0.7",
                                 "clamp(size, u_minpx*1.2"),
       fragmentShader: "varying vec3 vC; varying float vD; varying float vR;"
-        + " varying float vAge; varying vec3 vTail;"
-        + " uniform vec3 u_light; uniform float u_neural;"
+        + " varying float vAge; varying vec3 vTail; varying float vFace;"
+        + " uniform vec3 u_light; uniform float u_neural; uniform float u_gain;"
         + " void main(){ vec2 p = gl_PointCoord*2.0-1.0;"
         + "   float r2 = dot(p,p); if(r2 > 1.0) discard;"
         /* Comet tail: while a node streaks in, its glow shrinks to a bright
@@ -389,7 +545,7 @@
         + "   vec3 n = vec3(hp.x,-hp.y,sqrt(max(0.0,1.0-min(hd*hd,1.0))));"
         + "   float lit = 0.22+0.78*max(dot(n,normalize(u_light)),0.0);"
         + "   float sharp = mix(2.2, 1.5, u_neural);"
-        + "   float gain = mix(0.32, 0.20, u_neural);"
+        + "   float gain = u_gain;"
         + "   float shade = mix(lit, 1.0, u_neural*0.75);"
         + "   float body = pow(smoothstep(1.0,0.0,min(hd,1.0)),sharp)"
         + "              *gain*vD*shade;"
@@ -399,7 +555,9 @@
         + "   float tail = smoothstep(w, 0.0, abs(dot(p, tperp)))"
         + "              * pow(1.0 - back, 2.6) * step(0.0, hb);"
         + "   tail *= flight * 0.6 * vD;"
-        + "   gl_FragColor = vec4(vC, (body + tail) * vAge); }",
+        /* The aura follows its cell: a halo on the far hemisphere would
+           otherwise punch straight back through the near tissue. */
+        + "   gl_FragColor = vec4(vC, (body + tail) * vAge * vFace); }",
       transparent: true, depthWrite: false, blending: THREE.AdditiveBlending}));
     this.halo.frustumCulled = false;
     this.halo.renderOrder = 1;
@@ -414,17 +572,15 @@
     this.lines = new THREE.LineSegments(this.lgeo, new THREE.ShaderMaterial({
       uniforms: this.edgeUni, transparent: true, depthWrite: false,
       vertexShader: "attribute float a_base; attribute float a_dim; attribute vec3 color;"
-        + " attribute float a_birth; attribute float a_t;"
+        + " attribute float a_birth; attribute float a_t; attribute float a_seed;"
         + " uniform float u_cull; uniform float u_opacity; uniform vec3 u_cam;"
         + " uniform float u_sweepX; uniform float u_sweepAmp; uniform float u_time;"
         + " uniform float u_neural; uniform float u_fly; uniform float u_driftA;"
         + " varying vec3 vC; varying float vA;"
-        /* Same hash and the same flight/drift maths as the node sprite, so an
-           axon endpoint never detaches from the cell it belongs to. */
-        + " float skHash(vec3 p){"
-        + "   return fract(sin(dot(p, vec3(12.9898, 78.233, 37.719)))*43758.5453); }"
+        /* Same flight/drift maths as the node sprite, and the same stable seed,
+           so an axon endpoint never detaches from the cell it belongs to. */
         + " void main(){ vC=color;"
-        + "   float ph = skHash(position);"
+        + "   float ph = a_seed;"
         + "   float age = max(0.0, u_time-a_birth);"
         + "   float k = clamp(age/1.15, 0.0, 1.0);"
         + "   float ease = 1.0 - pow(1.0-k, 2.4);"
@@ -442,10 +598,14 @@
         + "   float fade = 1.0 - smoothstep(u_cull*0.55, u_cull, d);"
         + "   float wave = smoothstep(0.0,0.5,age-a_t*0.22);"
         + "   vA = a_base*u_opacity*a_dim*fade*wave;"
+        /* A connectome needs its wires: on a dark head the structural base of
+           0.08 is invisible, so the neural scene lifts every axon into view
+           while the planets scene keeps its faint orbital threads. */
+        + "   vA *= mix(1.0, 2.6, u_neural);"
         + "   vA += u_sweepAmp*exp(-abs(pos.x-u_sweepX)*0.18)*0.9;"
         /* Neural scene: action potentials travel along the axons as a spatial
            wave, so the web reads as living tissue rather than static lines. */
-        + "   vA += u_neural * a_base * 0.5 *"
+        + "   vA += u_neural * a_base * 0.85 *"
         + "         (0.5+0.5*sin(pos.x*0.55 + pos.y*0.38"
         + "                     + pos.z*0.31 + u_time*2.1 + a_t*4.0));"
         + "   gl_Position = projectionMatrix*modelViewMatrix*vec4(pos,1.0); }",
@@ -466,9 +626,28 @@
     this._dummy = new THREE.Object3D();
 
     this._v = new THREE.Vector3();
-    this.setScene("planets");
-    this.resize();
-    return this;
+  };
+
+  Renderer.prototype._mountGL = function () {
+    var THREE = T3.THREE, self = this;
+    this.renderer = new THREE.WebGLRenderer({canvas: this.canvas, antialias: true,
+                                             powerPreference: "high-performance"});
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    this._onContextLost = function (event) {
+      if (event && event.preventDefault) event.preventDefault();
+      self.contextLost = true;
+    };
+    this._onContextRestored = function () {
+      self.contextLost = false;
+      self.colorDirty = true;
+      self.lastVersion = -1;
+      self.lastDimVersion = -1;
+      self._clearEdgeIndex();
+      self.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+      self.resize();
+    };
+    this.canvas.addEventListener("webglcontextlost", this._onContextLost, false);
+    this.canvas.addEventListener("webglcontextrestored", this._onContextRestored, false);
   };
 
   Renderer.prototype.setScene = function (name) {
@@ -482,6 +661,10 @@
     var ld = cfg.lightDir || [-0.55, 0.6, 0.75];
     this.nodeUni.u_light.value.set(ld[0], ld[1], ld[2]).normalize();
     this.haloUni.u_halo.value = cfg.haloScale;
+    /* How much a halo lifts the pixels behind it. A dense head lights its own
+       tissue: 176 cells at 0.30 washed the whole membrane into their colour,
+       so the neural scene turns the auras down and keeps the membrane dark. */
+    this.haloUni.u_gain.value = cfg.haloGain == null ? 0.31 : cfg.haloGain;
     this.edgeUni.u_opacity.value = cfg.edgeOpacity;
     this.nodeUni.u_scale.value = cfg.nodeScale;
     /* The sky and the node sprites each carry two drawings; a scene picks one
@@ -489,6 +672,13 @@
     if (this.skyUni) this.skyUni.u_mode.value = cfg.sky === "deepvoid" ? 1 : 0;
     this.nodeUni.u_neural.value = cfg.neuralNodes ? 1 : 0;
     this.edgeUni.u_neural.value = cfg.neuralNodes ? 1 : 0;
+    /* The pale colour of a cell's membrane and nucleus; it used to be a hard
+       cyan in the shader, which tinted every palette cool. */
+    this.nodeUni.u_tint.value.setHex(cfg.cellTint == null ? 0xffedd0 : cfg.cellTint);
+    /* Volume shading is for the head: the cells are on a closed surface and
+       the far side must fall away. Other scenes are open clouds, where a facing
+       term would only dim half the picture. */
+    this.nodeUni.u_vol.value = cfg.brain ? 1 : 0;
     /* How far a newborn node streaks in from, and how much the settled graph
        breathes; both are per scene because planets want arrivals and the neural
        wants a slow drift. */
@@ -509,6 +699,17 @@
     this._clearEdgeIndex();
     var planet = !!cfg.shells;
     if (this.ringMesh) this.ringMesh.visible = planet;
+    /* The brain scene needs its tissue: the mesh that carries the silhouette
+       and the cells that grow on it. */
+    if (cfg.brain) {
+      this._buildCortex();
+      this.cortexUni.u_opacity.value = cfg.cortexOpacity == null ? 0.32 : cfg.cortexOpacity;
+      this.cortexUni.u_color.value.setHex(cfg.cortexColor == null ? 0x5b5566 : cfg.cortexColor);
+      this.cortexUni.u_rim.value.setHex(cfg.cortexRim == null ? 0xffc98a : cfg.cortexRim);
+      this.cortexUni.u_light.value.set(ld[0], ld[1], ld[2]).normalize();
+    }
+    this._brain = null;
+    this.brainAge = null;
   };
 
   Renderer.prototype._syncVisibility = function () {
@@ -516,6 +717,121 @@
     if (this.cloud) this.cloud.visible = !people;
     if (this.halo) this.halo.visible = !people;
     if (this.egoMesh) this.egoMesh.visible = people;
+    if (this.cortex) this.cortex.visible = !!(this.cfg && this.cfg.brain);
+  };
+
+  /* The cortex geometry. The shape never changes, only how far it has
+     developed, so the mesh is built once when the scene is chosen. */
+  Renderer.prototype._buildCortex = function () {
+    var THREE = T3.THREE;
+    if (!this.cortex || !SK.brainMesh) return;
+    /* 128x256 keeps the gyri smooth at 32,768 vertices: half of what an
+       unsigned short index can address, so nothing here needs a 32-bit index
+       buffer. */
+    var m = SK.brainMesh(128, 256);
+    var geo = new THREE.BufferGeometry();
+    geo.setAttribute("position", new THREE.BufferAttribute(m.positions, 3));
+    geo.setAttribute("normal", new THREE.BufferAttribute(m.normals, 3));
+    geo.setAttribute("a_flat", new THREE.BufferAttribute(m.flat, 3));
+    geo.setAttribute("a_flatN", new THREE.BufferAttribute(m.flatNormals, 3));
+    geo.setAttribute("a_dev", new THREE.BufferAttribute(m.dev, 1));
+    geo.setAttribute("a_fold", new THREE.BufferAttribute(m.fold, 1));
+    /* 16 bit indices: the grid stays under 65536 vertices, and a head is not
+       worth needing an extension for. */
+    geo.setIndex(new THREE.BufferAttribute(new Uint16Array(m.indices), 1));
+    if (this.cortex.geometry) this.cortex.geometry.dispose();
+    this.cortex.geometry = geo;
+    var maxR = 0;
+    for (var i = 0; i < m.count; i++) {
+      var r = Math.hypot(m.positions[i * 3], m.positions[i * 3 + 1],
+                         m.positions[i * 3 + 2]);
+      if (r > maxR) maxR = r;
+    }
+    this._brainMaxR = maxR || 1;
+    var want = (this.cfg && this.cfg.brainRadius) || 13;
+    this._brainScale = want / this._brainMaxR;
+    this.cortex.scale.setScalar(this._brainScale);
+  };
+
+  /* Where every cell sits on the cortex.
+
+     The directions come from the R2 sequence, so the coat of cells is even at
+     every stage of the build and no cell lands on top of its neighbour. The
+     site layout is deliberately not used: a settled layout leaves whole
+     directions empty and others with five cells in them, and a head wearing
+     bald patches does not read as a head. The graph is still in the picture,
+     in the axons that join the cells.
+
+     The result is cached per node count: the placement is stable, so the
+     head does not re-form every time the layout settles. */
+  Renderer.prototype.ensureBrain = function (live) {
+    if (!live || !this.cfg || !this.cfg.brain) return null;
+    var n = live.n;
+    if (this._brain && this._brain.n === n) return this._brain;
+    if (!SK.brainSequence || !SK.brainJitter || !SK.brainPatch) return null;
+    var dirs = new Float32Array(n * 3);
+    for (var i = 0; i < n; i++) {
+      var s = SK.brainSequence(i);
+      dirs[i * 3] = s[0]; dirs[i * 3 + 1] = s[1]; dirs[i * 3 + 2] = s[2];
+    }
+    /* The R2 lattice hands out the same direction every so often. A doubled
+       cell reads as a mistake, so a repeat is turned a little on the cortex
+       until it has the room its neighbours have. */
+    var minDot = Math.cos(0.06);
+    for (var a = 0; a < n; a++) {
+      for (var attempt = 0; attempt < 8; attempt++) {
+        var hit = -1;
+        for (var b = 0; b < a; b++) {
+          var dot = dirs[a * 3] * dirs[b * 3] + dirs[a * 3 + 1] * dirs[b * 3 + 1] +
+                    dirs[a * 3 + 2] * dirs[b * 3 + 2];
+          if (dot >= minDot) { hit = b; break; }
+        }
+        if (hit < 0) break;
+        /* Turn the cell about the axis that joins the two directions. */
+        var ax = dirs[a * 3 + 1] * dirs[hit * 3 + 2] - dirs[a * 3 + 2] * dirs[hit * 3 + 1];
+        var ay = dirs[a * 3 + 2] * dirs[hit * 3] - dirs[a * 3] * dirs[hit * 3 + 2];
+        var az = dirs[a * 3] * dirs[hit * 3 + 1] - dirs[a * 3 + 1] * dirs[hit * 3];
+        var al = Math.sqrt(ax * ax + ay * ay + az * az);
+        if (al < 1e-6) { ax = 1; ay = 0; az = 0; al = 1; }
+        ax /= al; ay /= al; az /= al;
+        var ang = 0.12 + 0.06 * SK.hashSeed(a * 5.3 + 1.7);
+        var ca = Math.cos(ang), sa = Math.sin(ang);
+        var vx = dirs[a * 3], vy = dirs[a * 3 + 1], vz = dirs[a * 3 + 2];
+        var cx = vy * az - vz * ay, cy = vz * ax - vx * az, cz = vx * ay - vy * ax;
+        var dt = vx * ax + vy * ay + vz * az;
+        var nx = vx * ca + cx * sa + ax * dt * (1 - ca);
+        var ny = vy * ca + cy * sa + ay * dt * (1 - ca);
+        var nz = vz * ca + cz * sa + az * dt * (1 - ca);
+        var nl = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1;
+        dirs[a * 3] = nx / nl; dirs[a * 3 + 1] = ny / nl; dirs[a * 3 + 2] = nz / nl;
+      }
+    }
+    var point = new Float32Array(n * 3);
+    var age = new Float32Array(n);
+    var prof = [0, 0, 0];
+    for (var k = 0; k < n; k++) {
+      /* A cell does not sit on a grid vertex: it is nudged along the cortex so
+         the coat breaks up into tissue instead of a lat/long lattice. */
+      var dir = SK.brainJitter(dirs[k * 3], dirs[k * 3 + 1], dirs[k * 3 + 2],
+                               k * 0.618 + 1.7);
+      SK.brainPatch(dir[0], dir[1], dir[2], prof);
+      /* The soma is lifted clear of the membrane. The cortex is drawn as
+         triangles between grid vertices, so the interpolated surface can stand
+         proud of the analytic one (worst measured chord error was -0.020 in
+         canonical units over 5000 samples at 96x192); 0.030 keeps every cell
+         on the outside of the tissue, and a little hash makes the depth vary so
+         the coat is not a shell of constant thickness. */
+      var r = prof[0] + prof[1] + 0.030 + 0.008 * SK.hashSeed(k * 9.1 + 4.3);
+      point[k * 3] = dir[0] * r;
+      point[k * 3 + 1] = dir[1] * r;
+      point[k * 3 + 2] = dir[2] * r;
+      /* How mature the patch of cortex under this cell is: the brainstem is
+         the first thing that forms, the frontal pole the last. */
+      age[k] = prof[2];
+    }
+    this._brain = {n: n, point: point, age: age};
+    this.brainAge = age;
+    return this._brain;
   };
 
   Renderer.prototype._ensure = function () {
@@ -529,12 +845,20 @@
       this.nDim = new Float32Array(this.cap);
       this.nRing = new Float32Array(this.cap);
       this.nBirth = new Float32Array(this.cap);
+      /* A stable phase per cell, independent of where the cell currently is.
+         See the vertex shader: a position-derived phase makes a moving cell
+         shake, because the phase re-rolls with every frame of the drag. */
+      this.nSeed = new Float32Array(this.cap);
+      for (var sd = 0; sd < this.cap; sd++) {
+        this.nSeed[sd] = SK.hashSeed(sd * 7.13 + 1.71);
+      }
       this.pgeo.setAttribute("position", new THREE.BufferAttribute(this.nPos, 3));
       this.pgeo.setAttribute("color", new THREE.BufferAttribute(this.nCol, 3));
       this.pgeo.setAttribute("a_size", new THREE.BufferAttribute(this.nSize, 1));
       this.pgeo.setAttribute("a_dim", new THREE.BufferAttribute(this.nDim, 1));
       this.pgeo.setAttribute("a_ring", new THREE.BufferAttribute(this.nRing, 1));
       this.pgeo.setAttribute("a_birth", new THREE.BufferAttribute(this.nBirth, 1));
+      this.pgeo.setAttribute("a_seed", new THREE.BufferAttribute(this.nSeed, 1));
       if (this._birthQueue) {
         for (var q = 0; q < this._birthQueue.length; q++) {
           var bq = this._birthQueue[q];
@@ -554,6 +878,9 @@
       this.eDim = new Float32Array(this.capE * 2);
       this.eBirth = new Float32Array(this.capE * 2);
       this.eT = new Float32Array(this.capE * 2);
+      /* One seed per endpoint: an axon inherits the phase of the soma at each
+         end, so both drift together instead of sliding off the cell. */
+      this.eSeed = new Float32Array(this.capE * 2);
       for (var t = 0; t < this.capE; t++) {
         this.eT[t * 2] = 0;
         this.eT[t * 2 + 1] = 1;
@@ -566,6 +893,7 @@
       this.lgeo.setAttribute("a_dim", new THREE.BufferAttribute(this.eDim, 1));
       this.lgeo.setAttribute("a_birth", new THREE.BufferAttribute(this.eBirth, 1));
       this.lgeo.setAttribute("a_t", new THREE.BufferAttribute(this.eT, 1));
+      this.lgeo.setAttribute("a_seed", new THREE.BufferAttribute(this.eSeed, 1));
       if (this._edgeBirthQueue) {
         for (var eq = 0; eq < this._edgeBirthQueue.length; eq++) {
           var eb = this._edgeBirthQueue[eq];
@@ -615,11 +943,22 @@
     if (ea) ea.needsUpdate = true;
   };
 
-  Renderer.prototype._color = function (clusterId) {
+  /* Palette colour for a cluster. ``i`` is the node index, when the caller has
+     one: a cluster is a single hue, so without a per-cell offset the 176 cells
+     of the dominant cluster are 176 identical dots and the coat reads as one
+     flat colour. The offset is small enough that the cluster still reads as a
+     cluster; it only breaks the copies. */
+  Renderer.prototype._color = function (clusterId, i) {
     var palette = (this.cfg && this.cfg.palette) || SK.PALETTE;
     var hex = palette[clusterId % palette.length];
     var c = this._tmpColor || (this._tmpColor = new T3.THREE.Color());
     c.setHex(hex);
+    if (i != null && i >= 0) {
+      var h = SK.hashSeed(i * 1.37 + 3.1) - 0.5;
+      var s = SK.hashSeed(i * 2.71 + 8.3) - 0.5;
+      var l = SK.hashSeed(i * 4.19 + 5.9) - 0.5;
+      c.offsetHSL(h * 0.07, s * 0.20, l * 0.20);
+    }
     return c;
   };
 
@@ -666,6 +1005,9 @@
       }
       var shells = !!(this.cfg && this.cfg.shells);
       var neural = this.name === "neural";
+      /* The neural scene is a brain, not a blob: the cells are neurons on a
+         cortex, and the tissue around them carries the silhouette. */
+      var brain = !!(this.cfg && this.cfg.brain);
       var maxR = 1;
       for (i = 0; i < live.n; i++) {
         var x = live.x[i] * this.posScale, y = live.y[i] * this.posScale,
@@ -686,6 +1028,16 @@
             y = u * shellR;
             z = Math.sin(theta) * ring * shellR;
           }
+        } else if (brain) {
+          /* Every cell is a neuron on the cortex: its place is fixed by the
+             R2 sequence, so the head keeps the same shape while the build
+             fills it, and no cell sits in the middle of the skull. */
+          var place = this.ensureBrain(live);
+          if (place) {
+            x = place.point[i * 3] * this._brainScale;
+            y = place.point[i * 3 + 1] * this._brainScale;
+            z = place.point[i * 3 + 2] * this._brainScale;
+          }
         }
         var cluster = live._nodeCluster ? live._nodeCluster[i] : 0;
         var dragKey = live.ids && live.ids[i] ? live.ids[i] : i;
@@ -693,7 +1045,7 @@
         if (off) {
           x += off.x; y += off.y; z += off.z;
         }
-        var c = this._color(cluster);
+        var c = this._color(cluster, i);
         this.nPos[i * 3] = x;
         this.nPos[i * 3 + 1] = y;
         this.nPos[i * 3 + 2] = z;
@@ -709,8 +1061,10 @@
         var rankPart = rmax > 1e-6 ? Math.sqrt((live.rank[i] || 0) / rmax) : degPart;
         if (shells) this.nSize[i] = 2.4 + 6.4 * rankPart + 1.6 * degPart;
         /* A neuron sprite is a soma plus dendrites: the soma is only 30% of the
-           quad, so the point must be bigger than a planet to read as a cell. */
-        else if (neural) this.nSize[i] = 6.2 + 7.6 * degPart;
+           quad, so the point must be bigger than a planet to read as a cell.
+           On the cortex the cells are packed shoulder to shoulder, so they
+           have to be small enough to leave the tissue visible between them. */
+        else if (neural) this.nSize[i] = 2.0 + 2.3 * degPart;
         else this.nSize[i] = 2.2 + 3.4 * degPart;
         /* giant worlds carry a visible band; leaves stay smooth spheres */
         this.nRing[i] = shells && (0.7 * rankPart + 0.3 * degPart) >=
@@ -736,17 +1090,19 @@
           this.ePos[e * 6 + 3] = this.nPos[b * 3];
           this.ePos[e * 6 + 4] = this.nPos[b * 3 + 1];
           this.ePos[e * 6 + 5] = this.nPos[b * 3 + 2];
-          var ca = this._color(live._nodeCluster ? live._nodeCluster[a] : 0);
+          var ca = this._color(live._nodeCluster ? live._nodeCluster[a] : 0, a);
           this.eCol[e * 6] = ca.r;
           this.eCol[e * 6 + 1] = ca.g;
           this.eCol[e * 6 + 2] = ca.b;
-          var cb = this._color(live._nodeCluster ? live._nodeCluster[b] : 0);
+          var cb = this._color(live._nodeCluster ? live._nodeCluster[b] : 0, b);
           this.eCol[e * 6 + 3] = cb.r;
           this.eCol[e * 6 + 4] = cb.g;
           this.eCol[e * 6 + 5] = cb.b;
           var base = structuralBase(live.kinds[live.eKind[e]]);
           this.eBase[e * 2] = base;
           this.eBase[e * 2 + 1] = base;
+          this.eSeed[e * 2] = this.nSeed[a];
+          this.eSeed[e * 2 + 1] = this.nSeed[b];
         }
       }
       this._mark("position", this.nPos, this.pgeo);
@@ -756,6 +1112,7 @@
       this._mark("position", this.ePos, this.lgeo);
       this._mark("color", this.eCol, this.lgeo);
       this._mark("a_base", this.eBase, this.lgeo);
+      this._mark("a_seed", this.eSeed, this.lgeo);
       this.pgeo.setDrawRange(0, live.n);
       this.lgeo.setDrawRange(0, this._drawEdges * 2);
       this._ensureRings(live);
@@ -785,17 +1142,19 @@
       this.ePos[k * 6 + 3] = this.nPos[b * 3];
       this.ePos[k * 6 + 4] = this.nPos[b * 3 + 1];
       this.ePos[k * 6 + 5] = this.nPos[b * 3 + 2];
-      var ca = this._color(live._nodeCluster[a]);
+      var ca = this._color(live._nodeCluster[a], a);
       this.eCol[k * 6] = ca.r;
       this.eCol[k * 6 + 1] = ca.g;
       this.eCol[k * 6 + 2] = ca.b;
-      var cb = this._color(live._nodeCluster[b]);
+      var cb = this._color(live._nodeCluster[b], b);
       this.eCol[k * 6 + 3] = cb.r;
       this.eCol[k * 6 + 4] = cb.g;
       this.eCol[k * 6 + 5] = cb.b;
       var base = structuralBase(live.kinds[live.eKind[e]]);
       this.eBase[k * 2] = base;
       this.eBase[k * 2 + 1] = base;
+      this.eSeed[k * 2] = this.nSeed[a];
+      this.eSeed[k * 2 + 1] = this.nSeed[b];
       this._edgeSlots[e] = k;
       k++;
     }
@@ -815,7 +1174,7 @@
       this._dummy.scale.setScalar(scale);
       this._dummy.updateMatrix();
       mesh.setMatrixAt(s, this._dummy.matrix);
-      mesh.setColorAt(s, this._color(live._nodeCluster[idx]));
+      mesh.setColorAt(s, this._color(live._nodeCluster[idx], idx));
     }
     this._egoItems = items;
     this._egoScale = scales;
@@ -849,6 +1208,11 @@
           var cosI = Math.cos(inc), sinI = Math.sin(inc);
           var cosR = Math.cos(roll), sinR = Math.sin(roll);
           c.setHex(palette[s % palette.length]);
+          /* Each orbit gets its own faint tint as well, so two rings that
+             share a palette entry do not read as the same line drawn twice. */
+          c.offsetHSL((SK.hashSeed(s * 3.7 + 1.9) - 0.5) * 0.024,
+                      (SK.hashSeed(s * 5.1 + 4.7) - 0.5) * 0.08,
+                      (SK.hashSeed(s * 7.3 + 2.3) - 0.5) * 0.08);
           for (var q = 0; q < segs; q++) {
             var a0 = q / segs * Math.PI * 2;
             var a1 = (q + 1) / segs * Math.PI * 2;
@@ -1274,6 +1638,17 @@
     if (this.contextLost) return;
     this.nodeUni.u_time.value = this.time || 0;
     this.edgeUni.u_time.value = this.time || 0;
+    if (this.cortex && this.cortex.visible) {
+      /* The folds grow in with the build: the gyri of the brainstem are there
+         before the frontal pole has folded, and the head is still smooth
+         while the first cells arrive. */
+      var live = this.live, seen = 0;
+      if (live) {
+        for (var s = 0; s < live.n; s++) if (live.revealed[s]) seen++;
+      }
+      this.cortexUni.u_fold.value = live && live.n ? seen / live.n : 0;
+      this.cortexUni.u_time.value = this.time || 0;
+    }
     var cam = this.camera;
     if (this.sky && this.sky.visible) {
       /* orbiting the camera slides the star layers instead of leaving a
@@ -1286,6 +1661,7 @@
     var targetDist = this.camDistance || cam.position.length() || 1;
     this.edgeUni.u_cull.value = targetDist * 1.15 + this.sceneRadius * 0.95;
     this.edgeUni.u_cam.value.copy(cam.position);
+    this.nodeUni.u_cam.value.copy(cam.position);
     if (this.lodReady && this.lodVersion === this.live.version) {
       var ratio = targetDist / Math.max(this.sceneRadius, 1);
       var fraction = ratio > 2.4 ? 0.3 : (ratio > 1.5 ? 0.6 : 1);
@@ -1367,6 +1743,29 @@
     return out.subarray(0, k);
   };
 
+  /* Geometry and materials are backend agnostic: the WebGPU teardown has no
+     WebGLRenderer to dispose, but the scene graph still has to go. */
+  Renderer.prototype._disposeScene = function () {
+    this._disposeRings();
+    if (this.sky) {
+      this.sky.geometry.dispose();
+      this.sky.material.dispose();
+      this.sky = null;
+    }
+    if (this.cortex) {
+      this.cortex.geometry.dispose();
+      this.cortex.material.dispose();
+      this.cortex = null;
+    }
+    this.pgeo.dispose();
+    this.lgeo.dispose();
+    this.egoMesh.geometry.dispose();
+    this.cloud.material.dispose();
+    this.halo.material.dispose();
+    this.lines.material.dispose();
+    this.egoMat.dispose();
+  };
+
   Renderer.prototype.dispose = function () {
     if (!this.renderer) return;
     if (this.canvas) {
@@ -1377,19 +1776,7 @@
         this.canvas.removeEventListener("webglcontextrestored", this._onContextRestored, false);
       }
     }
-    this._disposeRings();
-    if (this.sky) {
-      this.sky.geometry.dispose();
-      this.sky.material.dispose();
-      this.sky = null;
-    }
-    this.pgeo.dispose();
-    this.lgeo.dispose();
-    this.egoMesh.geometry.dispose();
-    this.cloud.material.dispose();
-    this.halo.material.dispose();
-    this.lines.material.dispose();
-    this.egoMat.dispose();
+    this._disposeScene();
     this.renderer.dispose();
   };
 

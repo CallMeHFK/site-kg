@@ -146,9 +146,10 @@ def test_viewer_file_is_self_contained(tmp_path: Path):
     out = render_viewer(g, {"url": "http://x/", "docs": 2, "verdict": "READY"},
                         tmp_path / "viewer.html", scene="neural")
     s = out.read_text(encoding="utf-8")
-    for marker in ("SK.LiveGraph", "SK.Renderer", "SK.Camera",
+    for marker in ("SK.LiveGraph", "SK.Renderer", "SK.GpuRenderer", "SK.Camera",
                    "SK.Director", "SK.UI"):
         assert marker in s  # modules assembled into the bundle
+    assert "fn vs_node" in s  # the WebGPU backend ships its WGSL, not an import
     assert '"scene":"neural"' in s
     assert "T3" in s  # vendor bundle embedded
     assert "<script src" not in s and "<link" not in s  # no external resources

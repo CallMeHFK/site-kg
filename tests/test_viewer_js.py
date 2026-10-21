@@ -10,6 +10,8 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 CORE = ROOT / "site_kg" / "viewer" / "core.js"
+RENDER = ROOT / "site_kg" / "viewer" / "render.js"
+GPU = ROOT / "site_kg" / "viewer" / "gpu.js"
 DIRECTOR = ROOT / "site_kg" / "viewer" / "director.js"
 LAUNCHER = ROOT / "site_kg" / "viewer" / "launcher.js"
 PLANETS = ROOT / "site_kg" / "viewer" / "scenes" / "planets.js"
@@ -869,4 +871,312 @@ assert.ok(Math.abs(pos - 1) < 0.01, "at rest, got " + pos);
 let p2 = 0, v2 = 0;
 const first = SK.springStep(p2, v2, 1, stiff, damp, dt);
 assert.ok(first[0] > 0 && first[0] < 0.4, "first frame trails, got " + first[0]);
+""")
+
+
+def test_drag_phase_is_a_stable_seed_not_a_position_hash():
+    """Dragging must not shake. The drift phase used to be hashed from the
+    node position, so every frame of a drag re-rolled it and the cell jumped
+    by up to two drift amplitudes; it is now an immutable per-cell attribute
+    that the edge endpoints inherit."""
+    src = (ROOT / "site_kg" / "viewer" / "render.js").read_text(encoding="utf-8")
+    assert "skHash" not in src, "a position hash puts the shake back"
+    assert src.count("attribute float a_seed") == 2, "node and edge shaders"
+    assert src.count("float ph = a_seed;") == 2
+    assert src.count('setAttribute("a_seed"') == 2
+    assert "this.eSeed[e * 2] = this.nSeed[a];" in src
+    assert "this.eSeed[e * 2 + 1] = this.nSeed[b];" in src
+
+
+def test_brain_sequence_is_deterministic_and_on_the_unit_sphere():
+    """R2 has to be a pure function of the index: the head is cached per node
+    count, but a rebuild after the graph grows must not move the cells that
+    were already there."""
+    _run(_prelude(CORE) + """
+function close(a, b, eps) { return Math.abs(a - b) <= eps; }
+for (let i = 0; i < 500; i++) {
+  const d = SK.brainSequence(i);
+  assert.equal(d.length, 3);
+  assert.ok(d.every(Number.isFinite), "finite at " + i);
+  const len = Math.hypot(d[0], d[1], d[2]);
+  assert.ok(close(len, 1, 1e-9), "unit at " + i + ", got " + len);
+  const again = SK.brainSequence(i);
+  assert.deepEqual(again, d, "deterministic at " + i);
+  // copies, not aliases: an in-place nudge by the renderer must not leak
+  again[0] += 1;
+  assert.notEqual(SK.brainSequence(i)[0], again[0], "fresh array each call");
+}
+// the first few directions are distinct, not a degenerate point
+assert.notDeepEqual(SK.brainSequence(0), SK.brainSequence(1));
+""")
+
+
+def test_brain_jitter_is_deterministic_and_stays_unit_length():
+    """The jitter nudges a direction along two tangents; it must stay on the
+    unit sphere, or cells float off the cortex and the soma stand-off becomes
+    meaningless."""
+    _run(_prelude(CORE) + """
+const base = SK.brainSequence(37);
+const a = SK.brainJitter(base[0], base[1], base[2], 37 * 0.618 + 1.7);
+const b = SK.brainJitter(base[0], base[1], base[2], 37 * 0.618 + 1.7);
+assert.deepEqual(a, b, "same seed, same direction");
+const c = SK.brainJitter(base[0], base[1], base[2], 38 * 0.618 + 1.7);
+assert.notDeepEqual(a, c, "a different seed moves the cell");
+assert.ok(Math.abs(Math.hypot(a[0], a[1], a[2]) - 1) < 1e-9, "unit length");
+assert.ok(Math.abs(a[0] * base[0] + a[1] * base[1] + a[2] * base[2]) > 0.99,
+          "still on the same patch of cortex");
+
+// a zero vector must not produce NaN: it falls back to the pole
+const z = SK.brainJitter(0, 0, 0, 1);
+assert.ok(z.every(Number.isFinite), "degenerate input stays finite");
+assert.ok(Math.abs(Math.hypot(z[0], z[1], z[2]) - 1) < 1e-9);
+
+// the poles are the one place a naive tangent basis degenerates
+for (let i = 0; i < 64; i++) {
+  const d = SK.brainJitter(0, i % 2 ? 1 : -1, 0, i + 0.5);
+  assert.ok(Math.abs(Math.hypot(d[0], d[1], d[2]) - 1) < 1e-9, "pole " + i);
+  assert.ok(d.every(Number.isFinite), "pole finite " + i);
+}
+""")
+
+
+def test_brain_patch_returns_finite_radius_fold_age():
+    """Every direction must resolve to a radius on the skin, a fold offset and
+    an age. A NaN in any of them poisons a whole vertex or a whole cell."""
+    _run(_prelude(CORE) + """
+const out = [0, 0, 0];
+for (let i = 0; i < 2000; i++) {
+  const d = SK.brainSequence(i);
+  const p = SK.brainPatch(d[0], d[1], d[2], out);
+  assert.equal(p.length, 3);
+  assert.ok(p.every(Number.isFinite), "finite at " + i);
+  // The floor is the basal plane, not the ellipsoid: straight down the skin is
+  // the floor of the skull, 0.28 out, so the shortest ray is far shorter than
+  // a bare ellipsoid's. The ceiling is the occipital pole plus the cerebellar
+  // mass. Neither may drift: a collapsed head and a spiked one are both bugs.
+  assert.ok(p[0] > 0.24 && p[0] < 1.10, "radius in bounds at " + i + ": " + p[0]);
+  assert.ok(p[1] > -0.25 && p[1] < 0.15, "fold in bounds at " + i + ": " + p[1]);
+  assert.ok(p[2] >= 0 && p[2] <= 1, "age in [0,1] at " + i + ": " + p[2]);
+  // the caller's buffer is reused, not replaced
+  assert.equal(p, out);
+}
+// age really does order the build: the brainstem is younger tissue than the
+// frontal pole, so the two ends must not collapse to the same value
+const stem = SK.brainPatch(0, -0.97, -0.24, [0, 0, 0])[2];
+const front = SK.brainPatch(0, 0, 1, [0, 0, 0])[2];
+assert.ok(stem < front, "stem forms before the frontal pole: " + stem + " < " + front);
+""")
+
+
+def test_brain_mesh_indices_normals_and_max_radius():
+    """The cortex is uploaded as Uint16 indices, so every index must stay under
+    the vertex count and under 65536; the normals must be unit length or the
+    gyri catch no light; the head must be the size the renderer scales to."""
+    _run(_prelude(CORE) + """
+const rows = 96, cols = 192;
+const m = SK.brainMesh(rows, cols);
+assert.equal(m.rows, rows);
+assert.equal(m.cols, cols);
+assert.equal(m.count, rows * cols);
+assert.equal(m.positions.length, m.count * 3);
+assert.equal(m.normals.length, m.count * 3);
+assert.equal(m.indices.length, (rows - 1) * cols * 6);
+assert.ok(m.count < 65536, "Uint16 indices can address the grid");
+
+let maxIdx = -1, maxR = 0, badNormal = 0;
+for (let i = 0; i < m.positions.length; i++) {
+  if (!Number.isFinite(m.positions[i])) throw new Error("non-finite position " + i);
+}
+for (let i = 0; i < m.indices.length; i++) {
+  const idx = m.indices[i];
+  if (!Number.isInteger(idx) || idx < 0 || idx >= m.count) {
+    throw new Error("index out of bounds at " + i + ": " + idx);
+  }
+  if (idx > maxIdx) maxIdx = idx;
+}
+assert.equal(maxIdx, m.count - 1, "the last vertex is referenced");
+for (let i = 0; i < m.count; i++) {
+  const x = m.normals[i * 3], y = m.normals[i * 3 + 1], z = m.normals[i * 3 + 2];
+  if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
+    throw new Error("non-finite normal at " + i);
+  }
+  const len = Math.hypot(x, y, z);
+  if (Math.abs(len - 1) > 1e-4) badNormal++;
+  const r = Math.hypot(m.positions[i * 3], m.positions[i * 3 + 1],
+                       m.positions[i * 3 + 2]);
+  if (!Number.isFinite(r)) throw new Error("non-finite radius at " + i);
+  if (r > maxR) maxR = r;
+}
+assert.equal(badNormal, 0, "every normal is unit length");
+// The renderer normalizes by this number, so its exact value is not the
+// contract; the envelope is. A spike from a bad bump would break the first
+// bound, a shrunken head the second.
+assert.ok(maxR > 0.85 && maxR < 1.15, "head max radius, got " + maxR);
+assert.ok(m.dev.length === m.count && m.fold.length === m.count);
+""")
+
+
+def test_gpu_backend_inherits_the_renderer_contract():
+    """The WebGPU backend is a subclass on purpose: layout, births, drag
+    springs and finale state are built by SK.Renderer._initState/sync, so every
+    method the camera, labels and director call must still resolve. Only the
+    drawing path may be replaced."""
+    _run(_prelude(CORE, RENDER, GPU) + r"""
+assert.equal(typeof SK.GpuRenderer, "function");
+assert.equal(Object.getPrototypeOf(SK.GpuRenderer.prototype),
+             SK.Renderer.prototype);
+assert.ok(SK.GpuRenderer.prototype instanceof SK.Renderer);
+
+const draw = ["mount", "setScene", "resize", "render", "dispose"];
+const shadowed = Object.getOwnPropertyNames(SK.Renderer.prototype)
+  .filter(function (name) {
+    return name !== "constructor" && draw.indexOf(name) < 0 &&
+      SK.GpuRenderer.prototype[name] !== SK.Renderer.prototype[name];
+  });
+assert.deepEqual(shadowed, [],
+  "scene methods must be the base implementation, not a copy");
+
+/* draw calls are overridden; the shared scene machinery is not */
+["mount", "setScene", "resize", "render", "dispose"].forEach(function (name) {
+  assert.ok(Object.prototype.hasOwnProperty.call(SK.GpuRenderer.prototype, name),
+            name + " is the WebGPU draw path");
+});
+["sync", "beginDrag", "moveDrag", "endDrag", "advanceDrag", "startFinale",
+ "advanceFinale", "pick", "samplePoints", "ensureBrain"].forEach(function (name) {
+  assert.ok(!Object.prototype.hasOwnProperty.call(SK.GpuRenderer.prototype, name),
+            name + " must stay shared, or the backends can drift");
+});
+
+/* the probe only checks for the API; a missing adapter is the mount's job */
+assert.equal(SK.GpuRenderer.supported(), false, "node has no navigator.gpu");
+assert.equal(SK.hasWebGPU, SK.GpuRenderer.supported);
+Object.defineProperty(global, "navigator", {
+  value: {gpu: {}}, configurable: true
+});
+assert.equal(SK.GpuRenderer.supported(), true);
+assert.equal(SK.hasWebGPU(), true);
+""")
+
+
+def test_gpu_backend_ships_wgsl_and_point_quads():
+    """No WebGPURenderer in the vendored Three, and WebGPU has no
+    gl_PointSize: every scene element needs its own WGSL entry point, and the
+    node sprite is an instanced quad whose size is a diameter in device
+    pixels."""
+    src = GPU.read_text(encoding="utf-8")
+    for entry in ("fn vs_sky", "fn fs_sky", "fn vs_cortex", "fn fs_cortex",
+                  "fn vs_node", "fn fs_node", "fn fs_halo",
+                  "fn vs_edge", "fn fs_edge", "fn vs_ring", "fn fs_ego"):
+        assert entry in src, entry
+    # the halo is the node quad with an additive blend and its own fragment
+    # stage, so it has no vertex entry point of its own
+    assert "fn vs_halo" not in src
+    assert src.count("@vertex") == 6 and src.count("@fragment") == 7
+    assert "multisample: {count: 4}" in src, "pipelines must match the MSAA pass"
+    assert "navigator.gpu" in src
+    # gl_PointSize is a diameter; the quad's half-extent is size/res, not
+    # twice that. Getting this wrong renders the scene four times too large.
+    assert "size / u.res.xy" in src
+    assert "2.0 * size / u.res.xy" not in src
+
+
+def test_ui_boots_webgpu_first_and_keeps_the_fallbacks_ordered():
+    src = UI.read_text(encoding="utf-8")
+    gpu = src.index("SK.GpuRenderer.supported()")
+    gl = src.index("renderer = new SK.Renderer()")
+    assert gpu < gl, "WebGPU is tried before WebGL"
+    assert "SK.Fallback2D && SK.hasWebGL2 && !SK.hasWebGL2()" in src
+    assert src.count("new SK.Fallback2D(canvas)") == 2, "no-WebGL2 and mount failure"
+    # the adapter probe is async, so the Canvas2D tier hangs off ready, on a
+    # canvas element that never held a webgpu context
+    assert "gpu.ready.then" in src
+    assert "flatFallback(gpu.gpuFailed)" in src
+    assert "canvas.cloneNode(false)" in src
+    assert "startView(renderer)" in src
+
+    from site_kg.viewer import PRE_SCENE_MODULES
+    mods = list(PRE_SCENE_MODULES)
+    assert mods.index("gpu.js") == mods.index("render.js") + 1
+
+
+def test_sky_uniform_carries_width_and_height_the_way_the_shader_reads_them():
+    """The sky shader stretches by width/height. The packer writes
+    b.z = width, b.w = height, and the WGSL must divide in that order: the
+    reversed form renders the planets backdrop 3.16x anamorphic on 16:9."""
+    _run(_prelude(CORE, RENDER, GPU) + r"""
+const r = Object.create(SK.GpuRenderer.prototype);
+r.camera = {position: {x: 0, y: 0, z: 2, length: function () { return 2; }}};
+r.time = 1;
+r.skyUni = {u_mode: {value: 0}};
+r._resW = 1920;
+r._resH = 1080;
+const out = new Float32Array(8);
+const ret = r._packSky(out);
+assert.equal(ret, undefined, "packer writes into the caller's block");
+assert.equal(out[6], 1920, "b.z is width");
+assert.equal(out[7], 1080, "b.w is height");
+""")
+    src = GPU.read_text(encoding="utf-8")
+    assert "u.b.z / max(u.b.w, 1.0)" in src, "aspect is width over height"
+    assert "u.b.w / max(u.b.z, 1.0)" not in src
+    # out[6]/out[7] only land in b.z/b.w because a is declared first; a field
+    # reorder would silently put the resolution in the wrong slot
+    sky = src[src.index("struct U {"):src.index("fn hash2")]
+    assert sky.index("a: vec4f") < sky.index("b: vec4f")
+
+
+def test_fallback_reports_a_dead_canvas_instead_of_pretending_to_draw():
+    """_fallbackGL decides the tier after an async probe. WebGL2 missing must
+    be visible to ui.js (dead), and a canvas that already handed out a webgpu
+    context must be marked dead rather than sent to _mountGL, where
+    getContext('webgl2') can only return null."""
+    _run(_prelude(CORE, RENDER, GPU) + r"""
+const gl = Object.create(SK.GpuRenderer.prototype);
+gl._mountGL = function () { this.mounted = true; };
+gl.resize = function () {};
+gl._fallbackGL(new Error("no WebGPU adapter"));
+assert.equal(gl._gl, true);
+assert.equal(gl.backend, "webgl");
+assert.equal(gl.dead, undefined);
+
+const dead = Object.create(SK.GpuRenderer.prototype);
+dead._mountGL = function () { throw new Error("WebGL2 unavailable"); };
+dead.resize = function () {};
+dead._fallbackGL(new Error("no WebGPU adapter"));
+assert.ok(!dead._gl);
+assert.equal(dead.dead, true, "dead marks a canvas no backend can take");
+assert.match(dead.gpuFailed, /no WebGPU adapter \/ webgl: WebGL2 unavailable/);
+
+const locked = Object.create(SK.GpuRenderer.prototype);
+locked._context = {};
+locked._mountGL = function () { throw new Error("must not be attempted"); };
+locked._fallbackGL(new Error("pipeline build failed"));
+assert.equal(locked.dead, true);
+assert.equal(locked.gpuFailed, "pipeline build failed");
+""")
+
+
+def test_buffer_sweep_drops_attributes_that_left_the_scene():
+    """Capacity growth installs new BufferAttributes; the old cache entries
+    are unreachable and, without a sweep, their GPU buffers are never
+    destroyed."""
+    _run(_prelude(CORE, RENDER, GPU) + r"""
+const r = Object.create(SK.GpuRenderer.prototype);
+const liveAttr = {array: new Float32Array(4)};
+const staleAttr = {array: new Float32Array(4)};
+const indexAttr = {array: new Uint16Array(3)};
+r.scene = {traverse: function (fn) {
+  fn({geometry: {attributes: {position: liveAttr}, index: indexAttr}});
+}};
+const destroyed = [];
+const map = new Map([
+  [liveAttr, {buffer: {destroy: function () { destroyed.push("live"); }}}],
+  [staleAttr, {buffer: {destroy: function () { destroyed.push("stale"); }}}],
+  [indexAttr, {buffer: {destroy: function () { destroyed.push("index"); }}}]
+]);
+r._sweep(map);
+assert.deepEqual(destroyed, ["stale"]);
+assert.equal(map.has(liveAttr), true);
+assert.equal(map.has(indexAttr), true);
+assert.equal(map.has(staleAttr), false);
 """)

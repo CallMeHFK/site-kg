@@ -6,9 +6,14 @@
     name: "planets",
     label: "Planets",
     hint: "clusters as worlds",
-    bg: 0x03040c,
-    palette: [0x7cc4ff, 0x8b7bff, 0x4fe3ff, 0x43e0c8, 0xff6fb5, 0xa78bfa,
-              0xffc46b, 0x9fb8ff, 0x6ff0d8, 0xff9ad2, 0x5b9dff, 0xd8c2ff],
+    bg: 0x04050b,
+    /* A mineral system, not an arcade: desert gold, lunar steel, mars rust,
+       ocean blue, sand, ice. The hues separate the clusters, the muted
+       chroma keeps them reading as bodies lit by one star. Slot 3 is the
+       dominant cluster's colour, so the desert gold sits there and the
+       system reads as one warm sun with cold outliers. */
+    palette: [0xc87358, 0x9db4d0, 0x74b4ba, 0xe8c07d, 0xe6d5b0, 0xb097c6,
+              0xf2e6cf, 0x5b90d2, 0xb3656a, 0x8396c4, 0xd8a35f, 0xaab7a4],
     nodeScale: 1.22,
     haloScale: 3.6,
     edgeOpacity: 0.78,

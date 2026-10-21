@@ -20,6 +20,10 @@
     this.controls.autoRotate = !this.reduced;
     this.controls.autoRotateSpeed = (renderer.cfg && renderer.cfg.spin) || 0.6;
     this.controls.target.set(0, 0, 0);
+    /* A head has a front: open on a three-quarter view from the left, a little
+       above the temporal lobe. The later fits keep this direction, so the
+       scene never opens looking straight down at an oval. */
+    if (renderer.cfg && renderer.cfg.brain) this._placeBrain(1);
     var self = this;
     this.controls.addEventListener("start", function () {
       self.userInteracting = true;
@@ -36,6 +40,33 @@
   Camera.prototype.attach = function (live) {
     this.live = live;
     return this;
+  };
+
+  /* The three-quarter opening shot. Shared by the constructor and the scene
+     switch so the head is framed the same way every time it is chosen. */
+  Camera.prototype._placeBrain = function (zoom) {
+    var THREE = T3.THREE;
+    var cfg = this.renderer.cfg || {};
+    /* 2.3 radii clears the brainstem: the head is taller than its cortical
+       radius, and at the fit zoom the bottom of the stem sat off-screen. */
+    var d = (cfg.brainRadius || 17) * 2.3 * (zoom || 1);
+    var p = new THREE.Vector3(-0.52, 0.30, 0.80).normalize()
+      .multiplyScalar(d);
+    p.y += 1.5;
+    this.camera.position.copy(p);
+    this.controls.target.set(0, 0.4, 0);
+    this.camera.lookAt(this.controls.target);
+  };
+
+  Camera.prototype.frameBrain = function () {
+    if (!this.renderer.cfg || !this.renderer.cfg.brain) return;
+    var THREE = T3.THREE;
+    var cfg = this.renderer.cfg;
+    var d = (cfg.brainRadius || 17) * 2.3;
+    var p = new THREE.Vector3(-0.52, 0.30, 0.80).normalize()
+      .multiplyScalar(d);
+    p.y += 1.5;
+    this._to(p, new THREE.Vector3(0, 0.4, 0), 900);
   };
 
   Camera.prototype.setAutoRotate = function (on) {
@@ -91,8 +122,15 @@
        wide; fitting to those dives the camera into the first planet and the
        rest of the build happens inside it. The floor keeps the opening shot
        wide enough to read as space, and the later fit (once the layout is
-       real) pulls back from there. */
-    if (opts.minRadius == null) opts.minRadius = 21;
+       real) pulls back from there. A scene may override the floor: the brain
+       is a 17-unit head, and the open-cloud default frames it too small. */
+    if (opts.minRadius == null) {
+      var cfg = this.renderer && this.renderer.cfg;
+      opts.minRadius = (cfg && cfg.fitMinRadius != null) ? cfg.fitMinRadius : 21;
+      /* A head is a single compact object and can afford to sit closer to the
+         frame than an open graph, whose outliers need the margin. */
+      if (opts.zoom == null) opts.zoom = (cfg && cfg.fitZoom != null) ? cfg.fitZoom : 1;
+    }
     this.fit(this.renderer.samplePoints(this.live, 6000), opts);
   };
 

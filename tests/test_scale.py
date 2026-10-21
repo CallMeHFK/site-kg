@@ -171,7 +171,7 @@ console.log(JSON.stringify({{bestMs: best, cap: g.cap, capE: g.capE,
 
 
 def test_label_budgets_are_capped():
-    budgets = {"planets": (40, 12), "neural": (18, 8)}
+    budgets = {"planets": (40, 12), "neural": (6, 4)}
     for name, (desktop, mobile) in budgets.items():
         src = (SCENES / f"{name}.js").read_text(encoding="utf-8")
         found_desktop = int(re.search(r"labelBudget:\s*(\d+)", src).group(1))
@@ -190,9 +190,14 @@ def test_renderer_draw_call_and_object_budget():
     meshes = len(re.findall(r"new THREE\.Mesh\(", src))
     assert (points, lines, instanced) == (2, 2, 1), (
         "renderer must keep one cloud+halo, one edge mesh and one merged ring mesh")
-    assert meshes == 1 and "this.sky = new THREE.Mesh(" in src, (
-        "the only Mesh is the fullscreen sky shader")
-    assert points + lines + instanced + meshes <= 6
+    # Two meshes: the fullscreen sky shader, and the cortex the neural scene
+    # grows its neurons on. The cortex is the one deliberate addition to the
+    # budget, because the silhouette of a brain cannot be carried by points
+    # and lines: it has to be a surface.
+    assert meshes == 2 and "this.sky = new THREE.Mesh(" in src, (
+        "the meshes are the fullscreen sky shader and the cortex substrate")
+    assert "this.cortex = new THREE.Mesh(" in src
+    assert points + lines + instanced + meshes <= 7
     rings = src[src.index("Renderer.prototype._ensureRings"):
                 src.index("Renderer.prototype._disposeRings")]
     assert len(re.findall(r"new THREE\.LineSegments\b", rings)) == 1, (
