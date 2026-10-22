@@ -20,10 +20,13 @@
     sky: "skyline",
     lightDir: [0.42, 0.78, 0.34],
     city: true,
-    /* Street pitch and floor height in world units. A 3.0 pitch with a 1.1 to
-       1.5 footprint leaves a street wide enough to read at the fit distance. */
-    cityPitch: 3.0,
-    cityFloor: 0.62,
+    /* Street pitch and floor height in world units. A 4.8 pitch against a 1.45
+       to 2.10 footprint leaves a street about one and a half towers wide: the
+       chamfered plan does most of the work of separating the blocks, and
+       pushing the pitch further turns the grid into a car park. A 0.56 storey
+       keeps the tallest tower at about nine times its width. */
+    cityPitch: 4.8,
+    cityFloor: 0.56,
     edgeOpacity: 0.42,
     edgeLod: true,
     fly: 0,
@@ -36,7 +39,7 @@
     labelBudget: 8,
     labelBudgetMobile: 4,
     fitMinRadius: 20,
-    fitZoom: 0.72,
+    fitZoom: 0.62,
     finale: "City lights",
     select: function (live) {
       var out = new Array(live.n);
@@ -102,9 +105,12 @@
     floors = Math.max(3, Math.min(30, floors));
     var h = floors * floor;
     /* Footprint varies per plot: a city of identical squares reads as a
-       diagram, not as a place. */
-    var w = 1.05 + 0.45 * SK.hashSeed(o.seed * 3.71 + 1.3);
-    var d = 1.05 + 0.45 * SK.hashSeed(o.seed * 5.17 + 7.9);
+       diagram, not as a place. Taller towers are also wider -- a 30-floor
+       shaft on a six-floor plot is a needle, and a skyline full of needles
+       reads as pins. */
+    var fat = 0.90 + 0.20 * rankPart;
+    var w = (1.45 + 0.65 * SK.hashSeed(o.seed * 3.71 + 1.3)) * fat;
+    var d = (1.45 + 0.65 * SK.hashSeed(o.seed * 5.17 + 7.9)) * fat;
     /* No children, no lights beyond a token lobby: the lit fraction is the
        fan-out, normalised against the busiest page in the run. A page with a
        handful of links must not turn its whole tower into glass, so the gain
@@ -112,6 +118,31 @@
     var lit = o.kids > 0
       ? 0.10 + 0.34 * Math.sqrt(clamp01(o.kids / Math.max(o.kidsMax, 1)))
       : 0.02;
-    return {floors: floors, h: h, w: w, d: d, lit: lit};
+    /* Three cut heights make the massing: a podium that meets the street, a
+       setback that gives the outline a step, and a crown slab. They are
+       snapped to floor lines so a terrace never lands in the middle of a row
+       of glass, and monotonic so no tier has zero height. */
+    var podiumFloors = floors >= 8 ? 2 : 1;
+    var podium = podiumFloors / floors;
+    var setback = Math.round(floors * (0.60 + 0.18 * SK.hashSeed(o.seed * 6.31 + 3.7))) / floors;
+    setback = Math.min(0.88, Math.max(setback, podium + 2 / floors));
+    var crown = Math.min(0.97, setback + Math.max(2 / floors, 0.06));
+    /* Window columns follow the frontage: a 1.2-wide tower with four windows
+       looks like a diagram, and the same four on a 1.6-wide tower look like
+       stretched panes. Rounded so every tier shares the grid across setbacks. */
+    var cols = Math.max(6, Math.min(12, Math.round(w * 6.0)));
+    /* The silhouette is drawn by how wide each tier stands against the plot,
+       not only by where it is cut. A narrow crown on a wide shaft is a spire,
+       a wide crown on a narrow shaft is a thirties block, and the two should
+       never be told apart by height alone. */
+    var podiumW = 1.05 + 0.16 * SK.hashSeed(o.seed * 2.31 + 0.9);
+    var shaftW = 0.97 + 0.05 * SK.hashSeed(o.seed * 8.17 + 4.4);
+    var stepW = 0.72 + 0.18 * SK.hashSeed(o.seed * 3.19 + 8.8);
+    var thin = SK.hashSeed(o.seed * 9.13 + 5.1) < 0.22;
+    var crownW = thin ? stepW * 0.62
+      : stepW * (0.90 + 0.16 * SK.hashSeed(o.seed * 4.71 + 2.2));
+    return {floors: floors, h: h, w: w, d: d, lit: lit, cols: cols,
+            tiers: [podium, setback, crown],
+            tierw: [podiumW, shaftW, stepW, crownW]};
   };
 })(window.SK = window.SK || {});

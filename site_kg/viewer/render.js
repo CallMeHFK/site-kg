@@ -15,14 +15,15 @@
   /* ------------------------------------------------------------------------
      City shaders.
 
-     One box per node, merged into a single indexed mesh: the geometry is
-     built once per node count and rewritten when the layout moves, so the
-     whole city is one draw call on both backends. The windows are not
+     Four stacked tiers per node, merged into a single indexed mesh: the
+     geometry is built once per node count and rewritten when the layout moves,
+     so the whole city is one draw call on both backends. The windows are not
      geometry -- the fragment shader cuts a grid out of each facade, which is
-     what keeps a 200-tower city at 4,800 vertices.
+     what keeps a 200-tower city under 20,000 vertices.
 
-     Face ids: 0..3 are the four walls, 4 the roof, 5 the underside and 6 the
-     ground quad that all the towers stand on. */
+     Face ids: 0..7 are the eight walls (four wide, four chamfers), 8 the
+     crown roof, 9 a setback terrace and 10 the ground quad that all the
+     towers stand on. */
   var CITY_VS = [
     "attribute vec3 a_local; attribute float a_face;",
     "attribute vec4 a_spec; attribute float a_birth; attribute vec3 color;",
@@ -57,7 +58,7 @@
     "void main(){",
     "  vec3 col;",
     "  float alpha = 1.0;",
-    "  if (vFace > 5.5) {",
+    "  if (vFace > 9.5) {",
     /* The ground: asphalt with a sodium grid where the streets run. The
        lattice puts every tower on a plot centre, so the street lines fall
        exactly on the plot edges. */
@@ -65,13 +66,29 @@
     "    float P = max(u_pitch, 0.5);",
     "    float dx = abs(mod(g.x + P*0.5, P) - P*0.5);",
     "    float dz = abs(mod(g.y + P*0.5, P) - P*0.5);",
-    "    float lane = (1.0 - smoothstep(0.03, 0.18, dx))"
-      + " + (1.0 - smoothstep(0.03, 0.18, dz));",
-    /* Wet asphalt under sodium lamps: the street is the only thing that
-       explains where the towers stand, so it has to be legible, not loud. */
-    "    col = vec3(0.010, 0.012, 0.018);",
-    "    col += vec3(0.30, 0.19, 0.086) * lane * 0.14;",
+    /* The street is not a painted line any more: the asphalt runs out to the
+       kerb, a concrete pavement wraps the block, and the dashed centre line
+       only exists where a car would see it. ``m`` is the distance to the
+       nearest street centre, whichever way that street runs. */
+    "    float m = min(dx, dz);",
+    "    float kerb = P * 0.21;",
+    "    float road = 1.0 - smoothstep(kerb - 0.10, kerb, m);",
+    "    float walk = smoothstep(kerb - 0.015, kerb + 0.04, m)"
+      + " * (1.0 - smoothstep(kerb + 0.26, kerb + 0.34, m));",
+    "    float along = dx < dz ? g.y : g.x;",
+    "    float mark = (1.0 - smoothstep(0.018, 0.055, m))"
+      + " * step(0.52, fract(along * 0.42));",
     "    float r = length(g) / max(u_cityR, 1.0);",
+    /* Close up, the surfaces differ: tarmac, a pale pavement, the block's own
+       ground. Far out that difference is one pixel wide and only aliases, so
+       the pattern dissolves into flat ground before it turns into moire. */
+    "    float near = 1.0 - smoothstep(0.45, 0.88, r);",
+    "    col = mix(vec3(0.027, 0.028, 0.034), vec3(0.011, 0.012, 0.016),"
+      + " road * near);",
+    "    col = mix(col, vec3(0.040, 0.041, 0.048), walk * near);",
+    "    col += vec3(0.30, 0.19, 0.086) * road *"
+      + " (1.0 - smoothstep(0.0, kerb, m)) * 0.05 * near;",
+    "    col += vec3(0.40, 0.30, 0.16) * mark * 0.20 * near;",
     "    col = mix(col, hazeCol(), smoothstep(0.85, 1.60, r));",
     /* Dither the long, shallow ramp into the haze: at 8 bits the steps
        between asphalt and haze would otherwise band across the plane. */
@@ -79,15 +96,25 @@
     /* The plane has to dissolve before its own edge, or the city sits on a
        floating square of tarmac with a straight horizon. */
     "    alpha = 1.0 - smoothstep(1.15, 1.85, r);",
-    "  } else if (vFace > 4.5) {",
-    "    col = vCol * 0.075;",
-    "  } else if (vFace > 3.5) {",
+    "  } else if (vFace > 8.5) {",
+    /* Setback terrace: bare roof, a lip at the edge, no beacon. The tower
+       above it shades most of this slab, which is exactly what sells the
+       step in the silhouette. */
+    "    float e = max(max(abs(vLocal.x), abs(vLocal.y)),"
+      + " (abs(vLocal.x) + abs(vLocal.y)) * 0.5952);",
+    "    col = vCol * 0.15 + vec3(0.014, 0.017, 0.026);",
+    "    col *= 0.84 + 0.24 * fract(vSpec.z * 5.7);",
+    "    col += (h21(floor(vLocal.xy * 9.0)) - 0.5) * 0.010;",
+    "    col += vCol * 0.36 * smoothstep(0.86, 1.0, e);",
+    "  } else if (vFace > 7.5) {",
     /* Roof: gravel, a lit parapet, and a beacon whose brightness is the
        node's fan-out -- the same number the windows carry. */
-    "    float e = max(abs(vLocal.x), abs(vLocal.y));",
-    "    col = vCol * 0.30 + vec3(0.030, 0.036, 0.052);"
-      + "    col *= 0.82 + 0.30 * fract(vSpec.z * 5.7);",
-    "    col += vCol * 0.40 * smoothstep(0.84, 1.0, e);",
+    "    float e = max(max(abs(vLocal.x), abs(vLocal.y)),"
+      + " (abs(vLocal.x) + abs(vLocal.y)) * 0.5952);",
+    "    col = vCol * 0.12 + vec3(0.013, 0.016, 0.024);",
+    "    col *= 0.82 + 0.30 * fract(vSpec.z * 5.7);",
+    "    col += (h21(floor(vLocal.xy * 9.0)) - 0.5) * 0.012;",
+    "    col += vCol * 0.44 * smoothstep(0.86, 1.0, e);",
     "    float beacon = 1.0 - smoothstep(0.0, 0.13, length(vLocal.xy));",
     "    beacon *= 0.40 + 1.45 * vSpec.y;",
     "    beacon *= 0.70 + 0.30 * sin(u_time * 2.1 + vSpec.z * 31.0);",
@@ -97,19 +124,27 @@
        row of windows is one storey of the building, and ``vSpec.y`` is the
        lit fraction the node's outgoing links bought it. */
     "    vec3 N = normalize(vNrm);",
-    "    float facing = 0.55 + 0.45 * abs(dot(N, normalize(vec3(0.45, 0.72, 0.33))));",
-    "    col = vCol * (0.40 * facing) * (0.34 + 0.66 * vLocal.y)"
+    /* One sun, not a studio rig: the two faces turned away from it fall into
+       shadow, and that contrast is what tells a chamfer from a flat slab. */
+    "    vec3 L = normalize(vec3(0.45, 0.72, 0.33));",
+    "    float facing = 0.34 + 0.66 * max(dot(N, L), 0.0);",
+    "    float sky = 0.05 + 0.09 * (N.y * 0.5 + 0.5);",
+    "    col = vCol * (0.62 * facing + sky) * (0.38 + 0.62 * vLocal.y)"
       + " * vec3(0.90, 0.97, 1.08)"
       + " * (0.82 + 0.30 * fract(vSpec.z * 5.7));",
     /* The corner columns catch the sky: without them two neighbouring slabs
-       of the same concrete read as one building. */
-    "    col += vCol * 0.45 * smoothstep(0.87, 1.0, abs(vLocal.x));",
+       of the same concrete read as one building. On the octagon every edge
+       gets one, so the plan is legible all the way round. */
+    "    col += vCol * 0.38 * smoothstep(0.86, 1.0, abs(vLocal.x));",
     /* Street light spills up the ground floor, which is what makes a tower
        meet the road instead of hovering over it. */
     "    float up = 1.0 - vLocal.y;",
     "    col += vec3(0.26, 0.17, 0.085) * up * up * up * 0.05;",
     "    float floors = max(vSpec.x, 1.0);",
-    "    float u = (vLocal.x * 0.5 + 0.5) * 4.0;",
+    /* Column count comes from the frontage: the same four panes on a wider
+       tower would read as stretched glass, and the setback tiers would lose
+       their grid alignment. */
+    "    float u = (vLocal.x * 0.5 + 0.5) * max(vSpec.w, 1.0);",
     "    float v = vLocal.y * floors;",
     "    vec2 cell = floor(vec2(u, v));",
     "    vec2 f = fract(vec2(u, v));",
@@ -128,9 +163,19 @@
     "               * (1.0 - smoothstep(ring, ring + 0.15, dist));",
     "    lit = max(lit, band * step(0.42, pick));",
     "    vec3 lamp = mix(vec3(1.0, 0.84, 0.58), vCol, 0.22);",
+    /* A twelfth of the panes burn cooler: offices, not flats. It is enough
+       to break the orange wash without giving up the warm/cool split the
+       skyline relies on. */
+    "    lamp = mix(lamp, vec3(0.80, 0.89, 1.0),"
+      + " step(0.88, h21(cell * 1.7 + seed * 5.3)) * 0.75);",
     "    float flick = 0.86 + 0.14 * sin(u_time*1.6 + cell.x*2.7 + cell.y*1.9",
     "                                  + seed*9.0);",
     "    col += vec3(0.013, 0.016, 0.023) * win;",
+    /* A pale spandrel under every window: at a glance it is the floor line,
+       and a tower with visible storeys stops reading as a coloured box. */
+    "    float spandrel = smoothstep(0.84, 0.89, f.y)"
+      + " * (1.0 - smoothstep(0.93, 0.97, f.y));",
+    "    col += vCol * 0.22 * spandrel * (0.55 + 0.45 * lit);",
     "    col += lamp * win * lit * flick * 1.45;",
     "  }",
     "  float haze = smoothstep(u_cityR * 1.05, u_cityR * 2.30, vDepth);",
@@ -169,7 +214,27 @@
     this._drawEdges = 0;
     this._egoItems = null;
     this._egoScale = null;
+    /* Resolution is a budget, not a constant: the frame loop lowers it when
+       the device cannot hold 45fps and raises it again when it can. */
+    this.renderScale = 1;
+    this._softwareGL = false;
   }
+
+  /* The pixel ratio every backend draws at: display density, capped at 2,
+     times the current render budget. A software rasteriser gets 1.0 at most,
+     because on SwiftShader a 2x retina canvas is 4x the fill for no gain. */
+  Renderer.prototype.pixelRatio = function () {
+    var cap = this._softwareGL ? 1 : Math.min(window.devicePixelRatio || 1, 2);
+    return Math.max(0.7, cap * this.renderScale);
+  };
+
+  Renderer.prototype.setRenderScale = function (scale) {
+    scale = Math.max(0.7, Math.min(1, scale));
+    if (Math.abs(scale - this.renderScale) < 0.01) return false;
+    this.renderScale = scale;
+    this.resize();
+    return true;
+  };
 
   Renderer.prototype.mount = function (canvas, live) {
     this._initState(canvas, live);
@@ -788,11 +853,31 @@
     this._v = new THREE.Vector3();
   };
 
+  /* A rasteriser that runs on the CPU (SwiftShader, llvmpipe) cannot afford
+     MSAA: four samples per pixel quadruples the fragment work on the one
+     device that has none to spare. Ask a throwaway context before the real
+     one is created, because antialias is a context attribute. */
+  function softwareRasteriser() {
+    try {
+      var probe = document.createElement("canvas");
+      var gl = probe.getContext("webgl2") || probe.getContext("webgl");
+      if (!gl) return false;
+      var info = gl.getExtension("WEBGL_debug_renderer_info");
+      var name = String(info ? gl.getParameter(info.UNMASKED_RENDERER_WEBGL)
+                             : gl.getParameter(gl.RENDERER));
+      return /swiftshader|llvmpipe|softpipe|software|basic render/i.test(name);
+    } catch (e) {
+      return false;
+    }
+  }
+
   Renderer.prototype._mountGL = function () {
     var THREE = T3.THREE, self = this;
-    this.renderer = new THREE.WebGLRenderer({canvas: this.canvas, antialias: true,
+    this._softwareGL = softwareRasteriser();
+    this.renderer = new THREE.WebGLRenderer({canvas: this.canvas,
+                                             antialias: !this._softwareGL,
                                              powerPreference: "high-performance"});
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    this.renderer.setPixelRatio(this.pixelRatio());
     this._onContextLost = function (event) {
       if (event && event.preventDefault) event.preventDefault();
       self.contextLost = true;
@@ -803,7 +888,7 @@
       self.lastVersion = -1;
       self.lastDimVersion = -1;
       self._clearEdgeIndex();
-      self.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+      self.renderer.setPixelRatio(self.pixelRatio());
       self.resize();
     };
     this.canvas.addEventListener("webglcontextlost", this._onContextLost, false);
@@ -1009,68 +1094,121 @@
 
   /* ---- city geometry -----------------------------------------------------
 
-     Six quads per tower (four walls, roof, underside) plus one ground quad,
-     merged into a single indexed mesh. The vertex table is the unit cube:
-     ``_writeCity`` scales it by the building's footprint and height, so a
-     layout change rewrites coordinates without reallocating buffers. */
-  var CELL_ZERO = [0, 0];
-  var CITY_QUADS = [    {n: [1, 0, 0], face: 0,
-     c: [[0.5, -0.5, -0.5], [0.5, -0.5, 0.5], [0.5, 0.5, 0.5], [0.5, 0.5, -0.5]]},
-    {n: [-1, 0, 0], face: 1,
-     c: [[-0.5, -0.5, -0.5], [-0.5, 0.5, -0.5], [-0.5, 0.5, 0.5], [-0.5, -0.5, 0.5]]},
-    {n: [0, 0, 1], face: 2,
-     c: [[-0.5, -0.5, 0.5], [0.5, -0.5, 0.5], [0.5, 0.5, 0.5], [-0.5, 0.5, 0.5]]},
-    {n: [0, 0, -1], face: 3,
-     c: [[0.5, -0.5, -0.5], [-0.5, -0.5, -0.5], [-0.5, 0.5, -0.5], [0.5, 0.5, -0.5]]},
-    {n: [0, 1, 0], face: 4,
-     c: [[-0.5, 0.5, -0.5], [0.5, 0.5, -0.5], [0.5, 0.5, 0.5], [-0.5, 0.5, 0.5]]},
-    {n: [0, -1, 0], face: 5,
-     c: [[-0.5, -0.5, -0.5], [-0.5, -0.5, 0.5], [0.5, -0.5, 0.5], [0.5, -0.5, -0.5]]}
-  ];
+     Every tower is four stacked tiers -- a wider podium, the shaft, a setback
+     and a crown slab -- merged with the rest of the city into one indexed
+     mesh. A single box reads as an extruded rectangle from every angle: the
+     chamfered plan gives the silhouette eight edges, and the setback gives it
+     a step while the camera is still far enough away that windows are pixels.
 
-  /* The static half of a tower: corners, normals, facade coordinates and the
-     face id. Winding is decided by the cross product rather than by hand, so
-     a face can never end up inside out. */
+     The table below is the static half: it holds the unit plan, the surface
+     normal, the facade coordinates and the face id. ``_writeCity`` scales it
+     by the tower's own footprint and tier width and stamps the height
+     fractions on top, so a layout change rewrites coordinates without
+     reallocating buffers. At 144 vertices a tower, a two-hundred page crawl is
+     a single draw call and under thirty thousand vertices.
+
+     Face ids: 0..7 walls, 8 the crown roof, 9 a setback terrace, 10 the
+     ground. Only the crown carries the beacon and the lit parapet; a light on
+     every setback would read as a string of lanterns down the tower. */
+  var CELL_ZERO = [0, 0];
+  var CITY_TIERS = 4;
+  var CITY_VERTS = CITY_TIERS * 9 * 4;      /* 144: eight walls + cap */
+  var CITY_INDICES = CITY_TIERS * 9 * 6;    /* 216 */
+  var CITY_ROOF_FACE = 8, CITY_TERRACE_FACE = 9, CITY_GROUND_FACE = 10;
+
+  /* The plan is an octagon: a square with its corners sliced off. A plain box
+     has two faces and a silhouette; eight faces catch the sky at eight
+     angles, and the chamfer lines run the full height of the tower where the
+     eye expects the edge of a building. ``CH`` is the slice in side units. */
+  var CITY_CHAMFER = 0.16;
+  var CITY_QUADS = (function () {
+    var h = 0.5, c = 0.5 - CITY_CHAMFER, k = Math.SQRT1_2, out = [];
+    /* Cyclic corners of the octagon, counter-clockwise seen from above. */
+    var ring = [[h, -c], [h, c], [c, h], [-c, h], [-h, c], [-h, -c],
+                [-c, -h], [c, -h]];
+    for (var i = 0; i < 8; i++) {
+      var a = ring[i], b = ring[(i + 1) % 8];
+      var nx = b[1] - a[1], nz = -(b[0] - a[0]);
+      var nl = Math.hypot(nx, nz) || 1;
+      out.push({
+        n: [nx / nl, 0, nz / nl],
+        /* The normal is enough to wind the quad; the id only drives shading. */
+        c: [[a[0], -0.5, a[1]], [b[0], -0.5, b[1]],
+            [b[0], 0.5, b[1]], [a[0], 0.5, a[1]]],
+        /* Share of the frontage this wall covers, for the window count. */
+        wf: Math.hypot(b[0] - a[0], b[1] - a[1])
+      });
+    }
+    /* A chamfer carries one pane; a full face carries the tower's columns. */
+    for (var j = 0; j < out.length; j++) out[j].wf = Math.min(1, out[j].wf);
+    return out;
+  })();
+  var CITY_ROOF = {n: [0, 1, 0], face: CITY_ROOF_FACE,
+    c: [[-0.5, 0.5, -0.5], [0.5, 0.5, -0.5], [0.5, 0.5, 0.5], [-0.5, 0.5, 0.5]]};
+
+  /* The static half of a tower. Winding is decided by the cross product
+     rather than by hand, so a face can never end up inside out. */
   function cityVertexTable() {
-    var unit = new Float32Array(24 * 3);
-    var nrm = new Float32Array(24 * 3);
-    var loc = new Float32Array(24 * 3);
-    var face = new Float32Array(24);
+    var unit = new Float32Array(CITY_VERTS * 3);
+    var nrm = new Float32Array(CITY_VERTS * 3);
+    var loc = new Float32Array(CITY_VERTS * 3);
+    var face = new Float32Array(CITY_VERTS);
+    var tier = new Float32Array(CITY_VERTS);
+    var wf = new Float32Array(CITY_VERTS);
     var ground = null;
     var v = 0;
-    for (var q = 0; q < CITY_QUADS.length; q++) {
-      var quad = CITY_QUADS[q];
-      var c = quad.c;
+
+    function emit(c, n, faceId, t, y0, y1, share) {
       var ax = c[1][0] - c[0][0], ay = c[1][1] - c[0][1], az = c[1][2] - c[0][2];
       var bx = c[2][0] - c[0][0], by = c[2][1] - c[0][1], bz = c[2][2] - c[0][2];
       var nx = ay * bz - az * by, ny = az * bx - ax * bz, nz = ax * by - ay * bx;
-      var order = (nx * quad.n[0] + ny * quad.n[1] + nz * quad.n[2]) >= 0
+      var order = (nx * n[0] + ny * n[1] + nz * n[2]) >= 0
         ? [0, 1, 2, 3] : [0, 3, 2, 1];
-      /* The ground reuses the roof quad, so it has to keep exactly this
-         winding: writing the raw corners instead makes the plane back-facing
-         and the streets vanish. */
-      if (quad.face === 4) {
-        ground = order.map(function (k) { return c[k]; });
-      }
+      /* Horizontal coordinate along the wall, -1 at one end and +1 at the
+         other, so the window grid spans the face whichever way it runs. */
+      var tx = ax, tz = az, tl = Math.hypot(tx, tz) || 1;
+      tx /= tl; tz /= tl;
       for (var k = 0; k < 4; k++) {
         var p = c[order[k]];
-        unit[v * 3] = p[0]; unit[v * 3 + 1] = p[1]; unit[v * 3 + 2] = p[2];
-        nrm[v * 3] = quad.n[0]; nrm[v * 3 + 1] = quad.n[1]; nrm[v * 3 + 2] = quad.n[2];
-        /* Facade coordinates: u runs across the wall, v runs up it. The roof
-           and the underside use the footprint instead. */
-        if (quad.face > 3) {
+        var edge = p[1] > 0 ? 1 : 0;
+        var yf = edge ? y1 : y0;
+        unit[v * 3] = p[0]; unit[v * 3 + 1] = edge; unit[v * 3 + 2] = p[2];
+        nrm[v * 3] = n[0]; nrm[v * 3 + 1] = n[1]; nrm[v * 3 + 2] = n[2];
+        if (faceId > 7) {
+          /* Cap: the pattern is normalised to this tier's own footprint. */
           loc[v * 3] = p[0] * 2; loc[v * 3 + 1] = p[2] * 2;
-        } else if (quad.face < 2) {
-          loc[v * 3] = p[2] * 2; loc[v * 3 + 1] = p[1] + 0.5;
         } else {
-          loc[v * 3] = p[0] * 2; loc[v * 3 + 1] = p[1] + 0.5;
+          loc[v * 3] = ((p[0] - c[0][0]) * tx + (p[2] - c[0][2]) * tz) / tl * 2 - 1;
+          loc[v * 3 + 1] = yf;
         }
         loc[v * 3 + 2] = 0;
-        face[v] = quad.face;
+        face[v] = faceId;
+        tier[v] = t;
+        wf[v] = share == null ? 1 : share;
         v++;
       }
+      return order;
     }
-    return {unit: unit, nrm: nrm, loc: loc, face: face, ground: ground};
+
+    for (var t = 0; t < CITY_TIERS; t++) {
+      for (var q = 0; q < CITY_QUADS.length; q++) {
+        emit(CITY_QUADS[q].c, CITY_QUADS[q].n, q, t, 0, 1, CITY_QUADS[q].wf);
+      }
+      /* The top tier's roof is the crown; the others are setback terraces. */
+      var top = t === CITY_TIERS - 1;
+      var ordered = emit(CITY_ROOF.c, CITY_ROOF.n,
+                         top ? CITY_ROOF_FACE : CITY_TERRACE_FACE, t, 0, 1, 1);
+      if (top) {
+        /* The ground reuses the roof quad, so it has to keep exactly the
+           winding emit chose: the raw corners would make the plane
+           back-facing and the streets vanish. */
+        ground = ordered.map(function (k) {
+          return [CITY_ROOF.c[k][0], 0, CITY_ROOF.c[k][2]];
+        });
+      }
+    }
+    return {unit: unit, nrm: nrm, loc: loc, face: face, tier: tier, wf: wf,
+            ground: ground};
   }
 
   Renderer.prototype._ensureCity = function (live) {
@@ -1078,7 +1216,7 @@
     if (this._cityN === n && this.cityGeo.getAttribute("position")) return;
     var THREE = T3.THREE;
     var table = cityVertexTable();
-    var verts = n * 24 + 4;
+    var verts = n * CITY_VERTS + 4;
     this._cityN = n;
     this._cityTable = table;
     this._cityH = new Float32Array(n);
@@ -1086,6 +1224,14 @@
     this._cityD = new Float32Array(n);
     this._cityFloors = new Float32Array(n);
     this._cityLit = new Float32Array(n);
+    this._cityCols = new Float32Array(n);
+    /* Three cut heights per tower: podium top, setback, crown base. The
+       fourth level is always the roof. */
+    this._cityTiers = new Float32Array(n * 4);
+    /* How wide each tier stands against the plot: a tower whose crown is
+       narrower than its shaft reads as a spire, one that flares reads as a
+       thirties block. Same index as the cut heights. */
+    this._cityTierW = new Float32Array(n * 4);
     this._cityPos = new Float32Array(verts * 3);
     this._cityCol = new Float32Array(verts * 3);
     this._cityLoc = new Float32Array(verts * 3);
@@ -1093,28 +1239,31 @@
     this._cityFace = new Float32Array(verts);
     this._citySpec = new Float32Array(verts * 4);
     this._cityBirth = new Float32Array(verts);
-    var idx = new Uint32Array(n * 36 + 6);
+    var quads = CITY_TIERS * 9;
+    var idx = new Uint32Array(n * CITY_INDICES + 6);
     for (var i = 0; i < n; i++) {
-      var o = i * 24;
-      for (var k = 0; k < 24; k++) {
+      var o = i * CITY_VERTS;
+      for (var k = 0; k < CITY_VERTS; k++) {
+        /* x is the tier's own edge, y is stamped in _writeCity. */
         this._cityLoc[(o + k) * 3] = table.loc[k * 3];
-        this._cityLoc[(o + k) * 3 + 1] = table.loc[k * 3 + 1];
         this._cityNrm[(o + k) * 3] = table.nrm[k * 3];
         this._cityNrm[(o + k) * 3 + 1] = table.nrm[k * 3 + 1];
         this._cityNrm[(o + k) * 3 + 2] = table.nrm[k * 3 + 2];
         this._cityFace[o + k] = table.face[k];
       }
-      for (var f = 0; f < 6; f++) {
-        var src = o + f * 4, dst = (i * 6 + f) * 6;
+      for (var f = 0; f < quads; f++) {
+        var src = o + f * 4, dst = (i * quads + f) * 6;
         idx[dst] = src; idx[dst + 1] = src + 1; idx[dst + 2] = src + 2;
         idx[dst + 3] = src; idx[dst + 4] = src + 2; idx[dst + 5] = src + 3;
       }
     }
-    var g = n * 24;
-    idx[n * 36] = g; idx[n * 36 + 1] = g + 1; idx[n * 36 + 2] = g + 2;
-    idx[n * 36 + 3] = g; idx[n * 36 + 4] = g + 2; idx[n * 36 + 5] = g + 3;
+    var g = n * CITY_VERTS;
+    idx[n * CITY_INDICES] = g; idx[n * CITY_INDICES + 1] = g + 1;
+    idx[n * CITY_INDICES + 2] = g + 2;
+    idx[n * CITY_INDICES + 3] = g; idx[n * CITY_INDICES + 4] = g + 2;
+    idx[n * CITY_INDICES + 5] = g + 3;
     for (var gi = 0; gi < 4; gi++) {
-      this._cityFace[g + gi] = 6;
+      this._cityFace[g + gi] = CITY_GROUND_FACE;
       this._cityNrm[(g + gi) * 3 + 1] = 1;
     }
     var geo = this.cityGeo;
@@ -1133,29 +1282,45 @@
   Renderer.prototype._writeCity = function (live) {
     var n = live.n;
     if (!this._cityPos || this._cityN !== n) return;
-    var table = this._cityTable;
+    var table = this._cityTable, tier = table.tier, unit = table.unit;
     var pos = this._cityPos, col = this._cityCol, spec = this._citySpec;
-    var birth = this._cityBirth;
+    var loc = this._cityLoc, birth = this._cityBirth;
+    var tierW = this._cityTierW;
     var maxR = 4;
     for (var i = 0; i < n; i++) {
-      var cx = this.nPos[i * 3], cy = this.nPos[i * 3 + 1], cz = this.nPos[i * 3 + 2];
+      var cx = this.nPos[i * 3], cz = this.nPos[i * 3 + 2];
       var h = this._cityH[i], w = this._cityW[i], d = this._cityD[i];
-      var y0 = cy - h * 0.5;
+      var levels = this._cityTiers, li = i * 4;
       var c = this._color(live._nodeCluster ? live._nodeCluster[i] : 0, i);
       var lit = this._cityLit[i];
       var floors = this._cityFloors[i];
+      var cols = this._cityCols[i];
       var seed = SK.hashSeed(i * 1.71 + 0.37);
       var b = this.nBirth ? this.nBirth[i] : 0;
-      var base = i * 24;
-      for (var k = 0; k < 24; k++) {
+      var base = i * CITY_VERTS;
+      for (var k = 0; k < CITY_VERTS; k++) {
         var v = base + k, o = v * 3;
-        pos[o] = cx + table.unit[k * 3] * w;
-        pos[o + 1] = y0 + (table.unit[k * 3 + 1] + 0.5) * h;
-        pos[o + 2] = cz + table.unit[k * 3 + 2] * d;
+        var t = tier[k];
+        /* -0.5 marks the tier base, +0.5 its top; the table carries the flag
+           in unit.y so no extra attribute is needed. */
+        var yf = unit[k * 3 + 1]
+          ? (t === CITY_TIERS - 1 ? 1 : levels[li + t + 1])
+          : levels[li + t];
+        var sc = tierW ? tierW[li + t] : 1;
+        pos[o] = cx + unit[k * 3] * w * sc;
+        pos[o + 1] = yf * h;
+        pos[o + 2] = cz + unit[k * 3 + 2] * d * sc;
+        /* Walls carry their height in local.y. A cap must keep the plan
+           coordinate the table wrote for it instead, or the roof pattern
+           reads a constant and the beacon never lights. */
+        loc[o + 1] = table.face[k] > 7 ? table.loc[k * 3 + 1] : yf;
         col[o] = c.r; col[o + 1] = c.g; col[o + 2] = c.b;
         spec[v * 4] = floors; spec[v * 4 + 1] = lit;
-        /* .w is padding: a vec4 keeps the attribute 16-byte aligned. */
         spec[v * 4 + 2] = seed;
+        /* Pane count follows the frontage of this face: a chamfer is a
+           quarter of a wall and gets a quarter of the columns, so the glass
+           stays the same size all the way round the tower. */
+        spec[v * 4 + 3] = cols * table.wf[k];
         birth[v] = b;
       }
       var rr = Math.hypot(cx, cz) + Math.max(w, d) * 0.5;
@@ -1165,8 +1330,8 @@
        city has no visible edge floating in the sky. */
     var R = Math.max(26, maxR * 1.55);
     this.cityUni.u_cityR.value = R;
-    var g = n * 24;
-    var roof = this._cityTable.ground || CITY_QUADS[4].c;
+    var g = n * CITY_VERTS;
+    var roof = this._cityTable.ground || CITY_ROOF.c;
     for (var gi = 0; gi < 4; gi++) {
       var p = roof[gi], vg = g + gi;
       pos[vg * 3] = p[0] * R * 4;
@@ -1191,14 +1356,21 @@
   Renderer.prototype._cityMove = function (i) {
     if (!this._cityPos || this._cityN <= 0 || i < 0 || i >= this._cityN) return;
     var table = this._cityTable, pos = this._cityPos;
-    var cx = this.nPos[i * 3], cy = this.nPos[i * 3 + 1], cz = this.nPos[i * 3 + 2];
+    var tier = table.tier, unit = table.unit, levels = this._cityTiers;
+    var tierW = this._cityTierW;
+    var cx = this.nPos[i * 3], cz = this.nPos[i * 3 + 2];
     var h = this._cityH[i], w = this._cityW[i], d = this._cityD[i];
-    var y0 = cy - h * 0.5, base = i * 24;
-    for (var k = 0; k < 24; k++) {
+    var base = i * CITY_VERTS, li = i * 4;
+    for (var k = 0; k < CITY_VERTS; k++) {
       var o = (base + k) * 3;
-      pos[o] = cx + table.unit[k * 3] * w;
-      pos[o + 1] = y0 + (table.unit[k * 3 + 1] + 0.5) * h;
-      pos[o + 2] = cz + table.unit[k * 3 + 2] * d;
+      var t = tier[k];
+      var yf = unit[k * 3 + 1]
+        ? (t === CITY_TIERS - 1 ? 1 : levels[li + t + 1])
+        : levels[li + t];
+      var sc = tierW ? tierW[li + t] : 1;
+      pos[o] = cx + unit[k * 3] * w * sc;
+      pos[o + 1] = yf * h;
+      pos[o + 2] = cz + unit[k * 3 + 2] * d * sc;
     }
     var attr = this.cityGeo.getAttribute("position");
     if (attr) attr.needsUpdate = true;
@@ -1446,6 +1618,18 @@
           this._cityD[i] = spec.d;
           this._cityFloors[i] = spec.floors;
           this._cityLit[i] = spec.lit;
+          this._cityCols[i] = spec.cols;
+          /* Tier bases, street to crown. The spec hands back the three cut
+             heights; the first base is the ground itself, and the crown's
+             top is the roof line. */
+          this._cityTiers[i * 4] = 0;
+          this._cityTiers[i * 4 + 1] = spec.tiers[0];
+          this._cityTiers[i * 4 + 2] = spec.tiers[1];
+          this._cityTiers[i * 4 + 3] = spec.tiers[2];
+          this._cityTierW[i * 4] = spec.tierw[0];
+          this._cityTierW[i * 4 + 1] = spec.tierw[1];
+          this._cityTierW[i * 4 + 2] = spec.tierw[2];
+          this._cityTierW[i * 4 + 3] = spec.tierw[3];
         }
         var cluster = live._nodeCluster ? live._nodeCluster[i] : 0;
         var dragKey = live.ids && live.ids[i] ? live.ids[i] : i;
@@ -2104,6 +2288,7 @@
     if (!w || !h) return;
     this.width = w;
     this.height = h;
+    this.renderer.setPixelRatio(this.pixelRatio());
     this.renderer.setSize(w, h, false);
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();

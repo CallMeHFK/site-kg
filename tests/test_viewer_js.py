@@ -360,8 +360,34 @@ assert.equal(floorless.floors, 3, "an unknown page still gets three floors");
 assert.ok(tall.floors > short.floors, "rank raises the skyline");
 assert.equal(tall.h, tall.floors * 0.62);
 assert.equal(short.h, short.floors * 0.62);
-assert.ok(short.w >= 1.05 && short.w <= 1.5);
-assert.ok(short.d >= 1.05 && short.d <= 1.5);
+assert.ok(short.w >= 1.30 && short.w <= 2.10);
+assert.ok(short.d >= 1.30 && short.d <= 2.10);
+/* Three cut heights, strictly inside the tower and increasing: the podium,
+   the setback and the crown base. A monument with no silhouette is the thing
+   this replaced. */
+assert.equal(tall.tiers.length, 3);
+assert.ok(tall.tiers[0] > 0 && tall.tiers[0] < tall.tiers[1],
+          "the podium ends below the setback");
+assert.ok(tall.tiers[1] < tall.tiers[2] && tall.tiers[2] < 1,
+          "the crown still has a shaft above the terrace");
+assert.ok(short.tiers[1] > short.tiers[0] && short.tiers[2] > short.tiers[1],
+          "even a three-floor infill gets a valid stack");
+/* Window columns follow the frontage rather than a fixed four. */
+assert.equal(tall.cols, Math.max(6, Math.min(12, Math.round(tall.w * 6.0))));
+assert.ok(spec({rank: 0.02, rankMax: 0.03, degree: 1, seed: 3}).cols
+          >= 8, "a normal tower frontage is at least eight panes wide");
+/* Each tier stands at its own width: the podium is the widest, and a crown
+   is either a setback slab or a spire, never the same for every plot. */
+assert.equal(tall.tierw.length, 4);
+assert.ok(tall.tierw[0] > tall.tierw[1], "the podium oversails the shaft");
+assert.ok(tall.tierw[2] < tall.tierw[1], "the setback steps in");
+assert.ok(tall.tierw[3] > 0.3 && tall.tierw[3] < 1.1);
+const crowns = new Set();
+for (let i = 0; i < 24; i++) {
+  crowns.add(Math.round(spec({rank: 0.02, rankMax: 0.03, degree: 1, seed: i})
+                        .tierw[3] * 100));
+}
+assert.ok(crowns.size > 8, "crown width varies plot to plot");
 /* The footprint is seeded: two pages of the same height still differ. */
 assert.ok(spec({rank: 0.02, rankMax: 0.03, degree: 1, seed: 7}).w
           !== spec({rank: 0.02, rankMax: 0.03, degree: 1, seed: 11}).w,
@@ -378,6 +404,42 @@ assert.ok(many.lit <= 0.8);
 const odd = spec({rank: 0.017, rankMax: 0.03, degree: 3, kids: 2, kidsMax: 9});
 assert.equal(odd.floors, Math.round(odd.floors));
 """)
+
+
+def test_city_geometry_is_tiered():
+    """Four tiers of eight walls per tower plus one ground quad, one mesh."""
+    js = RENDER.read_text(encoding="utf-8")
+    assert "var CITY_TIERS = 4;" in js
+    assert "CITY_VERTS = CITY_TIERS * 9 * 4" in js
+    assert "CITY_INDICES = CITY_TIERS * 9 * 6" in js
+    # The ground is appended after the last tower. Stamping it at the old
+    # 24-vertex stride wrote four stray vertices into a tower and left the
+    # real plane at the origin, which painted a giant triangle over the city.
+    assert "var g = n * CITY_VERTS;" in js
+    assert "idx[n * CITY_INDICES]" in js
+    # The WGSL twin has to read the same column count out of the promoted
+    # padding slot, or the backends disagree on the facade grid.
+    gpu = GPU.read_text(encoding="utf-8")
+    assert "max(i.spec.w, 1.0)" in gpu
+    assert "max(vSpec.w, 1.0)" in js
+    # The plan is an octagon: eight walls per tier, and the chamfer feed the
+    # shader its own share of the window columns.
+    assert "CITY_CHAMFER" in js
+    assert "table.wf[k]" in js
+    # The stamped values are tier *bases*, not the spec's cut heights: the
+    # first base is the street and the last is the crown base. Reading the
+    # cuts as bases lifted every tower a storey off its plot and left the
+    # crown with zero height, so its roof sat coplanar with the terrace below
+    # and lost the depth test. Neither fault shows up in a citySpec test.
+    assert "this._cityTiers[i * 4] = 0;" in js
+    assert "this._cityTiers[i * 4 + 1] = spec.tiers[0];" in js
+    assert "this._cityTiers[i * 4 + 2] = spec.tiers[1];" in js
+    assert "this._cityTiers[i * 4 + 3] = spec.tiers[2];" in js
+    # Cap vertices keep the plan coordinate the table wrote for them. Writing
+    # the tier height into local.y for every vertex made length(local.xy) >= 1
+    # on a roof, which put the beacon out and flattened the parapet into a
+    # wash of one colour.
+    assert "table.face[k] > 7 ? table.loc[k * 3 + 1] : yf" in js
 
 
 def test_city_gpu_pipeline_is_declared():
