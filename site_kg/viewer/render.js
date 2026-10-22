@@ -53,7 +53,7 @@
     "  p = fract(p*vec2(127.31, 311.7));",
     "  p += dot(p, p + 34.23);",
     "  return fract(p.x*p.y); }",
-    "vec3 hazeCol(){ return vec3(0.030, 0.034, 0.056); }",
+    "vec3 hazeCol(){ return vec3(0.024, 0.028, 0.048); }",
     "void main(){",
     "  vec3 col;",
     "  float alpha = 1.0;",
@@ -69,21 +69,25 @@
       + " + (1.0 - smoothstep(0.03, 0.18, dz));",
     /* Wet asphalt under sodium lamps: the street is the only thing that
        explains where the towers stand, so it has to be legible, not loud. */
-    "    col = vec3(0.017, 0.020, 0.029);",
-    "    col += vec3(0.30, 0.19, 0.086) * lane * 0.22;",
+    "    col = vec3(0.010, 0.012, 0.018);",
+    "    col += vec3(0.30, 0.19, 0.086) * lane * 0.14;",
     "    float r = length(g) / max(u_cityR, 1.0);",
     "    col = mix(col, hazeCol(), smoothstep(0.85, 1.60, r));",
+    /* Dither the long, shallow ramp into the haze: at 8 bits the steps
+       between asphalt and haze would otherwise band across the plane. */
+    "    col += (h21(g * 37.0) - 0.5) * 0.003;",
     /* The plane has to dissolve before its own edge, or the city sits on a
        floating square of tarmac with a straight horizon. */
     "    alpha = 1.0 - smoothstep(1.15, 1.85, r);",
     "  } else if (vFace > 4.5) {",
-    "    col = vCol * 0.012;",
+    "    col = vCol * 0.075;",
     "  } else if (vFace > 3.5) {",
     /* Roof: gravel, a lit parapet, and a beacon whose brightness is the
        node's fan-out -- the same number the windows carry. */
     "    float e = max(abs(vLocal.x), abs(vLocal.y));",
-    "    col = vCol * 0.085 + vec3(0.012, 0.014, 0.020);",
-    "    col += vCol * 0.26 * smoothstep(0.84, 1.0, e);",
+    "    col = vCol * 0.30 + vec3(0.030, 0.036, 0.052);"
+      + "    col *= 0.82 + 0.30 * fract(vSpec.z * 5.7);",
+    "    col += vCol * 0.40 * smoothstep(0.84, 1.0, e);",
     "    float beacon = 1.0 - smoothstep(0.0, 0.13, length(vLocal.xy));",
     "    beacon *= 0.40 + 1.45 * vSpec.y;",
     "    beacon *= 0.70 + 0.30 * sin(u_time * 2.1 + vSpec.z * 31.0);",
@@ -94,14 +98,16 @@
        lit fraction the node's outgoing links bought it. */
     "    vec3 N = normalize(vNrm);",
     "    float facing = 0.55 + 0.45 * abs(dot(N, normalize(vec3(0.45, 0.72, 0.33))));",
-    "    col = vCol * (0.20 * facing) * (0.55 + 0.45 * vLocal.y);",
+    "    col = vCol * (0.40 * facing) * (0.34 + 0.66 * vLocal.y)"
+      + " * vec3(0.90, 0.97, 1.08)"
+      + " * (0.82 + 0.30 * fract(vSpec.z * 5.7));",
     /* The corner columns catch the sky: without them two neighbouring slabs
        of the same concrete read as one building. */
-    "    col += vCol * 0.24 * smoothstep(0.87, 1.0, abs(vLocal.x));",
+    "    col += vCol * 0.45 * smoothstep(0.87, 1.0, abs(vLocal.x));",
     /* Street light spills up the ground floor, which is what makes a tower
        meet the road instead of hovering over it. */
     "    float up = 1.0 - vLocal.y;",
-    "    col += vec3(0.26, 0.17, 0.085) * up * up * up * 0.18;",
+    "    col += vec3(0.26, 0.17, 0.085) * up * up * up * 0.05;",
     "    float floors = max(vSpec.x, 1.0);",
     "    float u = (vLocal.x * 0.5 + 0.5) * 4.0;",
     "    float v = vLocal.y * floors;",
@@ -121,7 +127,7 @@
     "    float band = smoothstep(ring - 0.24, ring, dist)",
     "               * (1.0 - smoothstep(ring, ring + 0.15, dist));",
     "    lit = max(lit, band * step(0.42, pick));",
-    "    vec3 lamp = mix(vec3(1.0, 0.82, 0.56), vCol, 0.30);",
+    "    vec3 lamp = mix(vec3(1.0, 0.84, 0.58), vCol, 0.22);",
     "    float flick = 0.86 + 0.14 * sin(u_time*1.6 + cell.x*2.7 + cell.y*1.9",
     "                                  + seed*9.0);",
     "    col += vec3(0.013, 0.016, 0.023) * win;",
