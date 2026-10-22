@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 CORE = ROOT / "site_kg" / "viewer" / "core.js"
 RENDER = ROOT / "site_kg" / "viewer" / "render.js"
 GPU = ROOT / "site_kg" / "viewer" / "gpu.js"
+CAMERA = ROOT / "site_kg" / "viewer" / "camera.js"
 DIRECTOR = ROOT / "site_kg" / "viewer" / "director.js"
 LAUNCHER = ROOT / "site_kg" / "viewer" / "launcher.js"
 PLANETS = ROOT / "site_kg" / "viewer" / "scenes" / "planets.js"
@@ -440,6 +441,31 @@ def test_city_geometry_is_tiered():
     # on a roof, which put the beacon out and flattened the parapet into a
     # wash of one colour.
     assert "table.face[k] > 7 ? table.loc[k * 3 + 1] : yf" in js
+
+
+def test_orbit_turns_once_per_frame_from_dt():
+    """The orbit is dt-based and must not also run OrbitControls' auto-rotate.
+
+    setAutoRotate used to assign controls.autoRotate, and switchScene calls it
+    on every scene change. From then on OrbitControls stepped a fixed angle per
+    rendered frame on top of the dt-based turn: the measured rate went from
+    1.3 to 4.2 degrees per second, and it changed with the frame rate -- the
+    stutter this pass was meant to remove.
+    """
+    js = CAMERA.read_text(encoding="utf-8")
+    assert "this.controls.autoRotate = false;" in js
+    assert "this.autoRotate = !!on;" in js
+    # One turn, and it is the dt one.
+    assert "_spin" not in js
+    assert ("var spin = this.autoRotate && !this.userInteracting && !this.reduced"
+            in js)
+    # A refit tween turns its own endpoints, so the camera keeps orbiting while
+    # it eases instead of freezing for the length of the fit.
+    assert "this._rotate(tw.p0, anchor, spin);" in js
+    assert "this._rotate(tw.p1, anchor, spin);" in js
+    # The space bar reads the same flag it writes, or it can never resume.
+    ui = UI.read_text(encoding="utf-8")
+    assert "setAutoRotate(!self.camera.autoRotate)" in ui
 
 
 def test_city_gpu_pipeline_is_declared():

@@ -10,6 +10,7 @@
     this.tween = null;
     this.settled = true;
     this.userInteracting = false;
+    this.autoRotate = true;
     this.reduced = !!(window.matchMedia &&
       window.matchMedia("(prefers-reduced-motion: reduce)").matches);
     this.controls = new T3.OrbitControls(this.camera, renderer.canvas);
@@ -101,8 +102,12 @@
     this._to(s.p, s.t, 900);
   };
 
+  /* Records the intent only. OrbitControls' own auto-rotate would add its
+     per-frame step on top of the dt-based turn in update(), which doubles the
+     rate and makes it frame-rate dependent again. */
   Camera.prototype.setAutoRotate = function (on) {
-    this.controls.autoRotate = !!on && !this.userInteracting && !this.reduced;
+    this.autoRotate = !!on;
+    this.controls.autoRotate = false;
   };
 
   Camera.prototype.fit = function (points, opts) {
@@ -224,6 +229,9 @@
     }
   };
 
+  /* OrbitControls' auto-rotate speed is "degrees per frame at 60fps"; the
+     same unit here is a rate per second, so the view turns at the speed the
+     scene asks for regardless of how many frames the device manages. */
   Camera.prototype._angle = function (dt) {
     var speed = this.renderer.cfg && this.renderer.cfg.spin;
     if (speed == null) speed = 0.6;
@@ -242,16 +250,10 @@
     p.z = t.z + dx * s + dz * c;
   };
 
-  /* OrbitControls' auto-rotate speed is "degrees per frame at 60fps"; the
-     same unit here is a rate per second, so the view turns at the speed the
-     scene asks for regardless of how many frames the device manages. */
-  Camera.prototype._spin = function (dt) {
-    this._rotate(this.camera.position, this.controls.target, this._angle(dt));
-  };
-
   Camera.prototype.update = function (dt) {
     var tw = this.tween;
-    var spin = this.userInteracting || this.reduced ? 0 : this._angle(dt);
+    var spin = this.autoRotate && !this.userInteracting && !this.reduced
+      ? this._angle(dt) : 0;
     if (tw) {
       tw.t += dt * 1000;
       var k = Math.min(1, tw.t / tw.dur);

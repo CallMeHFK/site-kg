@@ -721,7 +721,7 @@
       if (e.key === " ") {
         e.preventDefault();
         if (!self.director.replayArchive()) {
-          self.camera.setAutoRotate(!self.camera.controls.autoRotate);
+          self.camera.setAutoRotate(!self.camera.autoRotate);
         }
         return;
       }
