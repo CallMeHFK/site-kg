@@ -17,8 +17,10 @@
     this.controls.dampingFactor = 0.08;
     this.controls.rotateSpeed = 0.7;
     this.controls.zoomSpeed = 0.9;
-    this.controls.autoRotate = !this.reduced;
-    this.controls.autoRotateSpeed = (renderer.cfg && renderer.cfg.spin) || 0.6;
+    /* The orbit is driven from dt in update(), not by OrbitControls, whose
+       auto-rotate advances a fixed angle per rendered frame: on a device
+       that misses frames the head visibly steps instead of turning. */
+    this.controls.autoRotate = false;
     this.controls.target.set(0, 0, 0);
     /* A head has a front: open on a three-quarter view from the left, a little
        above the temporal lobe. The later fits keep this direction, so the
@@ -28,7 +30,6 @@
     var self = this;
     this.controls.addEventListener("start", function () {
       self.userInteracting = true;
-      self.controls.autoRotate = false;
       self.tween = null;
       self.settled = true;
     });
@@ -81,7 +82,7 @@
                     cfg.fitMinRadius != null ? cfg.fitMinRadius : 14);
     /* A skyline is shallow and wide: 2.15 radii of distance left the city a
        patch in the middle of the frame, so the shot sits closer and higher. */
-    var d = r * 1.72 * (zoom || 1);
+    var d = r * 1.55 * (zoom || 1);
     var p = new THREE.Vector3(0.58, 0.42, 0.70).normalize().multiplyScalar(d);
     p.y += r * 0.40;
     return {p: p, t: new THREE.Vector3(0, r * 0.16, 0)};
@@ -220,8 +221,22 @@
     if (flag) {
       this.tween = null;
       this.settled = true;
-      this.controls.autoRotate = false;
     }
+  };
+
+  /* OrbitControls' auto-rotate speed is "degrees per frame at 60fps"; the
+     same unit here is a rate per second, so the view turns at the speed the
+     scene asks for regardless of how many frames the device manages. */
+  Camera.prototype._spin = function (dt) {
+    var speed = this.renderer.cfg && this.renderer.cfg.spin;
+    if (speed == null) speed = 0.6;
+    if (!speed) return;
+    var a = dt * speed * 0.10472;
+    var t = this.controls.target, p = this.camera.position;
+    var dx = p.x - t.x, dz = p.z - t.z;
+    var c = Math.cos(a), s = Math.sin(a);
+    p.x = t.x + dx * c - dz * s;
+    p.z = t.z + dx * s + dz * c;
   };
 
   Camera.prototype.update = function (dt) {
@@ -235,11 +250,9 @@
       if (k >= 1) {
         this.tween = null;
         this.settled = true;
-        if (!this.userInteracting && !this.reduced) {
-          this.controls.autoRotateSpeed = (this.renderer.cfg && this.renderer.cfg.spin) || 0.6;
-          this.controls.autoRotate = true;
-        }
       }
+    } else if (!this.userInteracting && !this.reduced) {
+      this._spin(dt);
     }
     this.controls.update();
     this.renderer.camDistance = this.camera.position.distanceTo(this.controls.target);

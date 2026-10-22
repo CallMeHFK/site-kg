@@ -627,41 +627,66 @@ fn hazeCol() -> vec3f { return vec3f(0.024, 0.028, 0.048); }
 @fragment fn fs_city(i: VOut) -> @location(0) vec4f {
   var col = vec3f(0.0);
   var alpha = 1.0;
-  if (i.face > 5.5) {
+  if (i.face > 9.5) {
     let g = i.local.xy;
     let P = max(u.b.x, 0.5);
     let dx = abs(fract(g.x / P + 0.5) - 0.5) * P;
     let dz = abs(fract(g.y / P + 0.5) - 0.5) * P;
-    let lane = (1.0 - ss(0.03, 0.18, dx)) + (1.0 - ss(0.03, 0.18, dz));
-    col = vec3f(0.010, 0.012, 0.018);
-    col = col + vec3f(0.30, 0.19, 0.086) * lane * 0.14;
+    /* Asphalt out to the kerb, a concrete pavement around the block, and a
+       dashed centre line: the street has to explain where the towers stand. */
+    let m = min(dx, dz);
+    let kerb = P * 0.21;
+    let road = 1.0 - ss(kerb - 0.10, kerb, m);
+    let walk = ss(kerb - 0.015, kerb + 0.04, m) * (1.0 - ss(kerb + 0.26, kerb + 0.34, m));
+    let along = select(g.x, g.y, dx < dz);
+    let mark = (1.0 - ss(0.018, 0.055, m)) * step(0.52, fract(along * 0.42));
     let r = length(g) / max(u.a.w, 1.0);
+    /* The pattern dissolves before it aliases: past half the city radius the
+       street grid is one pixel wide and only reads as moire. */
+    let near = 1.0 - ss(0.45, 0.88, r);
+    col = mix(vec3f(0.027, 0.028, 0.034), vec3f(0.011, 0.012, 0.016), road * near);
+    col = mix(col, vec3f(0.040, 0.041, 0.048), walk * near);
+    col = col + vec3f(0.30, 0.19, 0.086) * road
+        * (1.0 - ss(0.0, kerb, m)) * 0.05 * near;
+    col = col + vec3f(0.40, 0.30, 0.16) * mark * 0.20 * near;
     col = mix(col, hazeCol(), ss(0.85, 1.60, r));
     /* Dither the ramp into the haze: 8-bit steps would band here. */
     col = col + vec3f((h21(g * 37.0) - 0.5) * 0.003);
     alpha = 1.0 - ss(1.15, 1.85, r);
-  } else if (i.face > 4.5) {
-    col = i.col * 0.075;
-  } else if (i.face > 3.5) {
-    let e = max(abs(i.local.x), abs(i.local.y));
-    col = i.col * 0.30 + vec3f(0.030, 0.036, 0.052);
+  } else if (i.face > 8.5) {
+    /* Setback terrace: bare roof with a lip, no beacon. */
+    let e = max(max(abs(i.local.x), abs(i.local.y)),
+                (abs(i.local.x) + abs(i.local.y)) * 0.5952);
+    col = i.col * 0.15 + vec3f(0.014, 0.017, 0.026);
+    col = col * (0.84 + 0.24 * fract(i.spec.z * 5.7));
+    col = col + vec3f((h21(floor(i.local.xy * 9.0)) - 0.5) * 0.010);
+    col = col + i.col * 0.36 * ss(0.86, 1.0, e);
+  } else if (i.face > 7.5) {
+    let e = max(max(abs(i.local.x), abs(i.local.y)),
+                (abs(i.local.x) + abs(i.local.y)) * 0.5952);
+    col = i.col * 0.12 + vec3f(0.013, 0.016, 0.024);
     col = col * (0.82 + 0.30 * fract(i.spec.z * 5.7));
-    col = col + i.col * 0.40 * ss(0.84, 1.0, e);
+    col = col + vec3f((h21(floor(i.local.xy * 9.0)) - 0.5) * 0.012);
+    col = col + i.col * 0.44 * ss(0.86, 1.0, e);
     var beacon = 1.0 - ss(0.0, 0.13, length(i.local.xy));
     beacon = beacon * (0.40 + 1.45 * i.spec.y);
     beacon = beacon * (0.70 + 0.30 * sin(u.a.x * 2.1 + i.spec.z * 31.0));
     col = col + vec3f(1.0, 0.74, 0.42) * beacon * 1.25;
   } else {
     let N = normalize(i.nrm);
-    let facing = 0.55 + 0.45 * abs(dot(N, normalize(vec3f(0.45, 0.72, 0.33))));
-    col = i.col * (0.40 * facing) * (0.34 + 0.66 * i.local.y)
+    /* One sun, not a studio rig: the faces turned away from it fall into
+       shadow, and that contrast is what tells a chamfer from a flat slab. */
+    let L = normalize(vec3f(0.45, 0.72, 0.33));
+    let facing = 0.34 + 0.66 * max(dot(N, L), 0.0);
+    let sky = 0.05 + 0.09 * (N.y * 0.5 + 0.5);
+    col = i.col * (0.62 * facing + sky) * (0.38 + 0.62 * i.local.y)
         * vec3f(0.90, 0.97, 1.08);
     col = col * (0.82 + 0.30 * fract(i.spec.z * 5.7));
-    col = col + i.col * 0.45 * ss(0.87, 1.0, abs(i.local.x));
+    col = col + i.col * 0.38 * ss(0.86, 1.0, abs(i.local.x));
     let up = 1.0 - i.local.y;
     col = col + vec3f(0.26, 0.17, 0.085) * up * up * up * 0.05;
     let floors = max(i.spec.x, 1.0);
-    let uu = (i.local.x * 0.5 + 0.5) * 4.0;
+    let uu = (i.local.x * 0.5 + 0.5) * max(i.spec.w, 1.0);
     let vv = i.local.y * floors;
     let cell = floor(vec2f(uu, vv));
     let f = fract(vec2f(uu, vv));
@@ -676,10 +701,15 @@ fn hazeCol() -> vec3f { return vec3f(0.024, 0.028, 0.048); }
     let dist = length(q) / max(u.a.w, 1.0);
     let band = ss(ring - 0.24, ring, dist) * (1.0 - ss(ring, ring + 0.15, dist));
     lit = max(lit, band * step(0.42, pick));
-    let lamp = mix(vec3f(1.0, 0.84, 0.58), i.col, 0.22);
+    var lamp = mix(vec3f(1.0, 0.84, 0.58), i.col, 0.22);
+    lamp = mix(lamp, vec3f(0.80, 0.89, 1.0), step(0.88, h21(cell * 1.7 + seed * 5.3)) * 0.75);
     let flick = 0.86 + 0.14 * sin(u.a.x * 1.6 + cell.x * 2.7
                                 + cell.y * 1.9 + seed * 9.0);
     col = col + vec3f(0.013, 0.016, 0.023) * win;
+    /* A pale spandrel under every window: that is the floor line, and a tower
+       with visible storeys stops reading as a coloured box. */
+    let bnd = ss(0.84, 0.89, f.y) * (1.0 - ss(0.93, 0.97, f.y));
+    col = col + i.col * 0.22 * bnd * (0.55 + 0.45 * lit);
     col = col + lamp * win * lit * flick * 1.45;
   }
   let haze = ss(u.a.w * 1.05, u.a.w * 2.30, i.depth);
@@ -1031,7 +1061,7 @@ fn hazeCol() -> vec3f { return vec3f(0.024, 0.028, 0.048); }
     if (!w || !h) return;
     this.width = w;
     this.height = h;
-    var dpr = Math.min(window.devicePixelRatio || 1, 2);
+    var dpr = this.pixelRatio();
     var pw = Math.max(1, Math.round(w * dpr));
     var ph = Math.max(1, Math.round(h * dpr));
     if (this.canvas.width !== pw) this.canvas.width = pw;

@@ -1130,10 +1130,46 @@
           labels.resize();
         });
         var last = performance.now();
+        /* Resolution budget: sample a second of frames, then trade pixels for
+           smoothness if the device is struggling, and give them back when it
+           is not. Two seconds are ignored while shaders compile and the first
+           buffers upload. */
+        var perf = {warm: 2.0, time: 0, frames: 0, good: 0, slow: 0};
         function frame(now) {
           requestAnimationFrame(frame);
           var dt = Math.min(0.1, Math.max(0, (now - last) / 1000));
           last = now;
+          perf.time += dt;
+          perf.frames++;
+          if (perf.time >= 1) {
+            var fps = perf.frames / perf.time;
+            if (perf.warm > 0) {
+              perf.warm -= perf.time;
+            } else if (fps < 30 && renderer.renderScale > 0.71) {
+              /* Two slow seconds in a row, or one really bad one: a single
+                 bad window is usually shader compilation, and dropping the
+                 resolution for that would leave the whole run soft. */
+              perf.slow = fps < 22 ? 2 : perf.slow + 1;
+              if (perf.slow >= 2) {
+                renderer.setRenderScale(renderer.renderScale - 0.12);
+                perf.slow = 0;
+              }
+              perf.good = 0;
+            } else if (fps > 56 && renderer.renderScale < 0.99) {
+              /* Only climb back after four steady seconds: a single fast
+                 second is usually a tab that just lost a heavy overlay. */
+              perf.slow = 0;
+              if (++perf.good >= 4) {
+                renderer.setRenderScale(renderer.renderScale + 0.1);
+                perf.good = 0;
+              }
+            } else {
+              perf.good = 0;
+              perf.slow = 0;
+            }
+            perf.time = 0;
+            perf.frames = 0;
+          }
           director.tick(dt);
         }
         requestAnimationFrame(frame);
