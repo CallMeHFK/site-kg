@@ -30,7 +30,7 @@ Q = 30000          # layout quantization: [-1, 1] -> [-30000, 30000] int16
 _GRAPH_HEADER = struct.Struct("<4sHHIIIIII")     # magic, ver, flags, n, e, c, k, pool, hash
 _CLUSTER_ROW = struct.Struct("<IHHI")            # off, len, reserved, node_count
 _KIND_ROW = struct.Struct("<IHH")                # off, len, reserved
-_NODE_ROW = struct.Struct("<IIIIIIHHIfI")        # 3 string refs, cluster, flags, degree, rank
+_NODE_ROW = struct.Struct("<IIIIIIHHIfI")        # 3 refs, cluster, flags, degree, rank, words
 _EDGE_ROW = struct.Struct("<IIHHI")              # src, dst, kind, flags, reserved
 
 _LAYOUT_HEADER = struct.Struct("<4sHHIIfI")      # magic, ver, flags, n, patches, scale
@@ -135,7 +135,10 @@ def encode_graph(graph: dict) -> bytes:
         node_rows.append(_NODE_ROW.pack(
             *id_ref, *t_ref, *u_ref,
             clusters[str(nd.get("c", ""))], 0,
-            int(nd.get("g", 0)), float(nd.get("r", 0.0)), 0))
+            int(nd.get("g", 0)), float(nd.get("r", 0.0)),
+            # The trailing word was reserved; it now carries the page's prose
+            # volume, so the row size and the version stay put.
+            int(nd.get("w", 0))))
 
     edge_kind = [kinds[str(ed.get("k", "ref"))] for ed in edges]
     edge_rows = [
@@ -179,7 +182,7 @@ def decode_graph(data: bytes) -> dict:
     _need(data, pos, n_nodes * _NODE_ROW.size + n_edges * _EDGE_ROW.size)
     nodes = []
     for _ in range(n_nodes):
-        (io, il, to, tl, uo, ul, cluster, _, degree, rank, _) = \
+        (io, il, to, tl, uo, ul, cluster, _, degree, rank, words) = \
             _NODE_ROW.unpack_from(data, pos)
         pos += _NODE_ROW.size
         if cluster >= len(clusters):
@@ -187,7 +190,7 @@ def decode_graph(data: bytes) -> dict:
         nodes.append({
             "i": _string(pool, io, il), "c": clusters[cluster],
             "t": _string(pool, to, tl), "u": _string(pool, uo, ul),
-            "g": degree, "r": rank,
+            "g": degree, "r": rank, "w": words,
         })
     edges = []
     for _ in range(n_edges):

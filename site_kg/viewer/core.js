@@ -64,6 +64,10 @@
     this.kindIndex = {};
     this.degree = new Uint32Array(cap);
     this.rank = new Float32Array(cap);
+    /* Prose volume per page: the one number that says how much data a node
+       carries, as opposed to how important the graph thinks it is. The
+       scenes read it for window light, soma size and world radius. */
+    this.words = new Uint32Array(cap);
     this.x = new Float32Array(cap);
     this.y = new Float32Array(cap);
     this.z = new Float32Array(cap);
@@ -95,6 +99,7 @@
   LiveGraph.prototype._growNodes = function () {
     var cap = Math.ceil(this.cap * 1.5);
     var pairs = [["degree", Uint32Array], ["rank", Float32Array],
+                 ["words", Uint32Array],
                  ["x", Float32Array], ["y", Float32Array], ["z", Float32Array],
                  ["dim", Float32Array], ["revealed", Uint8Array],
                  ["depth", Uint8Array], ["_nodeCluster", Uint16Array]];
@@ -156,6 +161,7 @@
       if (rec.c != null) this._nodeCluster[i] = this.clusterId(rec.c);
       if (rec.g != null) this.degree[i] = rec.g | 0;
       if (rec.r != null) this.rank[i] = +rec.r || 0;
+      if (rec.w != null) this.words[i] = rec.w | 0;
       this.version++;
       return i;
     }
@@ -168,6 +174,7 @@
     this._nodeCluster[i] = this.clusterId(cluster);
     this.degree[i] = rec.g | 0;
     this.rank[i] = +rec.r || 0;
+    this.words[i] = rec.w == null ? 0 : (rec.w | 0);
     this.x[i] = +rec.x || 0;
     this.y[i] = +rec.y || 0;
     this.z[i] = +rec.z || 0;
@@ -650,9 +657,10 @@
       var cluster = dv.getUint16(pos + 24, true);
       var degree = dv.getUint32(pos + 28, true);
       var rank = dv.getFloat32(pos + 32, true);
+      var words = dv.getUint32(pos + 36, true);
       pos += 40;
       nodes.push({i: str(io, il), c: clusters[cluster], t: str(to, tl),
-                  u: str(uo, ul), g: degree, r: rank});
+                  u: str(uo, ul), g: degree, r: rank, w: words});
     }
     var edges = [];
     for (i = 0; i < e; i++) {
@@ -1214,6 +1222,65 @@
     var accel = (target - pos) * stiffness - vel * damping;
     var next = vel + accel * dt;
     return [pos + next * dt, next];
+  };
+
+  /* Control point of the quadratic that bends one link into an arc.
+     Straight segments read as a wiring diagram; a connectome reads as axons,
+     which leave a soma, bow out and come back in. ``bend`` is the sagitta as a
+     fraction of the link's own length, so long links bow further and short
+     ones stay almost straight. The perpendicular is built from a fixed world
+     axis with a per-edge sign, so the field is deterministic and two calls
+     for the same edge always agree. */
+  SK.arcControl = function (ax, ay, az, bx, by, bz, seed, bend) {
+    var dx = bx - ax, dy = by - ay, dz = bz - az;
+    var len = Math.hypot(dx, dy, dz) || 1e-6;
+    var ux = dx / len, uy = dy / len, uz = dz / len;
+    /* Any axis that is not the link itself; swap when the link is near-vertical
+       so the cross product never collapses. */
+    var px = 0, py = 1, pz = 0;
+    if (Math.abs(uy) > 0.92) { px = 1; py = 0; pz = 0; }
+    var cx = uy * pz - uz * py;
+    var cy = uz * px - ux * pz;
+    var cz = ux * py - uy * px;
+    var cl = Math.hypot(cx, cy, cz) || 1e-6;
+    var sign = SK.hashSeed(seed * 7.31 + 1.17) < 0.5 ? -1 : 1;
+    var wobble = 0.72 + 0.56 * SK.hashSeed(seed * 3.97 + 5.31);
+    var amp = len * (bend == null ? 0.16 : bend) * wobble * sign;
+    return [(ax + bx) * 0.5 + (cx / cl) * amp,
+            (ay + by) * 0.5 + (cy / cl) * amp,
+            (az + bz) * 0.5 + (cz / cl) * amp];
+  };
+
+  /* Point on a quadratic Bézier at t, written into ``out`` (length 3). */
+  SK.quadPoint = function (a, c, b, t, out) {
+    var s = 1 - t;
+    out[0] = s * s * a[0] + 2 * s * t * c[0] + t * t * b[0];
+    out[1] = s * s * a[1] + 2 * s * t * c[1] + t * t * b[1];
+    out[2] = s * s * a[2] + 2 * s * t * c[2] + t * t * b[2];
+    return out;
+  };
+
+  /* Collision shove for one pair: when two bodies are closer than ``minDist``
+     they are pushed apart along their own axis, half each. Returns the unit
+     correction to add to the first body (subtract it from the second) and a
+     zero vector when the pair already clears. Coincident centres need an
+     arbitrary axis, which is seeded so a pile of nodes fans out instead of
+     all stacking on the same line. */
+  SK.pushApart = function (dx, dy, dz, minDist, seed) {
+    var d = Math.hypot(dx, dy, dz);
+    if (d >= minDist) return [0, 0, 0];
+    var nx, ny, nz;
+    if (d < 1e-5) {
+      var a = (seed || 0) * 2.399963;
+      nx = Math.cos(a); ny = 0.31; nz = Math.sin(a);
+      var nl = Math.hypot(nx, ny, nz);
+      nx /= nl; ny /= nl; nz /= nl;
+      d = 0;
+    } else {
+      nx = dx / d; ny = dy / d; nz = dz / d;
+    }
+    var push = (minDist - d) * 0.5;
+    return [nx * push, ny * push, nz * push];
   };
 
   SK.decodeGraph = decodeGraph;

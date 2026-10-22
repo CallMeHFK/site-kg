@@ -34,6 +34,15 @@
     spin: 0.22,
     nodeMode: "points",
     ego: false,
+    /* A tower stands on its plot: you cannot pick a building up and put it in
+       the next block. Pressing one instead flashes the towers it links to, so
+       the gesture still answers with the graph's own structure. */
+    draggable: false,
+    poke: true,
+    /* Links stay straight in the city: an arc between two roofs reads as a
+       stray cable, not as a street. */
+    curveSegs: 1,
+    collidePad: 0,
     /* The camera sits among the towers, so the graph's labels have to stay
        few: eight names the skyline, forty turns it into a wall of chips. */
     labelBudget: 8,
@@ -111,13 +120,16 @@
     var fat = 0.90 + 0.20 * rankPart;
     var w = (1.45 + 0.65 * SK.hashSeed(o.seed * 3.71 + 1.3)) * fat;
     var d = (1.45 + 0.65 * SK.hashSeed(o.seed * 5.17 + 7.9)) * fat;
-    /* No children, no lights beyond a token lobby: the lit fraction is the
-       fan-out, normalised against the busiest page in the run. A page with a
-       handful of links must not turn its whole tower into glass, so the gain
-       stays well under half: the dark mass is what makes the lights read. */
+    /* No children, no lights beyond a token lobby: the lit fraction is what
+       the page actually carries -- its prose volume -- plus the fan-out it
+       emits. A page with a handful of links must not turn its whole tower
+       into glass, so the gain stays well under half: the dark mass is what
+       makes the lights read. */
+    var volPart = Math.sqrt(clamp01((o.words || 0) / Math.max(o.wordsMax || 0, 1)));
+    var fanPart = clamp01(o.kids / Math.max(o.kidsMax, 1));
     var lit = o.kids > 0
-      ? 0.10 + 0.34 * Math.sqrt(clamp01(o.kids / Math.max(o.kidsMax, 1)))
-      : 0.02;
+      ? 0.06 + 0.20 * Math.sqrt(fanPart) + 0.28 * volPart
+      : 0.02 + 0.12 * volPart;
     /* Three cut heights make the massing: a podium that meets the street, a
        setback that gives the outline a step, and a crown slab. They are
        snapped to floor lines so a terrace never lands in the middle of a row

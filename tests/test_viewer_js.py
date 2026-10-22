@@ -1261,8 +1261,53 @@ def test_drag_phase_is_a_stable_seed_not_a_position_hash():
     assert src.count("attribute float a_seed") == 2, "node and edge shaders"
     assert src.count("float ph = a_seed;") == 2
     assert src.count('setAttribute("a_seed"') == 2
-    assert "this.eSeed[e * 2] = this.nSeed[a];" in src
-    assert "this.eSeed[e * 2 + 1] = this.nSeed[b];" in src
+    # Links are now resampled into segments; the seed is still inherited from
+    # the endpoint cell, never hashed from a coordinate or a segment index.
+    assert ("this.eSeed[at] = v % 2 === 0 ? this.nSeed[a] : this.nSeed[b];"
+            in src)
+
+
+def test_links_are_curved_and_bodies_cannot_share_a_point():
+    """Two pure helpers behind the connectome look: a link bows out of its
+    chord, and two overlapping bodies get a symmetric half-overlap shove.
+    Both are deterministic per seed, so a redraw never makes a link jump."""
+    _run(_prelude(CORE) + """
+function close(a, b, eps) { return Math.abs(a - b) <= eps; }
+
+/* Arc: deterministic, off the straight line, and anchored at both ends. */
+const c1 = SK.arcControl(0, 0, 0, 10, 0, 0, 7, 0.2);
+const c2 = SK.arcControl(0, 0, 0, 10, 0, 0, 7, 0.2);
+assert.deepEqual(c2, c1, "same edge must bend the same way");
+assert.ok(Math.abs(c1[1]) > 0.5 || Math.abs(c1[2]) > 0.5,
+          "control point is off the straight chord");
+assert.ok(close(c1[0], 5, 1e-9), "midpoint along the chord");
+/* Bend scales with length: a short link stays near the line. */
+const short = SK.arcControl(0, 0, 0, 0.1, 0, 0, 7, 0.2);
+assert.ok(Math.hypot(short[1], short[2]) < 0.1);
+/* A vertical link must not collapse its perpendicular. */
+const up = SK.arcControl(0, 0, 0, 0, 10, 0, 3, 0.2);
+assert.ok(Math.abs(up[0]) > 0.5 || Math.abs(up[2]) > 0.5);
+
+/* Quadratic: exact at the ends, and at t=0.5 it is the Bezier midpoint. */
+const out = [0, 0, 0];
+SK.quadPoint([0, 0, 0], [5, 4, 0], [10, 0, 0], 0, out);
+assert.deepEqual(out, [0, 0, 0]);
+SK.quadPoint([0, 0, 0], [5, 4, 0], [10, 0, 0], 1, out);
+assert.deepEqual(out, [10, 0, 0]);
+SK.quadPoint([0, 0, 0], [5, 4, 0], [10, 0, 0], 0.5, out);
+assert.ok(close(out[0], 5, 1e-9) && close(out[1], 2, 1e-9));
+
+/* Collision: clear pairs do not move; overlaps split the correction. */
+assert.deepEqual(SK.pushApart(10, 0, 0, 2, 1), [0, 0, 0]);
+const push = SK.pushApart(1, 0, 0, 3, 1);
+assert.ok(close(push[0], 1, 1e-9), "half of the 2-unit overlap, outwards");
+assert.equal(push[1], 0);
+/* Coincident centres still fan out along a seeded, finite axis. */
+const pile = SK.pushApart(0, 0, 0, 2, 11);
+assert.ok(Math.hypot(pile[0], pile[1], pile[2]) > 0.5);
+assert.ok(pile.every(Number.isFinite));
+assert.deepEqual(SK.pushApart(0, 0, 0, 2, 11), pile);
+""")
 
 
 def test_brain_sequence_is_deterministic_and_on_the_unit_sphere():

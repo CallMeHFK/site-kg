@@ -599,7 +599,13 @@
       if (idx < 0) return;
       var begin = self.renderer.beginDrag(idx, e.clientX - rect.left,
                                           e.clientY - rect.top);
-      if (!begin) return;
+      /* A fixed body (a city tower) cannot be picked up; the press still has
+         to answer, so the scene flashes what this node is wired to while the
+         ordinary click-to-open path stays intact. */
+      if (!begin) {
+        self.renderer.poke(idx);
+        return;
+      }
       /* The cell wins over the orbit rig: press-and-hold moves this node,
          release without travel still opens its page. */
       down.drag = idx;

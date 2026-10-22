@@ -9,8 +9,10 @@ from site_kg import payload
 def _graph() -> dict:
     return {
         "nodes": [
-            {"i": "a", "c": "ch1", "t": "A", "u": "http://x/a", "g": 3, "r": 0.5},
-            {"i": "b", "c": "ch2", "t": "B", "u": "http://x/b", "g": 1, "r": 0.25},
+            {"i": "a", "c": "ch1", "t": "A", "u": "http://x/a", "g": 3, "r": 0.5,
+             "w": 0},
+            {"i": "b", "c": "ch2", "t": "B", "u": "http://x/b", "g": 1, "r": 0.25,
+             "w": 0},
         ],
         "edges": [{"s": "a", "t": "b", "k": "ref"}],
     }
@@ -26,8 +28,10 @@ def test_graph_roundtrip():
 def test_graph_roundtrip_preserves_duplicate_strings_and_empty_fields():
     g = {
         "nodes": [
-            {"i": "same", "c": "ch", "t": "same", "u": "", "g": 0, "r": 0.0},
-            {"i": "same2", "c": "ch", "t": "same", "u": "", "g": 0, "r": 0.0},
+            {"i": "same", "c": "ch", "t": "same", "u": "", "g": 0, "r": 0.0,
+             "w": 0},
+            {"i": "same2", "c": "ch", "t": "same", "u": "", "g": 0, "r": 0.0,
+             "w": 0},
         ],
         "edges": [],
     }

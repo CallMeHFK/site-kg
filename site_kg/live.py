@@ -456,7 +456,7 @@ class LiveHub:
             self.emit({"t": "node_added", "id": node["i"],
                        "title": node.get("t", ""), "url": node.get("u", ""),
                        "c": node.get("c", ""), "g": node.get("g", 0),
-                       "r": node.get("r", 0.0)})
+                       "r": node.get("r", 0.0), "w": node.get("w", 0)})
             row = self._row(str(node["i"]))
             if row is not None:
                 rows.append(row)

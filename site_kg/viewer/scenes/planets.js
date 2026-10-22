@@ -28,6 +28,12 @@
     nodeMode: "points",
     ego: false,
     shells: true,
+    /* Orbital threads are sightlines, not tissue: a slight bow keeps them from
+       looking ruled, but a planet is still a body that can be dragged. */
+    edgeBend: 0.06,
+    curveSegs: 4,
+    draggable: true,
+    collidePad: 0.46,
     labelBudget: 40,
     labelBudgetMobile: 12,
     finale: "Orbital alignment",

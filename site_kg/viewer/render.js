@@ -27,9 +27,10 @@
   var CITY_VS = [
     "attribute vec3 a_local; attribute float a_face;",
     "attribute vec4 a_spec; attribute float a_birth; attribute vec3 color;",
+    "attribute float a_dim;",
     "varying vec3 vLocal; varying float vFace; varying vec4 vSpec;",
     "varying vec3 vCol; varying vec3 vNrm; varying vec3 vWorld;",
-    "varying float vDepth;",
+    "varying float vDepth; varying float vDim;",
     "uniform float u_time;",
     "void main(){",
     /* A tower is built, not placed: the vertex shader lifts it out of its
@@ -38,7 +39,7 @@
     "  vec3 p = position;",
     "  p.y *= grow + 0.00001;",
     "  vLocal = a_local; vFace = a_face; vSpec = a_spec; vCol = color;",
-    "  vNrm = normal; vWorld = p;",
+    "  vNrm = normal; vWorld = p; vDim = a_dim;",
     "  vec4 mv = modelViewMatrix * vec4(p, 1.0);",
     "  vDepth = -mv.z;",
     "  gl_Position = projectionMatrix * mv; }"
@@ -47,7 +48,7 @@
   var CITY_FS = [
     "varying vec3 vLocal; varying float vFace; varying vec4 vSpec;",
     "varying vec3 vCol; varying vec3 vNrm; varying vec3 vWorld;",
-    "varying float vDepth;",
+    "varying float vDepth; varying float vDim;",
     "uniform float u_time; uniform float u_finale;",
     "uniform float u_cityR; uniform float u_pitch;",
     "float h21(vec2 p){",
@@ -180,6 +181,10 @@
     "  }",
     "  float haze = smoothstep(u_cityR * 1.05, u_cityR * 2.30, vDepth);",
     "  col = mix(col, hazeCol(), haze * 0.88);",
+    /* A filtered chapter has to leave the street, not merely fade: the tower
+       still writes depth, so a ghost would occlude the ones that remain. */
+    "  alpha *= vDim;",
+    "  if (alpha < 0.01) discard;",
     "  gl_FragColor = vec4(col, alpha); }"
   ].join("\n");
 
@@ -190,6 +195,10 @@
     this.cfg = null;
     this.cap = 0;
     this.capE = 0;
+    /* Sub-segments per link. 1 is the old straight segment; a scene raises it
+       to bend its axons into arcs, and the buffers are rebuilt when it does. */
+    this.segK = 1;
+    this._segK = 1;
     this.lastVersion = -1;
     this.lastDimVersion = -1;
     this.colorDirty = true;
@@ -212,6 +221,10 @@
     this.finaleMode = "";
     this.finaleReduced = false;
     this._drawEdges = 0;
+    /* Drag offsets are per scene, keyed by page id: a cell pulled aside in
+       the head must not shift the same page's tower in the city. */
+    this._dragStore = {};
+    this._dragOff = this._dragStore.planets = {};
     this._egoItems = null;
     this._egoScale = null;
     /* Resolution is a budget, not a constant: the frame loop lowers it when
@@ -529,19 +542,21 @@
        the specular highlight. a_birth grows a node in when it is first revealed;
        nodes present at load keep birth 0 so no wall of animation fires. */
     var vs = "attribute float a_size; attribute float a_dim; attribute float a_ring;"
-      + " attribute float a_birth; attribute float a_seed; attribute vec3 color;"
+      + " attribute float a_birth; attribute float a_seed; attribute float a_act;"
+      + " attribute vec3 color;"
       + " uniform float u_px; uniform float u_scale; uniform float u_minpx;"
       + " uniform float u_time; uniform float u_fly; uniform float u_driftA;"
       + " uniform float u_vol; uniform vec3 u_cam;"
       + " varying vec3 vC; varying float vD; varying float vR; varying float vAge;"
       + " varying float vGrow; varying float vSprout;"
       + " varying vec3 vTail; varying float vSeed; varying float vFace;"
+      + " varying float vAct;"
       /* The phase is a stable per-cell seed, never a hash of the position: a
          position hash changes as soon as the cell moves, so a dragged or
          springing node re-rolled its drift every frame and shook itself apart.
          The seed arrives as an attribute, and the two edge endpoints that
          share a cell carry the same seed, so an axon never tears off its soma. */
-      + " void main(){ vC=color; vD=a_dim; vR=a_ring;"
+      + " void main(){ vC=color; vD=a_dim; vR=a_ring; vAct=a_act;"
       + "   float ph = a_seed;"
       /* The seed is per cell, not per colour: a cluster of a hundred nodes
          would otherwise be a hundred copies of the same neuron. */
@@ -593,8 +608,10 @@
       + "   vec2 td = vec2(velV.x, -velV.y);"
       + "   float tl = length(td);"
       + "   vTail = vec3(tl > 1e-4 ? td/tl : vec2(0.0, 1.0), flight);"
-      /* Drift: the tissue keeps breathing after the flight lands. */
-      + "   p += u_driftA * vec3(sin(u_time*0.55 + ph*6.283),"
+      /* Drift: the tissue keeps breathing after the flight lands. A cell that
+         carries more text wanders a little further, so the plexus has a
+         visible hierarchy of motion instead of a uniform jitter. */
+      + "   p += u_driftA * (0.55 + 0.9*vAct) * vec3(sin(u_time*0.55 + ph*6.283),"
       + "                        cos(u_time*0.47 + ph*11.0),"
       + "                        sin(u_time*0.63 + ph*17.0));"
       + "   float grow = (0.35+0.65*born)*(1.0+0.18*sin(born*3.14159));"
@@ -614,7 +631,9 @@
       fragmentShader: "varying vec3 vC; varying float vD; varying float vR;"
         + " varying float vAge; varying float vGrow; varying float vSprout;"
         + " varying vec3 vTail; varying float vSeed; varying float vFace;"
+        + " varying float vAct;"
         + " uniform vec3 u_light; uniform float u_neural; uniform vec3 u_tint;"
+        + " uniform float u_time;"
         + " void main(){ vec2 sp = gl_PointCoord*2.0-1.0; vec2 b = sp;"
         /* While a node streaks in the body shrinks toward the leading edge,
            leaving the trailing half of the sprite free for the comet tail. */
@@ -688,15 +707,19 @@
         + "     vec2 nu = b - vec2(0.035, 0.045);"
         + "     float nucleus = smoothstep(0.130, 0.0, length(nu));"
         + "     float aura = exp(-r*2.8)*0.24;"
+        /* Activity is data volume: a page with more text fires more often,
+           and the flash sits in the nucleus so it reads as a cell firing
+           rather than as a blinking light. */
+        + "     float fire = pow(max(0.0, sin(u_time*1.7 + sd*37.0)), 12.0)*vAct;"
         /* The cell has to hold its own against the tissue: the core is
            brighter and the dendrites carry more of it, while the sprite stays
            the size it was. Visibility comes from contrast, not from size. */
         + "     vec3 col = vC*(0.44 + 1.38*arms*(1.0 + 0.22*vSprout))"
         + "              + mix(vC, u_tint, 0.55)*soma*(1.02 + 0.16*vSprout)"
-        + "              + u_tint*(membrane*0.80 + nucleus*1.18)"
+        + "              + u_tint*(membrane*0.80 + nucleus*(1.18 + 1.4*fire))"
         + "              + vC*aura;"
         + "     float a = clamp(soma*0.98 + arms*0.78 + membrane*0.45"
-        + "                    + nucleus*0.9 + aura, 0.0, 1.0);"
+        + "                    + nucleus*0.9 + aura + fire*0.35, 0.0, 1.0);"
         + "     col = mix(col, sC, sA*(1.0-soma)); a = max(a, sA*(1.0-soma));"
         /* The far hemisphere recedes instead of reading as a second, equally
            bright layer of dots on top of the near one. */
@@ -898,7 +921,17 @@
   Renderer.prototype.setScene = function (name) {
     var cfg = (SK.scenes && SK.scenes[name]) || (SK.scenes && SK.scenes.planets);
     if (!cfg) return;
+    if (this._drag) this._finishDrag();
+    /* Pulses address edge slots and segment counts from the old scene; the
+       next sync rebuilds both, so drop the wave rather than index into it. */
+    this._pulse = null;
+    this._cityFlash = null;
     this.name = name;
+    /* Each scene keeps its own pulled-aside cells: the same page is a tower in
+       one scene and a neuron in the next, and one scene's offsets must not
+       follow it into the other. */
+    this._dragStore = this._dragStore || {};
+    this._dragOff = this._dragStore[name] || (this._dragStore[name] = {});
     this.cfg = cfg;
     this.scene.background = new T3.THREE.Color(cfg.bg);
     if (this.sky) this.sky.visible = cfg.starfield !== false;
@@ -939,6 +972,10 @@
     /* Scene-wide position spread: the layout is shared, a scene may open it up
        so cells and planets get the room their sprites need. */
     this.posScale = SCALE * (cfg.posScale || 1);
+    /* Curved links are a property of the scene, not of the graph: switching
+       from the head to the city re-cuts every axon into one straight street
+       link, and the geometry is rebuilt when the count changes. */
+    this.segK = Math.max(1, cfg.curveSegs || 1);
     this.colorDirty = true;
     this.lastVersion = -1;
     this.lastSelectionKey = "";
@@ -1239,6 +1276,11 @@
     this._cityFace = new Float32Array(verts);
     this._citySpec = new Float32Array(verts * 4);
     this._cityBirth = new Float32Array(verts);
+    /* One dim per vertex, like the point cloud: a chapter filter has to remove
+       the tower from the street, not only from the legend. The ground keeps 1
+       so the city never loses its floor. */
+    this._cityDim = new Float32Array(verts);
+    this._cityDim.fill(1);
     var quads = CITY_TIERS * 9;
     var idx = new Uint32Array(n * CITY_INDICES + 6);
     for (var i = 0; i < n; i++) {
@@ -1274,6 +1316,7 @@
     geo.setAttribute("a_face", new THREE.BufferAttribute(this._cityFace, 1));
     geo.setAttribute("a_spec", new THREE.BufferAttribute(this._citySpec, 4));
     geo.setAttribute("a_birth", new THREE.BufferAttribute(this._cityBirth, 1));
+    geo.setAttribute("a_dim", new THREE.BufferAttribute(this._cityDim, 1));
     geo.setIndex(new THREE.BufferAttribute(idx, 1));
   };
 
@@ -1284,7 +1327,7 @@
     if (!this._cityPos || this._cityN !== n) return;
     var table = this._cityTable, tier = table.tier, unit = table.unit;
     var pos = this._cityPos, col = this._cityCol, spec = this._citySpec;
-    var loc = this._cityLoc, birth = this._cityBirth;
+    var loc = this._cityLoc, birth = this._cityBirth, dim = this._cityDim;
     var tierW = this._cityTierW;
     var maxR = 4;
     for (var i = 0; i < n; i++) {
@@ -1322,6 +1365,7 @@
            stays the same size all the way round the tower. */
         spec[v * 4 + 3] = cols * table.wf[k];
         birth[v] = b;
+        dim[v] = live.dim[i];
       }
       var rr = Math.hypot(cx, cz) + Math.max(w, d) * 0.5;
       if (rr > maxR) maxR = rr;
@@ -1342,9 +1386,10 @@
       this._cityLoc[vg * 3 + 1] = p[2] * R * 4;
       spec[vg * 4] = 0; spec[vg * 4 + 1] = 0; spec[vg * 4 + 2] = 0;
       birth[vg] = 0;
+      dim[vg] = 1;
     }
     var geo = this.cityGeo;
-    var names = ["position", "color", "a_local", "a_spec", "a_birth"];
+    var names = ["position", "color", "a_local", "a_spec", "a_birth", "a_dim"];
     for (var a = 0; a < names.length; a++) {
       var attr = geo.getAttribute(names[a]);
       if (attr) attr.needsUpdate = true;
@@ -1387,6 +1432,10 @@
       this.nDim = new Float32Array(this.cap);
       this.nRing = new Float32Array(this.cap);
       this.nBirth = new Float32Array(this.cap);
+      /* Activity: how much text this page carries, normalised. The neural
+         shader turns it into a firing rate, so a hub that actually says
+         something pulses hard while a stub with one link only breathes. */
+      this.nAct = new Float32Array(this.cap);
       /* A stable phase per cell, independent of where the cell currently is.
          See the vertex shader: a position-derived phase makes a moving cell
          shake, because the phase re-rolls with every frame of the drag. */
@@ -1401,6 +1450,7 @@
       this.pgeo.setAttribute("a_ring", new THREE.BufferAttribute(this.nRing, 1));
       this.pgeo.setAttribute("a_birth", new THREE.BufferAttribute(this.nBirth, 1));
       this.pgeo.setAttribute("a_seed", new THREE.BufferAttribute(this.nSeed, 1));
+      this.pgeo.setAttribute("a_act", new THREE.BufferAttribute(this.nAct, 1));
       if (this._birthQueue) {
         for (var q = 0; q < this._birthQueue.length; q++) {
           var bq = this._birthQueue[q];
@@ -1412,20 +1462,25 @@
       this.lastDimVersion = -1;
       this.sceneN = 0;
     }
-    if (this.capE !== live.capE) {
+    if (this.capE !== live.capE || this._segK !== this.segK) {
       this.capE = live.capE;
-      this.ePos = new Float32Array(this.capE * 6);
-      this.eCol = new Float32Array(this.capE * 6);
-      this.eBase = new Float32Array(this.capE * 2);
-      this.eDim = new Float32Array(this.capE * 2);
-      this.eBirth = new Float32Array(this.capE * 2);
-      this.eT = new Float32Array(this.capE * 2);
+      this._segK = this.segK;
+      var k2 = this.segK * 2;
+      this.ePos = new Float32Array(this.capE * k2 * 3);
+      this.eCol = new Float32Array(this.capE * k2 * 3);
+      this.eBase = new Float32Array(this.capE * k2);
+      this.eDim = new Float32Array(this.capE * k2);
+      this.eBirth = new Float32Array(this.capE * k2);
+      this.eT = new Float32Array(this.capE * k2);
       /* One seed per endpoint: an axon inherits the phase of the soma at each
          end, so both drift together instead of sliding off the cell. */
-      this.eSeed = new Float32Array(this.capE * 2);
+      this.eSeed = new Float32Array(this.capE * k2);
       for (var t = 0; t < this.capE; t++) {
-        this.eT[t * 2] = 0;
-        this.eT[t * 2 + 1] = 1;
+        for (var sj = 0; sj < this.segK; sj++) {
+          var tb = (t * this.segK + sj) * 2;
+          this.eT[tb] = sj / this.segK;
+          this.eT[tb + 1] = (sj + 1) / this.segK;
+        }
       }
       this._edgeSlots = new Int32Array(this.capE);
       this._edgeSlots.fill(-1);
@@ -1440,8 +1495,9 @@
         for (var eq = 0; eq < this._edgeBirthQueue.length; eq++) {
           var eb = this._edgeBirthQueue[eq];
           if (eb[0] >= 0 && eb[0] < this.capE) {
-            this.eBirth[eb[0] * 2] = eb[1];
-            this.eBirth[eb[0] * 2 + 1] = eb[1];
+            for (var ev = 0; ev < k2; ev++) {
+              this.eBirth[eb[0] * k2 + ev] = eb[1];
+            }
           }
         }
         this._edgeBirthQueue = null;
@@ -1463,8 +1519,8 @@
 
   Renderer.prototype.markEdgeBirth = function (e, t) {
     if (this.eBirth && e >= 0 && e < this.capE) {
-      this.eBirth[e * 2] = t;
-      this.eBirth[e * 2 + 1] = t;
+      var k2 = this.segK * 2;
+      for (var v = 0; v < k2; v++) this.eBirth[e * k2 + v] = t;
       var attr = this.lgeo.getAttribute("a_birth");
       if (attr) attr.needsUpdate = true;
     } else {
@@ -1526,7 +1582,8 @@
     this.live = live;
     if (this._dragRun !== live.runId) {
       this._dragRun = live.runId;
-      this._dragOff = {};
+      this._dragStore = {};
+      this._dragOff = this._dragStore[this.name] = {};
       this._drag = null;
     }
     this._ensure();
@@ -1540,10 +1597,11 @@
       this.lastSelectionKey = selKey;
       this.colorDirty = false;
       this.lastDimVersion = -1;
-      var gmax = 1, rmax = 0, i, e;
+      var gmax = 1, rmax = 0, wmax = 1, i, e;
       for (i = 0; i < live.n; i++) {
         if (live.degree[i] > gmax) gmax = live.degree[i];
         if (live.rank[i] > rmax) rmax = live.rank[i];
+        if (live.words[i] > wmax) wmax = live.words[i];
       }
       var shells = !!(this.cfg && this.cfg.shells);
       var neural = this.name === "neural";
@@ -1605,6 +1663,7 @@
           var spec = SK.citySpec({rank: live.rank[i], rankMax: rmax,
                                   degree: live.degree[i], degreeMax: gmax,
                                   kids: kids[i], kidsMax: kidsMax, seed: i,
+                                  words: live.words[i], wordsMax: wmax,
                                   floor: this.cfg.cityFloor});
           var cell = cells[i] || CELL_ZERO;
           x = (cell[0] + 0.5) * pitch;
@@ -1651,12 +1710,17 @@
            degree is already known from the edges that just arrived, so it
            stands in until rank data exists. */
         var rankPart = rmax > 1e-6 ? Math.sqrt((live.rank[i] || 0) / rmax) : degPart;
-        if (shells) this.nSize[i] = 2.4 + 6.4 * rankPart + 1.6 * degPart;
+        /* Volume is the third axis: a page with ten thousand words is a
+           bigger body than a stub with the same rank. Worlds read it as
+           radius, neurons as soma and plexus, towers as lit glass. */
+        var volPart = Math.sqrt((live.words[i] || 0) / wmax);
+        this.nAct[i] = volPart;
+        if (shells) this.nSize[i] = 2.0 + 3.0 * rankPart + 5.0 * volPart + 1.4 * degPart;
         /* A neuron sprite is a soma plus dendrites: the soma is only 30% of the
            quad, so the point must be bigger than a planet to read as a cell.
            On the cortex the cells are packed shoulder to shoulder, so they
            have to be small enough to leave the tissue visible between them. */
-        else if (neural) this.nSize[i] = 2.0 + 2.3 * degPart;
+        else if (neural) this.nSize[i] = 1.7 + 1.4 * degPart + 2.1 * volPart;
         /* Nothing is drawn for a tower, but the hit box and the label anchor
            still read the size: a tall building gets a bigger target. */
         else if (city) this.nSize[i] = 2.6 + 4.4 * rankPart;
@@ -1678,44 +1742,77 @@
         this._drawEdges = live.m;
         this._egoItems = null;
         this._egoScale = null;
-        for (e = 0; e < live.m; e++) {
-          var a = live.eSrc[e], b = live.eDst[e];
-          this.ePos[e * 6] = this.nPos[a * 3];
-          this.ePos[e * 6 + 1] = this.nPos[a * 3 + 1];
-          this.ePos[e * 6 + 2] = this.nPos[a * 3 + 2];
-          this.ePos[e * 6 + 3] = this.nPos[b * 3];
-          this.ePos[e * 6 + 4] = this.nPos[b * 3 + 1];
-          this.ePos[e * 6 + 5] = this.nPos[b * 3 + 2];
-          var ca = this._color(live._nodeCluster ? live._nodeCluster[a] : 0, a);
-          this.eCol[e * 6] = ca.r;
-          this.eCol[e * 6 + 1] = ca.g;
-          this.eCol[e * 6 + 2] = ca.b;
-          var cb = this._color(live._nodeCluster ? live._nodeCluster[b] : 0, b);
-          this.eCol[e * 6 + 3] = cb.r;
-          this.eCol[e * 6 + 4] = cb.g;
-          this.eCol[e * 6 + 5] = cb.b;
-          var base = structuralBase(live.kinds[live.eKind[e]]);
-          this.eBase[e * 2] = base;
-          this.eBase[e * 2 + 1] = base;
-          this.eSeed[e * 2] = this.nSeed[a];
-          this.eSeed[e * 2 + 1] = this.nSeed[b];
-        }
+        for (e = 0; e < live.m; e++) this._packLink(e, e);
       }
       this._mark("position", this.nPos, this.pgeo);
       this._mark("color", this.nCol, this.pgeo);
       this._mark("a_size", this.nSize, this.pgeo);
+      this._mark("a_act", this.nAct, this.pgeo);
       this._mark("a_ring", this.nRing, this.pgeo);
       this._mark("position", this.ePos, this.lgeo);
       this._mark("color", this.eCol, this.lgeo);
       this._mark("a_base", this.eBase, this.lgeo);
       this._mark("a_seed", this.eSeed, this.lgeo);
       this.pgeo.setDrawRange(0, live.n);
-      this.lgeo.setDrawRange(0, this._drawEdges * 2);
+      this.lgeo.setDrawRange(0, this._drawEdges * this.segK * 2);
       this._ensureRings(live);
       this.colorDirty = false;
     }
     this.updateDims(live);
     return this;
+  };
+
+  /* One link, resampled into ``segK`` pieces. Every link owns segK*2 vertices
+     in one slot, so the LOD index, the drag rewrite and both backends address
+     a link by slot without caring about its shape.
+
+     Straight (segK 1) is the old two-vertex line. Above that the link is a
+     quadratic through SK.arcControl: the sagitta scales with the link's own
+     length, so a short synapse stays almost straight and a long projection
+     sweeps. ``slot`` is the edge's own index unless ego mode packed a subset;
+     ``posOnly`` skips the colour/base/seed writes when only the ends moved. */
+  Renderer.prototype._packLink = function (e, slot, posOnly) {
+    var live = this.live;
+    if (!live || e < 0 || e >= live.m || slot == null || slot < 0) return;
+    var a = live.eSrc[e], b = live.eDst[e];
+    var ax = this.nPos[a * 3], ay = this.nPos[a * 3 + 1], az = this.nPos[a * 3 + 2];
+    var bx = this.nPos[b * 3], by = this.nPos[b * 3 + 1], bz = this.nPos[b * 3 + 2];
+    var K = this.segK, pos = this.ePos;
+    var o = slot * K * 2 * 3;
+    if (K === 1) {
+      pos[o] = ax; pos[o + 1] = ay; pos[o + 2] = az;
+      pos[o + 3] = bx; pos[o + 4] = by; pos[o + 5] = bz;
+    } else {
+      var c = SK.arcControl(ax, ay, az, bx, by, bz, e,
+                            this.cfg ? this.cfg.edgeBend : 0.12);
+      var cx = c[0], cy = c[1], cz = c[2];
+      for (var j = 0; j < K; j++) {
+        var t0 = j / K, t1 = (j + 1) / K;
+        var s0 = 1 - t0, s1 = 1 - t1;
+        var v0 = (slot * K + j) * 2 * 3;
+        pos[v0] = s0 * s0 * ax + 2 * s0 * t0 * cx + t0 * t0 * bx;
+        pos[v0 + 1] = s0 * s0 * ay + 2 * s0 * t0 * cy + t0 * t0 * by;
+        pos[v0 + 2] = s0 * s0 * az + 2 * s0 * t0 * cz + t0 * t0 * bz;
+        pos[v0 + 3] = s1 * s1 * ax + 2 * s1 * t1 * cx + t1 * t1 * bx;
+        pos[v0 + 4] = s1 * s1 * ay + 2 * s1 * t1 * cy + t1 * t1 * by;
+        pos[v0 + 5] = s1 * s1 * az + 2 * s1 * t1 * cz + t1 * t1 * bz;
+      }
+    }
+    if (posOnly) return;
+    var ca = this._color(live._nodeCluster ? live._nodeCluster[a] : 0, a);
+    var cr = ca.r, cg = ca.g, cb = ca.b;
+    var db = this._color(live._nodeCluster ? live._nodeCluster[b] : 0, b);
+    var dr = db.r, dg = db.g, dbl = db.b;
+    var base = structuralBase(live.kinds[live.eKind[e]]);
+    for (var v = 0; v < K * 2; v++) {
+      var at = (slot * K * 2 + v);
+      var f = v / (K * 2 - 1);
+      this.eCol[at * 3] = cr + (dr - cr) * f;
+      this.eCol[at * 3 + 1] = cg + (dg - cg) * f;
+      this.eCol[at * 3 + 2] = cb + (dbl - cb) * f;
+      this.eBase[at] = base;
+      this.eSeed[at] = v % 2 === 0 ? this.nSeed[a] : this.nSeed[b];
+    }
   };
 
   Renderer.prototype._packEgo = function (live, rmax) {
@@ -1732,25 +1829,7 @@
       var a = live.eSrc[e], b = live.eDst[e];
       if (!set.has(a) || !set.has(b)) continue;
       if (hidden[live.kinds[live.eKind[e]]]) continue;
-      this.ePos[k * 6] = this.nPos[a * 3];
-      this.ePos[k * 6 + 1] = this.nPos[a * 3 + 1];
-      this.ePos[k * 6 + 2] = this.nPos[a * 3 + 2];
-      this.ePos[k * 6 + 3] = this.nPos[b * 3];
-      this.ePos[k * 6 + 4] = this.nPos[b * 3 + 1];
-      this.ePos[k * 6 + 5] = this.nPos[b * 3 + 2];
-      var ca = this._color(live._nodeCluster[a], a);
-      this.eCol[k * 6] = ca.r;
-      this.eCol[k * 6 + 1] = ca.g;
-      this.eCol[k * 6 + 2] = ca.b;
-      var cb = this._color(live._nodeCluster[b], b);
-      this.eCol[k * 6 + 3] = cb.r;
-      this.eCol[k * 6 + 4] = cb.g;
-      this.eCol[k * 6 + 5] = cb.b;
-      var base = structuralBase(live.kinds[live.eKind[e]]);
-      this.eBase[k * 2] = base;
-      this.eBase[k * 2 + 1] = base;
-      this.eSeed[k * 2] = this.nSeed[a];
-      this.eSeed[k * 2 + 1] = this.nSeed[b];
+      this._packLink(e, k);
       this._edgeSlots[e] = k;
       k++;
     }
@@ -1897,8 +1976,7 @@
     for (var e = 0; e < live.m; e++) {
       var slot = this._edgeSlots ? this._edgeSlots[e] : e;
       if (slot == null || slot < 0 || slot >= this._drawEdges) continue;
-      if (live.eSrc[e] === i) out.push(slot, 0);
-      else if (live.eDst[e] === i) out.push(slot, 1);
+      if (live.eSrc[e] === i || live.eDst[e] === i) out.push([e, slot]);
     }
     return out;
   };
@@ -1906,6 +1984,134 @@
   /* Neighbours that trail the dragged cell: one and two hops out, each ring
      pulled along at a fraction of the pointer's delta. The cluster flexes with
      the drag instead of the whole graph translating as one block. */
+  /* Whether this scene lets a body be picked up. A city tower stands on its
+     plot; a neuron and a world are free bodies. */
+  Renderer.prototype.canDrag = function () {
+    return !(this.cfg && this.cfg.draggable === false);
+  };
+
+  /* Answer a press that cannot drag: flash the bodies this one is wired to.
+     The city lights windows, the head sends a current down its axons. */
+  Renderer.prototype.pulse = function (i) {
+    var live = this.live;
+    if (!live || i < 0 || i >= live.n) return;
+    /* A held drag re-fires the pulse; settle the previous wave first or the
+       saved baselines would ratchet up and never come back down. */
+    if (this._pulse && this._pulse.fire && this.nAct) {
+      for (var r = 0; r < this._pulse.fire.ids.length; r++) {
+        this.nAct[this._pulse.fire.ids[r]] = this._pulse.fire.base[r];
+      }
+    }
+    this._pulse = {edges: this._dragEdges(i), start: this.time || 0,
+                   dur: this.cfg && this.cfg.neuralNodes ? 1.7 : 1.1,
+                   fire: null};
+    /* The current does not stop at the synapse: the cells at the far end fire
+       too. Their baseline activity is saved so the flash can be removed
+       without leaving a neuron permanently lit. */
+    if (this.cfg && this.cfg.neuralNodes && this.nAct) {
+      var adj = live.adjacency(), list = adj[i] || [];
+      var ids = [], base = [];
+      for (var k = 0; k < list.length && k < 40; k++) {
+        var j = list[k][0];
+        if (live.dim[j] < 0.15) continue;
+        ids.push(j);
+        base.push(this.nAct[j]);
+      }
+      if (ids.length) this._pulse.fire = {ids: ids, base: base};
+    }
+    if (this.cfg && this.cfg.city) this._pokeCity(i);
+  };
+
+  /* A scene whose bodies are fixed still answers a press: the city flashes the
+     towers this one feeds, the rest do nothing. Kept separate from beginDrag
+     so the click-to-open path in ui.js is untouched. */
+  Renderer.prototype.poke = function (i) {
+    if (!this.cfg || !this.cfg.poke) return false;
+    this.pulse(i);
+    return true;
+  };
+
+  /* Window light is the city's only language: a poked tower and everything it
+     links to brighten, then fall back to the fan-out they had. */
+  Renderer.prototype._pokeCity = function (i) {
+    var live = this.live, adj = live.adjacency();
+    var nodes = {};
+    nodes[i] = 0.45;
+    var list = adj[i] || [];
+    for (var k = 0; k < list.length && k < 40; k++) nodes[list[k][0]] = 1;
+    this._cityFlash = {nodes: nodes, start: this.time || 0, dur: 1.5};
+  };
+
+  Renderer.prototype._tickCityFlash = function () {
+    var f = this._cityFlash;
+    if (!f || !this._citySpec || !this._cityLit) return;
+    var t = (this.time || 0) - f.start;
+    var done = t > f.dur;
+    var fade = done ? 0 : Math.pow(1 - t / f.dur, 1.4);
+    var spec = this._citySpec, lit = this._cityLit;
+    for (var key in f.nodes) {
+      if (!Object.prototype.hasOwnProperty.call(f.nodes, key)) continue;
+      var i = +key, base = i * CITY_VERTS;
+      if (i >= this._cityN) continue;
+      var peak = f.nodes[key] * fade;
+      for (var k = 0; k < CITY_VERTS; k++) {
+        var v = base + k;
+        spec[v * 4 + 1] = Math.min(1, lit[i] + (1 - lit[i]) * peak * 0.95);
+      }
+    }
+    var attr = this.cityGeo.getAttribute("a_spec");
+    if (attr) attr.needsUpdate = true;
+    if (done) this._cityFlash = null;
+  };
+
+  /* The axon current. Edge dim is per vertex, so a band whose phase runs with
+     a_t travels from soma to soma instead of blinking the whole link. */
+  Renderer.prototype._tickPulse = function () {
+    var p = this._pulse;
+    if (!p) return;
+    var t = (this.time || 0) - p.start;
+    if (t > p.dur) {
+      /* Put the cells back the way they were before the current arrived. */
+      if (p.fire && this.nAct) {
+        for (var r = 0; r < p.fire.ids.length; r++) {
+          this.nAct[p.fire.ids[r]] = p.fire.base[r];
+        }
+        var back = this.pgeo.getAttribute("a_act");
+        if (back) back.needsUpdate = true;
+      }
+      this._pulse = null;
+      this.lastDimVersion = -1;
+      if (this.live) this.updateDims(this.live);
+      return;
+    }
+    var k2 = this.segK * 2, dim = this.eDim, fade = 1 - t / p.dur;
+    var eDim = this.live && this.live.eDim;
+    for (var q = 0; q < p.edges.length; q++) {
+      var e = p.edges[q][0], base = p.edges[q][1] * k2;
+      /* A pulse must not resurrect a kind the user disabled: the flash is
+         scaled by the link's own visibility. */
+      var vis = eDim ? eDim[e] : 1;
+      for (var v = 0; v < k2; v++) {
+        var at = base + v;
+        var phase = this.eT ? this.eT[at] : 0;
+        var amp = 0.5 + 0.5 * Math.sin(t * 9.0 - phase * 7.0);
+        dim[at] = Math.min(1, (0.35 + 1.1 * amp) * fade * 1.6) * vis;
+      }
+    }
+    var attr = this.lgeo.getAttribute("a_dim");
+    if (attr) attr.needsUpdate = true;
+    /* The far end of the axon depolarises a beat after the near end. */
+    if (p.fire && this.nAct) {
+      var wave = Math.pow(fade, 0.7);
+      for (var f = 0; f < p.fire.ids.length; f++) {
+        var j = p.fire.ids[f];
+        this.nAct[j] = Math.min(1, p.fire.base[f] + 0.85 * wave);
+      }
+      var aact = this.pgeo.getAttribute("a_act");
+      if (aact) aact.needsUpdate = true;
+    }
+  };
+
   Renderer.prototype._dragFollow = function (i) {
     var live = this.live, out = [];
     if (!live || !live.adjacency) return out;
@@ -1932,6 +2138,7 @@
 
   Renderer.prototype.beginDrag = function (i, x, y) {
     var THREE = T3.THREE, live = this.live;
+    if (!this.canDrag()) return false;
     if (!live || i < 0 || i >= live.n || live.dim[i] < 0.15) return false;
     var p = new THREE.Vector3();
     this.nodeWorld(i, p);
@@ -1974,6 +2181,9 @@
       }, this),
       released: false
     };
+    /* A dragged cell fires: its synapses carry a pulse for as long as the
+       hand holds it, refreshed in advanceDrag. */
+    if (this.cfg && this.cfg.neuralNodes) this.pulse(i);
     return true;
   };
 
@@ -1997,8 +2207,37 @@
     }
   };
 
+  /* Bodies cannot occupy the same point. Only the grabbed body and the links
+     that trail it are in the list, so an unrelated node is never nudged --
+     the shove is part of the same "only related nodes move" rule. Three
+     passes settle a short chain without letting the pile oscillate. */
+  Renderer.prototype._separateBodies = function (d) {
+    var live = this.live, pad = this.cfg ? this.cfg.collidePad : 0;
+    if (!live || !pad) return;
+    var bodies = [{i: d.i, b: d.main}];
+    for (var f = 0; f < d.follow.length; f++) {
+      bodies.push({i: d.follow[f].i, b: d.follow[f]});
+    }
+    for (var iter = 0; iter < 3; iter++) {
+      for (var a = 0; a < bodies.length; a++) {
+        for (var b = a + 1; b < bodies.length; b++) {
+          var A = bodies[a], B = bodies[b];
+          var dx = (A.b.base.x + A.b.cur.x) - (B.b.base.x + B.b.cur.x);
+          var dy = (A.b.base.y + A.b.cur.y) - (B.b.base.y + B.b.cur.y);
+          var dz = (A.b.base.z + A.b.cur.z) - (B.b.base.z + B.b.cur.z);
+          var min = (this.nSize[A.i] + this.nSize[B.i]) * pad;
+          var push = SK.pushApart(dx, dy, dz, min, A.i * 7.13 + B.i * 3.71);
+          if (!push[0] && !push[1] && !push[2]) continue;
+          A.b.cur.x += push[0]; A.b.cur.y += push[1]; A.b.cur.z += push[2];
+          B.b.cur.x -= push[0]; B.b.cur.y -= push[1]; B.b.cur.z -= push[2];
+        }
+      }
+    }
+  };
+
   /* Writes the current spring offsets into the point/edge buffers. */
   Renderer.prototype._dragPlace = function (d) {
+    this._separateBodies(d);
     var n = this.nPos, m = d.main;
     var px = m.base.x + m.cur.x, py = m.base.y + m.cur.y,
         pz = m.base.z + m.cur.z;
@@ -2007,9 +2246,8 @@
     if (!off) off = this._dragOff[d.key] = {x: 0, y: 0, z: 0};
     off.x = m.cur.x; off.y = m.cur.y; off.z = m.cur.z;
     if (this.ePos) {
-      for (var k = 0; k < d.edges.length; k += 2) {
-        var at = d.edges[k] * 6 + d.edges[k + 1] * 3;
-        this.ePos[at] = px; this.ePos[at + 1] = py; this.ePos[at + 2] = pz;
+      for (var k = 0; k < d.edges.length; k++) {
+        this._packLink(d.edges[k][0], d.edges[k][1], true);
       }
     }
     for (var f = 0; f < d.follow.length; f++) {
@@ -2021,9 +2259,8 @@
       if (!noff) noff = this._dragOff[nb.key] = {x: 0, y: 0, z: 0};
       noff.x = nb.cur.x; noff.y = nb.cur.y; noff.z = nb.cur.z;
       if (this.ePos) {
-        for (var q = 0; q < nb.edges.length; q += 2) {
-          var nat = nb.edges[q] * 6 + nb.edges[q + 1] * 3;
-          this.ePos[nat] = fx; this.ePos[nat + 1] = fy; this.ePos[nat + 2] = fz;
+        for (var q = 0; q < nb.edges.length; q++) {
+          this._packLink(nb.edges[q][0], nb.edges[q][1], true);
         }
       }
     }
@@ -2042,6 +2279,12 @@
   Renderer.prototype.advanceDrag = function (dt) {
     var d = this._drag;
     if (!d || !this.live) return;
+    /* Keep the current alive while the held cell keeps moving: an axon that
+       went quiet under the hand would read as a dropped connection. */
+    if (this.cfg && this.cfg.neuralNodes &&
+        (!this._pulse || (this.time || 0) - this._pulse.start > 0.75)) {
+      this.pulse(d.i);
+    }
     var step = Math.min(0.05, Math.max(0.001, dt || 0.016));
     /* Tuned in SK.DRAG_SPRING so the feel is unit-tested without WebGL: the
        cell trails the pointer, then overshoots its drop point and rings out. */
@@ -2189,24 +2432,41 @@
       this._clearEdgeIndex();
       return;
     }
+    var slots = this._edgeSlots;
+    /* Ego mode packs only the selected neighbourhood, so an edge with slot
+       -1 has no vertices of its own: including it would index another link's
+       buffer. The LOD list is built over what is actually drawn. */
+    var ids = [];
+    for (var e0 = 0; e0 < live.m; e0++) {
+      if (slots && slots[e0] < 0) continue;
+      ids.push(e0);
+    }
+    var m = ids.length;
+    if (!m) {
+      this._clearEdgeIndex();
+      return;
+    }
     var lens = new Float32Array(m);
     var order = new Array(m);
-    for (var e = 0; e < m; e++) {
-      order[e] = e;
+    for (var q = 0; q < m; q++) {
+      var e = ids[q];
+      order[q] = q;
       var a = live.eSrc[e] * 3, b = live.eDst[e] * 3;
       var dx = this.nPos[a] - this.nPos[b];
       var dy = this.nPos[a + 1] - this.nPos[b + 1];
       var dz = this.nPos[a + 2] - this.nPos[b + 2];
-      lens[e] = dx * dx + dy * dy + dz * dz;
+      lens[q] = dx * dx + dy * dy + dz * dz;
     }
-    order.sort(function (a, b) { return lens[a] - lens[b] || a - b; });
-    var idx = new Uint32Array(m * 2);
+    order.sort(function (a, b) { return lens[a] - lens[b] || ids[a] - ids[b]; });
+    var K = this.segK, idx = new Uint32Array(m * K * 2);
     for (var k = 0; k < m; k++) {
-      var edge = order[k];
-      idx[k * 2] = edge * 2;
-      idx[k * 2 + 1] = edge * 2 + 1;
+      var edge = ids[order[k]];
+      var slot = slots ? slots[edge] : edge;
+      var base = slot * K * 2;
+      for (var j = 0; j < K * 2; j++) idx[k * K * 2 + j] = base + j;
     }
     this.lgeo.setIndex(new T3.THREE.BufferAttribute(idx, 1));
+    this._lodCount = m;
     this.lodReady = true;
     this.lodVersion = live.version;
   };
@@ -2226,24 +2486,35 @@
     this._lastDims = live;
     var i;
     for (i = 0; i < live.n; i++) this.nDim[i] = live.dim[i];
-    var slots = this._edgeSlots;
+    var slots = this._edgeSlots, k2 = this.segK * 2;
     for (i = 0; i < live.m; i++) {
       if (slots) {
         var slot = slots[i];
         if (slot < 0) continue;
-        this.eDim[slot * 2] = live.eDim[i];
-        this.eDim[slot * 2 + 1] = live.eDim[i];
+        for (var sv = 0; sv < k2; sv++) this.eDim[slot * k2 + sv] = live.eDim[i];
       } else {
-        this.eDim[i * 2] = live.eDim[i];
-        this.eDim[i * 2 + 1] = live.eDim[i];
+        for (var ev = 0; ev < k2; ev++) this.eDim[i * k2 + ev] = live.eDim[i];
       }
     }
     if (this.pgeo.getAttribute("a_dim")) this.pgeo.getAttribute("a_dim").needsUpdate = true;
     if (this.lgeo.getAttribute("a_dim")) this.lgeo.getAttribute("a_dim").needsUpdate = true;
+    /* The city is a mesh, not a point cloud: every vertex of a filtered tower
+       has to carry the same dim, or the chapter toggle leaves it standing. */
+    if (this._cityDim && this._cityN === live.n && live.n > 0) {
+      var cd = this._cityDim;
+      for (i = 0; i < live.n; i++) {
+        var dv = live.dim[i], base = i * CITY_VERTS;
+        for (var ck = 0; ck < CITY_VERTS; ck++) cd[base + ck] = dv;
+      }
+      var cattr = this.cityGeo.getAttribute("a_dim");
+      if (cattr) cattr.needsUpdate = true;
+    }
   };
 
   Renderer.prototype.render = function () {
     if (this.contextLost) return;
+    this._tickCityFlash();
+    this._tickPulse();
     this.nodeUni.u_time.value = this.time || 0;
     this.edgeUni.u_time.value = this.time || 0;
     this.cityUni.u_time.value = this.time || 0;
@@ -2274,10 +2545,10 @@
     if (this.lodReady && this.lodVersion === this.live.version) {
       var ratio = targetDist / Math.max(this.sceneRadius, 1);
       var fraction = ratio > 2.4 ? 0.3 : (ratio > 1.5 ? 0.6 : 1);
-      var segs = Math.max(1, Math.floor(this.live.m * fraction));
-      this.lgeo.setDrawRange(0, segs * 2);
+      var segs = Math.max(1, Math.floor((this._lodCount || this.live.m) * fraction));
+      this.lgeo.setDrawRange(0, segs * this.segK * 2);
     } else {
-      this.lgeo.setDrawRange(0, this._drawEdges * 2);
+      this.lgeo.setDrawRange(0, this._drawEdges * this.segK * 2);
     }
     this.renderer.render(this.scene, cam);
   };
