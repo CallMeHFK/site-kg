@@ -36,6 +36,13 @@
     /* A neuron is a body, not a chart marker: grabbing one pulls its own
        synapses along, and the pair cannot pass through each other. */
     draggable: true,
+    /* But a cell is anchored in the tissue. Pulling one stretches its
+       membrane a short way and lets it snap home when the hand lets go; a
+       neuron that stayed where it was dropped would be a graph editor, not a
+       head. 2.2 units is about one soma diameter at this scale -- enough to
+       read as tension, far too little to look relocated. */
+    recoil: true,
+    recoilMax: 2.2,
     collidePad: 0.30,
     starfield: true,
     sky: "deepvoid",

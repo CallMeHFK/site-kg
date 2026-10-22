@@ -756,8 +756,14 @@
 
   /* Feel of a dragged cell. ``damping`` is a fraction of critical (2*sqrt(k)),
      so the values stay meaningful if the stiffness changes. Under 1 means the
-     cell overshoots on release and rings out. */
+     cell overshoots on release and rings out.
+
+     ``recoil`` is the anchored variant: a stiffer spring with much less
+     damping, because the cell has to visibly bounce back to its home rather
+     than settle where the hand left it. */
   SK.DRAG_SPRING = {stiff: 190, damping: 0.62, followStiff: 120, followDamping: 0.54};
+  SK.DRAG_SPRING.recoil = {stiff: 230, damping: 0.36,
+                           followStiff: 150, followDamping: 0.30};
 
   /* Deterministic [0,1) noise, no WebGL needed so the shape can be unit
      tested in node. hashSeed takes a number, hashString takes an id, and

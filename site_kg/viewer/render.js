@@ -2010,8 +2010,10 @@
        without leaving a neuron permanently lit. */
     if (this.cfg && this.cfg.neuralNodes && this.nAct) {
       var adj = live.adjacency(), list = adj[i] || [];
-      var ids = [], base = [];
-      for (var k = 0; k < list.length && k < 40; k++) {
+      /* The grabbed cell is part of the current: its soma lights first, the
+         far ends answer a beat later in _tickPulse. */
+      var ids = [i], base = [this.nAct[i]];
+      for (var k = 0; k < list.length && ids.length < 40; k++) {
         var j = list[k][0];
         if (live.dim[j] < 0.15) continue;
         ids.push(j);
@@ -2085,6 +2087,9 @@
       return;
     }
     var k2 = this.segK * 2, dim = this.eDim, fade = 1 - t / p.dur;
+    /* A stretched membrane carries a hotter current: the further the cell is
+       pulled from home, the brighter the axons run. */
+    var load = 1 + 0.9 * (this._stretch || 0);
     var eDim = this.live && this.live.eDim;
     for (var q = 0; q < p.edges.length; q++) {
       var e = p.edges[q][0], base = p.edges[q][1] * k2;
@@ -2095,7 +2100,7 @@
         var at = base + v;
         var phase = this.eT ? this.eT[at] : 0;
         var amp = 0.5 + 0.5 * Math.sin(t * 9.0 - phase * 7.0);
-        dim[at] = Math.min(1, (0.35 + 1.1 * amp) * fade * 1.6) * vis;
+        dim[at] = Math.min(1, (0.35 + 1.1 * amp) * fade * 1.6 * load) * vis;
       }
     }
     var attr = this.lgeo.getAttribute("a_dim");
@@ -2140,6 +2145,9 @@
     var THREE = T3.THREE, live = this.live;
     if (!this.canDrag()) return false;
     if (!live || i < 0 || i >= live.n || live.dim[i] < 0.15) return false;
+    /* Settle any previous gesture first: its spring offsets are still in the
+       buffers, and the grab point has to be the cell's real home. */
+    this._finishDrag();
     var p = new THREE.Vector3();
     this.nodeWorld(i, p);
     var dir = new THREE.Vector3();
@@ -2149,10 +2157,13 @@
     var plane = new THREE.Plane().setFromNormalAndCoplanarPoint(dir, p);
     var hit = new THREE.Vector3();
     if (!this._pointerRay(x, y).ray.intersectPlane(plane, hit)) return false;
-    this._finishDrag();
     this._dragOff = this._dragOff || {};
     var key = live.ids[i] || String(i);
-    var prev = this._dragOff[key] || {x: 0, y: 0, z: 0};
+    /* An anchored scene has no drop history: the cell starts from the layout
+       home it will spring back to, never from where a previous drag ended. */
+    var anchored = !!(this.cfg && this.cfg.recoil);
+    var prev = anchored ? {x: 0, y: 0, z: 0}
+                        : (this._dragOff[key] || {x: 0, y: 0, z: 0});
     var follow = this._dragFollow(i);
     /* Each body carries its own spring state. ``base`` is where the layout put
        it, ``cur``/``vel`` are the live offset from that base, and ``target``
@@ -2169,7 +2180,8 @@
       follow: follow.map(function (nb) {
         var np = new THREE.Vector3();
         this.nodeWorld(nb.i, np);
-        var off = this._dragOff[nb.key] || {x: 0, y: 0, z: 0};
+        var off = anchored ? {x: 0, y: 0, z: 0}
+                           : (this._dragOff[nb.key] || {x: 0, y: 0, z: 0});
         nb.base = {x: np.x - off.x, y: np.y - off.y, z: np.z - off.z};
         /* Start each follower where it already sits, so grabbing a cell does
            not yank neighbours back to the layout position they were dragged
@@ -2187,6 +2199,20 @@
     return true;
   };
 
+  /* Keeps an anchored pull inside the membrane's reach. Pure geometry, so the
+     limit can be unit tested without a renderer. */
+  Renderer.prototype._clampTarget = function (t) {
+    var lim = this.cfg && this.cfg.recoilMax ? this.cfg.recoilMax : 2.2;
+    var r = Math.sqrt(t.x * t.x + t.y * t.y + t.z * t.z);
+    if (r > lim) {
+      var s = lim / r;
+      t.x *= s;
+      t.y *= s;
+      t.z *= s;
+    }
+    return t;
+  };
+
   Renderer.prototype.moveDrag = function (x, y) {
     var d = this._drag;
     if (!d || !this.live) return;
@@ -2196,6 +2222,9 @@
     d.main.target.x += dx;
     d.main.target.y += dy;
     d.main.target.z += dz;
+    /* An anchored cell stretches only so far: past the limit the pointer
+       stops pulling and the membrane tension takes the rest. */
+    if (this.cfg && this.cfg.recoil) this._clampTarget(d.main.target);
     d.grab.copy(hit);
     /* Followers aim at a fraction of the main target; their springs are
        softer, so the cluster ripples out behind the grabbed cell. */
@@ -2242,9 +2271,14 @@
     var px = m.base.x + m.cur.x, py = m.base.y + m.cur.y,
         pz = m.base.z + m.cur.z;
     n[d.i * 3] = px; n[d.i * 3 + 1] = py; n[d.i * 3 + 2] = pz;
-    var off = this._dragOff[d.key];
-    if (!off) off = this._dragOff[d.key] = {x: 0, y: 0, z: 0};
-    off.x = m.cur.x; off.y = m.cur.y; off.z = m.cur.z;
+    /* Only free bodies remember a drop point. An anchored cell writes its
+       live stretch to the buffers and nothing to the store, so the next sync
+       finds it at home. */
+    if (!(this.cfg && this.cfg.recoil)) {
+      var off = this._dragOff[d.key];
+      if (!off) off = this._dragOff[d.key] = {x: 0, y: 0, z: 0};
+      off.x = m.cur.x; off.y = m.cur.y; off.z = m.cur.z;
+    }
     if (this.ePos) {
       for (var k = 0; k < d.edges.length; k++) {
         this._packLink(d.edges[k][0], d.edges[k][1], true);
@@ -2255,9 +2289,11 @@
       var fx = nb.base.x + nb.cur.x, fy = nb.base.y + nb.cur.y,
           fz = nb.base.z + nb.cur.z;
       n[nb.i * 3] = fx; n[nb.i * 3 + 1] = fy; n[nb.i * 3 + 2] = fz;
-      var noff = this._dragOff[nb.key];
-      if (!noff) noff = this._dragOff[nb.key] = {x: 0, y: 0, z: 0};
-      noff.x = nb.cur.x; noff.y = nb.cur.y; noff.z = nb.cur.z;
+      if (!(this.cfg && this.cfg.recoil)) {
+        var noff = this._dragOff[nb.key];
+        if (!noff) noff = this._dragOff[nb.key] = {x: 0, y: 0, z: 0};
+        noff.x = nb.cur.x; noff.y = nb.cur.y; noff.z = nb.cur.z;
+      }
       if (this.ePos) {
         for (var q = 0; q < nb.edges.length; q++) {
           this._packLink(nb.edges[q][0], nb.edges[q][1], true);
@@ -2279,17 +2315,24 @@
   Renderer.prototype.advanceDrag = function (dt) {
     var d = this._drag;
     if (!d || !this.live) return;
+    var anchored = !!(this.cfg && this.cfg.recoil);
     /* Keep the current alive while the held cell keeps moving: an axon that
-       went quiet under the hand would read as a dropped connection. */
+       went quiet under the hand would read as a dropped connection. An
+       anchored cell is being stretched, so it fires in shorter bursts. */
     if (this.cfg && this.cfg.neuralNodes &&
-        (!this._pulse || (this.time || 0) - this._pulse.start > 0.75)) {
+        (!this._pulse ||
+         (this.time || 0) - this._pulse.start > (anchored ? 0.45 : 0.75))) {
       this.pulse(d.i);
     }
     var step = Math.min(0.05, Math.max(0.001, dt || 0.016));
     /* Tuned in SK.DRAG_SPRING so the feel is unit-tested without WebGL: the
-       cell trails the pointer, then overshoots its drop point and rings out. */
-    var tune = SK.DRAG_SPRING || {stiff: 190, damping: 0.62,
-                                  followStiff: 120, followDamping: 0.54};
+       cell trails the pointer, then overshoots its drop point and rings out.
+       An anchored cell uses the livelier recoil tuning -- it has to bounce. */
+    var spring = SK.DRAG_SPRING || {};
+    var tune = (anchored && spring.recoil) ? spring.recoil
+             : (spring.stiff ? spring
+                : {stiff: 190, damping: 0.62,
+                   followStiff: 120, followDamping: 0.54});
     var stiff = tune.stiff, damp = 2 * Math.sqrt(stiff) * tune.damping;
     var fStiff = tune.followStiff;
     var fDamp = 2 * Math.sqrt(fStiff) * tune.followDamping;
@@ -2301,6 +2344,17 @@
     m.cur.x = ax[0]; m.vel.x = ax[1];
     m.cur.y = ay[0]; m.vel.y = ay[1];
     m.cur.z = az[0]; m.vel.z = az[1];
+
+    /* How far the membrane is stretched, 0..1. The axon current brightens
+       with it, so pulling harder visibly loads the synapses. */
+    if (anchored) {
+      var lim = this.cfg && this.cfg.recoilMax ? this.cfg.recoilMax : 2.2;
+      this._stretch = Math.min(1, Math.sqrt(m.cur.x * m.cur.x +
+                                            m.cur.y * m.cur.y +
+                                            m.cur.z * m.cur.z) / lim);
+    } else {
+      this._stretch = 0;
+    }
 
     var settled = Math.abs(m.target.x - m.cur.x) < 0.003
                && Math.abs(m.target.y - m.cur.y) < 0.003
@@ -2327,6 +2381,16 @@
     var d = this._drag;
     if (!d) return;
     var m = d.main;
+    /* An anchored cell always ends at home, even if a scene switch or a
+       reset interrupts the bounce half-way. */
+    if (this.cfg && this.cfg.recoil) {
+      m.target.x = m.target.y = m.target.z = 0;
+      for (var rf = 0; rf < d.follow.length; rf++) {
+        d.follow[rf].target.x = 0;
+        d.follow[rf].target.y = 0;
+        d.follow[rf].target.z = 0;
+      }
+    }
     m.cur.x = m.target.x; m.cur.y = m.target.y; m.cur.z = m.target.z;
     for (var f = 0; f < d.follow.length; f++) {
       var nb = d.follow[f];
@@ -2335,12 +2399,23 @@
     }
     this._dragPlace(d);
     this._drag = null;
+    this._stretch = 0;
   };
 
   Renderer.prototype.endDrag = function () {
-    /* Release the pointer, not the cell: the spring keeps running until the
-       node has overshot and settled where it was dropped. */
-    if (this._drag) this._drag.released = true;
+    var d = this._drag;
+    if (!d || d.released) return;
+    d.released = true;
+    /* An anchored cell is never dropped: letting go retracts it to the home
+       position it never really left, and the spring overshoots on the way. */
+    if (this.cfg && this.cfg.recoil) {
+      d.main.target.x = d.main.target.y = d.main.target.z = 0;
+      for (var f = 0; f < d.follow.length; f++) {
+        d.follow[f].target.x = 0;
+        d.follow[f].target.y = 0;
+        d.follow[f].target.z = 0;
+      }
+    }
   };
 
   Renderer.prototype.startFinale = function (reduced) {

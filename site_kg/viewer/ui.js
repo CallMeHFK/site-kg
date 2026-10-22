@@ -274,7 +274,9 @@
       counts[c]++;
     }
     order.sort(function (a, b) { return counts[b] - counts[a]; });
-    legend.appendChild(el("h4", null, "chapters"));
+    legend.appendChild(el("h4", null, this.director.chapters.length
+                                   ? "chapters \u00b7 " + this.director.chapters.length + " on"
+                                   : "chapters"));
     var palette = (this.renderer.cfg && this.renderer.cfg.palette) || SK.PALETTE;
     var self = this;
     if (!order.length) {
@@ -283,7 +285,8 @@
       order.slice(0, 60).forEach(function (name) {
         var row = el("div", "ch");
         row.setAttribute("data-ch", name);
-        if (self.director.chapter === name) row.classList.add("on");
+        row.title = "toggle this chapter (multi-select)";
+        if (self.director.chapterOn(name)) row.classList.add("on");
         var dot = el("span", "dot");
         var cid = live.clusterIndex[name] === undefined ? 0 : live.clusterIndex[name];
         dot.style.background = "#" + ("000000" + palette[cid % palette.length].toString(16)).slice(-6);
@@ -292,6 +295,12 @@
         row.appendChild(el("span", "n", String(counts[name])));
         legend.appendChild(row);
       });
+      if (this.director.chapters.length) {
+        var all = el("div", "ch clear", "show all chapters");
+        all.setAttribute("data-ch-clear", "1");
+        all.style.opacity = "0.7";
+        legend.appendChild(all);
+      }
     }
 
     var kindCounts = {}, kindOrder = [];
@@ -345,11 +354,16 @@
       if (!node || node === legend) return;
       var ch = node.getAttribute("data-ch");
       if (ch != null) {
-        var active = self.director.setChapter(ch);
-        var rows = legend.querySelectorAll(".ch[data-ch]");
-        for (var k = 0; k < rows.length; k++) {
-          rows[k].classList.toggle("on", rows[k].getAttribute("data-ch") === active);
-        }
+        self.director.toggleChapter(ch);
+        /* Rebuild rather than flipping one class: the header count and the
+           "show all" row both depend on how many chapters are on. */
+        self._buildLegend();
+        self._updateCount();
+        return;
+      }
+      if (node.getAttribute("data-ch-clear") != null) {
+        self.director.clearChapters();
+        self._buildLegend();
         self._updateCount();
         return;
       }
@@ -439,7 +453,8 @@
     var live = this.live, visible = 0, i;
     for (i = 0; i < live.n; i++) if (live.dim[i] > 0.5) visible++;
     var d = this.director;
-    var filtered = !!(d && ((d.query && String(d.query).trim()) || d.chapter
+    var filtered = !!(d && ((d.query && String(d.query).trim())
+                            || (d.chapters && d.chapters.length)
                             || (d.selection && d.selection.length)));
     this.cntEl.classList.toggle("on", filtered);
     if (!filtered) {
@@ -455,6 +470,11 @@
   /* Live build readings: pages/nodes/edges prominent while ingesting, calm at
      rest; the phase chip carries the ingest state machine. */
   UI.prototype.updateStatus = function (s) {
+    /* The bottom caption outlives the finale, so keep its "N visible" honest
+       when the chapter or edge-kind filters change long after completion. */
+    if (this.finaleNote && s) {
+      this.finaleNote.detail = UI.finaleParts(this.cfg, s).join(" \u00b7 ");
+    }
     var L = SK.launcher;
     if (this.readoutEl && L) {
       var opts = null;

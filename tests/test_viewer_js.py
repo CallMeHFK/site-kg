@@ -1310,6 +1310,100 @@ assert.deepEqual(SK.pushApart(0, 0, 0, 2, 11), pile);
 """)
 
 
+def test_anchored_cells_stretch_then_bounce_home():
+    """A neuron is anchored: the scene declares a recoil limit and a livelier
+    spring, and that spring must cross its home position before settling, or
+    letting go would read as a drop instead of a bounce."""
+    _run(_prelude(CORE, NEURAL) + """
+const cfg = SK.scenes.neural;
+assert.equal(cfg.draggable, true);
+assert.equal(cfg.recoil, true);
+assert.ok(cfg.recoilMax > 0 && cfg.recoilMax < 3,
+          "the pull has to stay near one soma, got " + cfg.recoilMax);
+
+const tune = SK.DRAG_SPRING.recoil;
+assert.ok(tune, "the recoil tuning must exist");
+assert.ok(tune.stiff > SK.DRAG_SPRING.stiff, "anchored springs are stiffer");
+assert.ok(tune.damping < SK.DRAG_SPRING.damping, "and much less damped");
+
+/* Release a full stretch at 1.0 and integrate one second of frames. */
+const damp = 2 * Math.sqrt(tune.stiff) * tune.damping;
+let cur = 1, vel = 0, low = 1;
+for (let i = 0; i < 120; i++) {
+  const r = SK.springStep(cur, vel, 0, tune.stiff, damp, 1 / 60);
+  cur = r[0];
+  vel = r[1];
+  if (cur < low) low = cur;
+}
+assert.ok(low < -0.02, "the cell must overshoot home, got " + low.toFixed(3));
+assert.ok(Math.abs(cur) < 0.01, "and come to rest at home, got " + cur.toFixed(4));
+""")
+
+    src = (ROOT / "site_kg" / "viewer" / "render.js").read_text()
+    assert "this.cfg.recoil" in src
+    assert "recoilMax" in src
+
+
+def test_chapters_are_an_additive_selection():
+    """Chapter rows toggle membership: two selected chapters show the union of
+    their nodes, and an empty selection shows the whole graph."""
+    _run(_prelude(CORE, DIRECTOR) + """
+const g = new SK.LiveGraph(16);
+for (let i = 0; i < 6; i++) {
+  g.nodeAdded("n" + i, {t: "N" + i, c: "ch" + (i % 3), g: 0, r: 0});
+}
+g.edgeAdded("n0", "n1", "ref");   /* ch0 -> ch1 */
+g.edgeAdded("n1", "n3", "ref");   /* ch1 -> ch0 */
+g.edgeAdded("n2", "n5", "ref");   /* ch2 -> ch2 */
+g.revealed.fill(1);
+g.eRevealed.fill(1);
+const d = new SK.Director(g, {name: "planets", SCALE: 50,
+                              samplePoints: function () { return new Float32Array(0); }},
+                          {settled: true}, null);
+
+function visible() {
+  let n = 0;
+  for (let i = 0; i < g.n; i++) if (g.dim[i] > 0) n++;
+  return n;
+}
+
+d._recomputeDims();
+assert.deepEqual(d.chapters, []);
+assert.equal(visible(), 6, "no chapter selected means the whole graph");
+
+assert.equal(d.toggleChapter("ch0"), true);
+assert.equal(d.toggleChapter("ch1"), true);
+assert.deepEqual(d.chapters.slice().sort(), ["ch0", "ch1"]);
+assert.equal(d.chapterOn("ch0"), true);
+assert.equal(d.chapterOn("ch2"), false);
+d._recomputeDims();
+assert.equal(visible(), 4, "the union of two chapters");
+/* n2 and n5 are the only ch2 cells, and they must be gone. */
+assert.equal(g.dim[2], 0);
+assert.equal(g.dim[5], 0);
+assert.ok(g.dim[0] > 0 && g.dim[3] > 0);
+/* An edge between two selected chapters survives; one touching ch2 does not. */
+assert.ok(g.eDim[0] > 0);
+assert.ok(g.eDim[1] > 0);
+assert.equal(g.eDim[2], 0);
+
+assert.equal(d.toggleChapter("ch0"), false);
+d._recomputeDims();
+assert.deepEqual(d.chapters, ["ch1"]);
+assert.equal(visible(), 2);
+
+/* The single-chapter entry point still replaces instead of adding. */
+d.setChapter("ch2");
+assert.deepEqual(d.chapters, ["ch2"]);
+d.toggleChapter("ch0");
+assert.deepEqual(d.chapters.slice().sort(), ["ch0", "ch2"]);
+
+d.clearChapters();
+d._recomputeDims();
+assert.deepEqual(d.chapters, []);
+assert.equal(visible(), 6);
+""")
+
 def test_brain_sequence_is_deterministic_and_on_the_unit_sphere():
     """R2 has to be a pure function of the index: the head is cached per node
     count, but a rebuild after the graph grows must not move the cells that
