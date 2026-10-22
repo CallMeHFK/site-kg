@@ -224,35 +224,56 @@
     }
   };
 
-  /* OrbitControls' auto-rotate speed is "degrees per frame at 60fps"; the
-     same unit here is a rate per second, so the view turns at the speed the
-     scene asks for regardless of how many frames the device manages. */
-  Camera.prototype._spin = function (dt) {
+  Camera.prototype._angle = function (dt) {
     var speed = this.renderer.cfg && this.renderer.cfg.spin;
     if (speed == null) speed = 0.6;
-    if (!speed) return;
-    var a = dt * speed * 0.10472;
-    var t = this.controls.target, p = this.camera.position;
+    if (!speed) return 0;
+    return dt * speed * 0.10472;
+  };
+
+  /* Turns a point around a target on the ground plane. Shared by the camera
+     and by the endpoints of a refit tween, so the two can never disagree on
+     which way is forward. */
+  Camera.prototype._rotate = function (p, t, a) {
+    if (!a) return;
     var dx = p.x - t.x, dz = p.z - t.z;
     var c = Math.cos(a), s = Math.sin(a);
     p.x = t.x + dx * c - dz * s;
     p.z = t.z + dx * s + dz * c;
   };
 
+  /* OrbitControls' auto-rotate speed is "degrees per frame at 60fps"; the
+     same unit here is a rate per second, so the view turns at the speed the
+     scene asks for regardless of how many frames the device manages. */
+  Camera.prototype._spin = function (dt) {
+    this._rotate(this.camera.position, this.controls.target, this._angle(dt));
+  };
+
   Camera.prototype.update = function (dt) {
     var tw = this.tween;
+    var spin = this.userInteracting || this.reduced ? 0 : this._angle(dt);
     if (tw) {
       tw.t += dt * 1000;
       var k = Math.min(1, tw.t / tw.dur);
       var e = 1 - Math.pow(1 - k, 3);
       this.camera.position.lerpVectors(tw.p0, tw.p1, e);
       this.controls.target.lerpVectors(tw.t0, tw.t1, e);
+      /* A refit used to freeze the orbit for its whole duration, which read
+         as a hitch every time the graph grew. Turning both endpoints by the
+         same angle leaves this frame's lerp exactly where it is and starts
+         the next one turned, so the camera keeps orbiting while it eases. */
+      if (spin) {
+        var anchor = this.controls.target;
+        this._rotate(tw.p0, anchor, spin);
+        this._rotate(tw.p1, anchor, spin);
+        this._rotate(this.camera.position, anchor, spin);
+      }
       if (k >= 1) {
         this.tween = null;
         this.settled = true;
       }
-    } else if (!this.userInteracting && !this.reduced) {
-      this._spin(dt);
+    } else if (spin) {
+      this._rotate(this.camera.position, this.controls.target, spin);
     }
     this.controls.update();
     this.renderer.camDistance = this.camera.position.distanceTo(this.controls.target);

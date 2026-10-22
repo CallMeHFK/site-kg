@@ -622,7 +622,7 @@ fn h21(p0: vec2f) -> f32 {
   return fract(p.x * p.y);
 }
 
-fn hazeCol() -> vec3f { return vec3f(0.024, 0.028, 0.048); }
+fn hazeCol() -> vec3f { return vec3f(0.030, 0.036, 0.060); }
 
 @fragment fn fs_city(i: VOut) -> @location(0) vec4f {
   var col = vec3f(0.0);
@@ -644,8 +644,8 @@ fn hazeCol() -> vec3f { return vec3f(0.024, 0.028, 0.048); }
     /* The pattern dissolves before it aliases: past half the city radius the
        street grid is one pixel wide and only reads as moire. */
     let near = 1.0 - ss(0.45, 0.88, r);
-    col = mix(vec3f(0.027, 0.028, 0.034), vec3f(0.011, 0.012, 0.016), road * near);
-    col = mix(col, vec3f(0.040, 0.041, 0.048), walk * near);
+    col = mix(vec3f(0.040, 0.042, 0.052), vec3f(0.020, 0.022, 0.030), road * near);
+    col = mix(col, vec3f(0.062, 0.064, 0.076), walk * near);
     col = col + vec3f(0.30, 0.19, 0.086) * road
         * (1.0 - ss(0.0, kerb, m)) * 0.05 * near;
     col = col + vec3f(0.40, 0.30, 0.16) * mark * 0.20 * near;
@@ -657,14 +657,14 @@ fn hazeCol() -> vec3f { return vec3f(0.024, 0.028, 0.048); }
     /* Setback terrace: bare roof with a lip, no beacon. */
     let e = max(max(abs(i.local.x), abs(i.local.y)),
                 (abs(i.local.x) + abs(i.local.y)) * 0.5952);
-    col = i.col * 0.15 + vec3f(0.014, 0.017, 0.026);
+    col = i.col * 0.18 + vec3f(0.020, 0.024, 0.034);
     col = col * (0.84 + 0.24 * fract(i.spec.z * 5.7));
     col = col + vec3f((h21(floor(i.local.xy * 9.0)) - 0.5) * 0.010);
     col = col + i.col * 0.36 * ss(0.86, 1.0, e);
   } else if (i.face > 7.5) {
     let e = max(max(abs(i.local.x), abs(i.local.y)),
                 (abs(i.local.x) + abs(i.local.y)) * 0.5952);
-    col = i.col * 0.12 + vec3f(0.013, 0.016, 0.024);
+    col = i.col * 0.15 + vec3f(0.018, 0.022, 0.032);
     col = col * (0.82 + 0.30 * fract(i.spec.z * 5.7));
     col = col + vec3f((h21(floor(i.local.xy * 9.0)) - 0.5) * 0.012);
     col = col + i.col * 0.44 * ss(0.86, 1.0, e);
@@ -677,9 +677,9 @@ fn hazeCol() -> vec3f { return vec3f(0.024, 0.028, 0.048); }
     /* One sun, not a studio rig: the faces turned away from it fall into
        shadow, and that contrast is what tells a chamfer from a flat slab. */
     let L = normalize(vec3f(0.45, 0.72, 0.33));
-    let facing = 0.34 + 0.66 * max(dot(N, L), 0.0);
-    let sky = 0.05 + 0.09 * (N.y * 0.5 + 0.5);
-    col = i.col * (0.62 * facing + sky) * (0.38 + 0.62 * i.local.y)
+    let facing = 0.40 + 0.72 * max(dot(N, L), 0.0);
+    let sky = 0.09 + 0.13 * (N.y * 0.5 + 0.5);
+    col = i.col * (0.80 * facing + sky) * (0.46 + 0.54 * i.local.y)
         * vec3f(0.90, 0.97, 1.08);
     col = col * (0.82 + 0.30 * fract(i.spec.z * 5.7));
     col = col + i.col * 0.38 * ss(0.86, 1.0, abs(i.local.x));
@@ -947,7 +947,7 @@ fn hazeCol() -> vec3f { return vec3f(0.024, 0.028, 0.048); }
                         {shaderLocation: 3, offset: 16, format: "float32x3"}]}],
                     ALPHA_BLEND),
       city: pipeline(modules.city, "vs_city", "fs_city", "triangle-list",
-                     layoutOf(CITY_SLOTS), ALPHA_BLEND, "back",
+                     layoutOf(CITY_SLOTS), ALPHA_BLEND, "none",
                      {format: "depth24plus", depthWriteEnabled: true,
                       depthCompare: "less"})
     };
