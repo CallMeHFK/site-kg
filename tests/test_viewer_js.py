@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -10,11 +11,14 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 CORE = ROOT / "site_kg" / "viewer" / "core.js"
+RENDER = ROOT / "site_kg" / "viewer" / "render.js"
+GPU = ROOT / "site_kg" / "viewer" / "gpu.js"
+CAMERA = ROOT / "site_kg" / "viewer" / "camera.js"
 DIRECTOR = ROOT / "site_kg" / "viewer" / "director.js"
 LAUNCHER = ROOT / "site_kg" / "viewer" / "launcher.js"
 PLANETS = ROOT / "site_kg" / "viewer" / "scenes" / "planets.js"
-PEOPLE = ROOT / "site_kg" / "viewer" / "scenes" / "people.js"
 NEURAL = ROOT / "site_kg" / "viewer" / "scenes" / "neural.js"
+CITY = ROOT / "site_kg" / "viewer" / "scenes" / "city.js"
 UI = ROOT / "site_kg" / "viewer" / "ui.js"
 
 pytestmark = pytest.mark.skipif(shutil.which("node") is None,
@@ -105,8 +109,44 @@ assert.equal(g.m, 2);
 assert.equal(g.degree[0], 4);
 assert.equal(g.rank[0], 0.25);
 assert.equal(g.edgeKeys.size, 2);
-assert.deepEqual(g.stats(), {nodes: 2, edges: 2, pending: 0, dangling: 0});
+assert.deepEqual(g.stats(), {nodes: 2, edges: 2, pending: 0, dangling: 0,
+                             discovered: 0, discoverFailed: 0});
 """)
+
+
+def test_discover_events_fold_monotonically():
+    """Discovery counters survive duplicate/replayed frames and snapshots."""
+    _run(_prelude(CORE) + """
+const g = new SK.LiveGraph(16);
+g.applyBatch([
+  {t: "discover", found: 5, failed: 1, depth: 1},
+  {t: "discover", found: 3, failed: 0, depth: 2},
+  {t: "discover", found: 9, failed: 4, depth: 2},
+]);
+assert.equal(g.discovered, 9, "discovered never regresses");
+assert.equal(g.discoverFailed, 4, "failed never regresses");
+assert.equal(g.stats().discovered, 9);
+assert.equal(g.stats().discoverFailed, 4);
+g.loadSnapshot({nodes: [], edges: [], last_seq: 1});
+assert.equal(g.discovered, 9, "a reconnect snapshot keeps the discovery count");
+assert.equal(g.discoverFailed, 4);
+g.reset(16);
+assert.equal(g.discovered, 0, "a new run starts clean");
+assert.equal(g.discoverFailed, 0);
+""")
+    _run(_prelude(CORE, DIRECTOR) + """
+const g = new SK.LiveGraph(16);
+const d = new SK.Director(g, {name: "planets"}, null, null);
+d.onEvents({t: "discover", found: 7, failed: 2, depth: 1});
+assert.equal(d.status().discovered, 7);
+assert.equal(d.status().discoverFailed, 2);
+d.state = "failed";
+d.error = "discovery timed out after 180s";
+const st = d.status();
+assert.equal(st.state, "failed");
+assert.equal(st.error, "discovery timed out after 180s");
+""")
+
 
 
 def test_node_updated_events_never_clobber_titles():
@@ -167,6 +207,35 @@ assert.equal(b.lastSeq, 200);
 """)
 
 
+def test_batcher_paced_reveal_spreads_a_burst():
+    _run(_prelude(CORE) + """
+const g = new SK.LiveGraph(64);
+g.applyBatch([{t: "discover", found: 40, seq: 1}]);
+let clock = 0;
+const b = new SK.Batcher(g, {
+  windowMs: 100, maxNodes: 100, timer: false, paced: true,
+  now: function () { return clock; }
+});
+for (let i = 0; i < 20; i++) {
+  b.push({t: "node_added", id: "n" + i, title: "N" + i, seq: 10 + i}, 0);
+}
+assert.equal(g.n, 0);
+assert.equal(b.queue.length, 20);
+clock = 100;
+b.flush(100);
+assert.ok(g.n >= 1 && g.n < 20, "first window reveals a slice, got " + g.n);
+const first = g.n;
+clock = 200;
+b.flush(200);
+assert.ok(g.n > first, "the next window keeps growing");
+assert.ok(g.n < 20);
+const rec = b.flush(Date.now() + 100000, true);
+assert.equal(g.n, 20);
+assert.equal(b.queue.length, 0);
+assert.equal(rec.nodes, 20);
+""")
+
+
 def test_load_snapshot_uses_live_state_shape():
     _run(_prelude(CORE) + """
 const g = new SK.LiveGraph(4);
@@ -198,7 +267,7 @@ assert.equal(g.dangling, 1);
 
 
 def test_scene_selection_and_derived_edge_visibility():
-    _run(_prelude(CORE, DIRECTOR, PLANETS, PEOPLE, NEURAL) + """
+    _run(_prelude(CORE, DIRECTOR, PLANETS, NEURAL, CITY) + """
 const g = new SK.LiveGraph(256);
 for (let i = 0; i < 160; i++) {
   g.nodeAdded("n" + i, {t: "N" + i, c: i % 4, g: i === 0 ? 150 : 1,
@@ -207,14 +276,11 @@ for (let i = 0; i < 160; i++) {
 for (let i = 1; i <= 150; i++) g.edgeAdded("n0", "n" + i, "ref");
 assert.equal(SK.scenes.planets.select(g, -1).length, 160);
 assert.equal(SK.scenes.neural.select(g, 5).length, 160);
-const focused = SK.scenes.people.select(g, 5);
-assert.equal(focused.length, 120);
-assert.equal(focused[0], 5);
-assert.ok(focused.indexOf(0) >= 0);
-const hub = SK.scenes.people.select(g, -1);
-assert.equal(hub.length, 120);
-assert.equal(hub[0], 0);
-assert.deepEqual(SK.scenes.people.select(g, 5), focused);
+assert.equal(SK.scenes.city.select(g, 5).length, 160);
+assert.equal(SK.scenes.planets.ego, false);
+assert.equal(SK.scenes.neural.ego, false);
+assert.equal(SK.scenes.city.ego, false);
+assert.deepEqual(SK.sceneOrder, ["planets", "neural", "city"]);
 
 g.edgeAdded("n1", "n2", "mentions_symbol");
 const derivedEdge = g.m - 1;
@@ -245,6 +311,378 @@ director.toggleKind("mentions_symbol");
 director._recomputeDims();
 assert.ok(g.eDim[derivedEdge] > 0);
 """)
+
+
+def test_city_scene_plots_and_tower_spec():
+    """The city must give every page a stable plot and a height it deserves."""
+    _run(_prelude(CORE, CITY) + """
+const cfg = SK.scenes.city;
+assert.equal(cfg.city, true);
+assert.equal(cfg.sky, "skyline");
+assert.equal(cfg.ego, false);
+assert.equal(cfg.labelBudget > 0 && cfg.labelBudget <= 8, true);
+assert.equal(cfg.cityPitch > 0, true);
+assert.equal(cfg.cityFloor > 0, true);
+
+/* Plots are a pure function of the index: growing the crawl never re-flows
+   a building that already stands. The ladder is cached and extended in
+   place, so asking for five plots and then five hundred returns one array
+   whose first entries never move. */
+const cells = SK.cityCells(500);
+assert.equal(SK.cityCells(5), cells, "the ladder is cached, not rebuilt");
+assert.deepEqual(cells.slice(0, 4), [[0, 0], [1, 0], [1, 1], [0, 1]]);
+assert.deepEqual(SK.cityCells(200), cells, "a prefix is the same ladder");
+assert.equal(cells.length, 500);
+assert.deepEqual(cells[0], [0, 0]);
+const seen = new Set(cells.map(function (c) { return c[0] + "," + c[1]; }));
+assert.equal(seen.size, 500, "every page gets its own plot");
+let minX = 0, maxX = 0, minZ = 0, maxZ = 0;
+for (const c of cells) {
+  if (c[0] < minX) minX = c[0];
+  if (c[0] > maxX) maxX = c[0];
+  if (c[1] < minZ) minZ = c[1];
+  if (c[1] > maxZ) maxZ = c[1];
+}
+/* A square spiral fills a square block, not a lopsided wedge. */
+assert.ok(Math.abs((maxX - minX) - (maxZ - minZ)) <= 1,
+          "footprint stays square, got " + (maxX - minX) + "x" + (maxZ - minZ));
+
+function spec(o) {
+  return SK.citySpec(Object.assign({floor: 0.62, seed: 7, kids: 0,
+                                    kidsMax: 9, degreeMax: 9}, o));
+}
+const short = spec({rank: 0.001, rankMax: 0.03, degree: 0});
+const tall = spec({rank: 0.03, rankMax: 0.03, degree: 9});
+const floorless = spec({rank: 0, rankMax: 0.03, degree: 0});
+/* Pinned, not bounded: the clamp is part of the law, so both ends must be
+   reachable, and the middle must land on the storey grid. */
+assert.equal(short.floors, 6);
+assert.equal(tall.floors, 30, "the tallest tower is capped");
+assert.equal(floorless.floors, 3, "an unknown page still gets three floors");
+assert.ok(tall.floors > short.floors, "rank raises the skyline");
+assert.equal(tall.h, tall.floors * 0.62);
+assert.equal(short.h, short.floors * 0.62);
+assert.ok(short.w >= 1.30 && short.w <= 2.10);
+assert.ok(short.d >= 1.30 && short.d <= 2.10);
+/* Three cut heights, strictly inside the tower and increasing: the podium,
+   the setback and the crown base. A monument with no silhouette is the thing
+   this replaced. */
+assert.equal(tall.tiers.length, 3);
+assert.ok(tall.tiers[0] > 0 && tall.tiers[0] < tall.tiers[1],
+          "the podium ends below the setback");
+assert.ok(tall.tiers[1] < tall.tiers[2] && tall.tiers[2] < 1,
+          "the crown still has a shaft above the terrace");
+assert.ok(short.tiers[1] > short.tiers[0] && short.tiers[2] > short.tiers[1],
+          "even a three-floor infill gets a valid stack");
+/* Window columns follow the frontage rather than a fixed four. */
+assert.equal(tall.cols, Math.max(6, Math.min(12, Math.round(tall.w * 6.0))));
+assert.ok(spec({rank: 0.02, rankMax: 0.03, degree: 1, seed: 3}).cols
+          >= 8, "a normal tower frontage is at least eight panes wide");
+/* Each tier stands at its own width: the podium is the widest, and a crown
+   is either a setback slab or a spire, never the same for every plot. */
+assert.equal(tall.tierw.length, 4);
+assert.ok(tall.tierw[0] > tall.tierw[1], "the podium oversails the shaft");
+assert.ok(tall.tierw[2] < tall.tierw[1], "the setback steps in");
+assert.ok(tall.tierw[3] > 0.3 && tall.tierw[3] < 1.1);
+const crowns = new Set();
+for (let i = 0; i < 24; i++) {
+  crowns.add(Math.round(spec({rank: 0.02, rankMax: 0.03, degree: 1, seed: i})
+                        .tierw[3] * 100));
+}
+assert.ok(crowns.size > 8, "crown width varies plot to plot");
+/* The footprint is seeded: two pages of the same height still differ. */
+assert.ok(spec({rank: 0.02, rankMax: 0.03, degree: 1, seed: 7}).w
+          !== spec({rank: 0.02, rankMax: 0.03, degree: 1, seed: 11}).w,
+          "the footprint is seeded per plot");
+
+/* Lit windows are the children: no links, no lights. */
+assert.ok(spec({rank: 0.02, rankMax: 0.03, degree: 1}).lit < 0.1);
+const few = spec({rank: 0.02, rankMax: 0.03, degree: 1, kids: 1, kidsMax: 9});
+const many = spec({rank: 0.02, rankMax: 0.03, degree: 1, kids: 9, kidsMax: 9});
+assert.ok(few.lit > 0 && few.lit < many.lit);
+assert.ok(many.lit <= 0.8);
+
+/* Floors are quantised, so the facade grid is whole storeys of glass. */
+const odd = spec({rank: 0.017, rankMax: 0.03, degree: 3, kids: 2, kidsMax: 9});
+assert.equal(odd.floors, Math.round(odd.floors));
+""")
+
+
+def test_city_geometry_is_tiered():
+    """Four tiers of eight walls per tower plus one ground quad, one mesh."""
+    js = RENDER.read_text(encoding="utf-8")
+    assert "var CITY_TIERS = 4;" in js
+    assert "CITY_VERTS = CITY_TIERS * 9 * 4" in js
+    assert "CITY_INDICES = CITY_TIERS * 9 * 6" in js
+    # The ground is appended after the last tower. Stamping it at the old
+    # 24-vertex stride wrote four stray vertices into a tower and left the
+    # real plane at the origin, which painted a giant triangle over the city.
+    assert "var g = n * CITY_VERTS;" in js
+    assert "idx[n * CITY_INDICES]" in js
+    # The WGSL twin has to read the same column count out of the promoted
+    # padding slot, or the backends disagree on the facade grid.
+    gpu = GPU.read_text(encoding="utf-8")
+    assert "max(i.spec.w, 1.0)" in gpu
+    assert "max(vSpec.w, 1.0)" in js
+    # The plan is an octagon: eight walls per tier, and the chamfer feed the
+    # shader its own share of the window columns.
+    assert "CITY_CHAMFER" in js
+    assert "table.wf[k]" in js
+    # The stamped values are tier *bases*, not the spec's cut heights: the
+    # first base is the street and the last is the crown base. Reading the
+    # cuts as bases lifted every tower a storey off its plot and left the
+    # crown with zero height, so its roof sat coplanar with the terrace below
+    # and lost the depth test. Neither fault shows up in a citySpec test.
+    assert "this._cityTiers[i * 4] = 0;" in js
+    assert "this._cityTiers[i * 4 + 1] = spec.tiers[0];" in js
+    assert "this._cityTiers[i * 4 + 2] = spec.tiers[1];" in js
+    assert "this._cityTiers[i * 4 + 3] = spec.tiers[2];" in js
+    # Cap vertices keep the plan coordinate the table wrote for them. Writing
+    # the tier height into local.y for every vertex made length(local.xy) >= 1
+    # on a roof, which put the beacon out and flattened the parapet into a
+    # wash of one colour.
+    assert "table.face[k] > 7 ? table.loc[k * 3 + 1] : yf" in js
+
+
+def test_orbit_turns_once_per_frame_from_dt():
+    """The orbit is dt-based and must not also run OrbitControls' auto-rotate.
+
+    setAutoRotate used to assign controls.autoRotate, and switchScene calls it
+    on every scene change. From then on OrbitControls stepped a fixed angle per
+    rendered frame on top of the dt-based turn: the measured rate went from
+    1.3 to 4.2 degrees per second, and it changed with the frame rate -- the
+    stutter this pass was meant to remove.
+
+    This drives the real update() over a stub rig: sixty frames of 1/60 s have
+    to sweep exactly cfg.spin * one unit of _angle, once. The unit is measured
+    from the rig (spin 1 for one second) rather than copied out of the source.
+    """
+    _run(_prelude(CORE, CAMERA) + r"""
+global.T3 = (function () {
+  function V(x, y, z) { this.x = x || 0; this.y = y || 0; this.z = z || 0; }
+  V.prototype.set = function (x, y, z) { this.x = x; this.y = y; this.z = z;
+    return this; };
+  V.prototype.clone = function () { return new V(this.x, this.y, this.z); };
+  V.prototype.copy = function (v) { return this.set(v.x, v.y, v.z); };
+  V.prototype.lerpVectors = function (a, b, t) {
+    return this.set(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t,
+                    a.z + (b.z - a.z) * t);
+  };
+  V.prototype.distanceTo = function (v) {
+    return Math.hypot(this.x - v.x, this.y - v.y, this.z - v.z);
+  };
+  /* OrbitControls with its own auto-rotate is the bug: update() here turns
+     the camera whenever the flag is on, exactly as Three would. */
+  function Controls(cam, el) {
+    this.camera = cam;
+    this.target = new V();
+    this.autoRotate = false;
+    this.enabled = true;
+    this.turns = 0;
+  }
+  Controls.prototype.addEventListener = function () {};
+  Controls.prototype.update = function () {
+    if (this.autoRotate) this.turns++;
+  };
+  return {THREE: {Vector3: V}, OrbitControls: Controls};
+})();
+
+const cfg = {spin: 0.6};
+const renderer = {cfg: cfg,
+                  camera: {position: new global.T3.THREE.Vector3(10, 4, 0)},
+                  canvas: {}};
+const cam = new SK.Camera(renderer);
+const az = function () {
+  const p = cam.camera.position, t = cam.controls.target;
+  return Math.atan2(p.x - t.x, p.z - t.z);
+};
+const unwrap = function (a, b) {
+  let d = b - a;
+  while (d > Math.PI) d -= 2 * Math.PI;
+  while (d < -Math.PI) d += 2 * Math.PI;
+  return d;
+};
+
+/* setAutoRotate may record the intent, never hand the turn to OrbitControls */
+cam.setAutoRotate(true);
+assert.equal(cam.autoRotate, true);
+assert.equal(cam.controls.autoRotate, false,
+             "OrbitControls must stay out of the orbit");
+
+/* One unit of _angle, measured off the rig: spin 1 for one second at dt 1
+   sweeps exactly that much. Measuring it keeps this test out of the tuning. */
+cfg.spin = 1;
+cam.camera.position.set(10, 4, 0);
+cam.controls.target.set(0, 0, 0);
+const u0 = az();
+cam.update(1);
+const unit = Math.abs(unwrap(u0, az()));
+cfg.spin = 0.6;
+assert.ok(unit > 0.01, "the orbit unit collapsed to " + unit);
+
+let before = az();
+for (let i = 0; i < 60; i++) cam.update(1 / 60);
+const swept = Math.abs(unwrap(before, az()));
+assert.ok(Math.abs(swept - 0.6 * unit) < 1e-9,
+          "one second should sweep cfg.spin * " + unit + " rad, got " + swept);
+assert.equal(cam.controls.turns, 0, "the second driver must never turn");
+
+/* paused means paused: the space bar flips the same flag */
+cam.setAutoRotate(false);
+before = az();
+for (let i = 0; i < 30; i++) cam.update(1 / 60);
+assert.ok(Math.abs(unwrap(before, az())) < 1e-12, "paused orbit still moved");
+cam.setAutoRotate(true);
+
+/* a drag wins over the intent, and reduced motion stops it */
+cam.userInteracting = true;
+before = az();
+for (let i = 0; i < 30; i++) cam.update(1 / 60);
+assert.ok(Math.abs(unwrap(before, az())) < 1e-12, "orbit moved during a drag");
+cam.userInteracting = false;
+cam.reduced = true;
+before = az();
+for (let i = 0; i < 30; i++) cam.update(1 / 60);
+assert.ok(Math.abs(unwrap(before, az())) < 1e-12, "orbit moved under reduced");
+cam.reduced = false;
+
+/* and a tween keeps turning instead of freezing, while still easing. The
+   endpoint sits on the same ray from the anchor as the start, so the ease
+   turns the camera by zero on its own; the target only rises, which leaves
+   the horizontal azimuth alone. Run the identical ease twice, orbit off and
+   orbit on: the arms must agree on the ease and differ only by the orbit. */
+const t0 = new global.T3.THREE.Vector3(2, 3, -1);
+const t1 = new global.T3.THREE.Vector3(2, 4.5, -1);
+const k = 1.6;
+/* probe the ease at three points: two of them make a curve that is right at
+   the ends but wrong in between (an overshoot, a backtrack) impossible */
+const PROBES = [{i: 74, k: 0.3125}, {i: 149, k: 0.625}, {i: 224, k: 0.9375}];
+const easeArm = function (spinOn) {
+  cam.camera.position.set(9, 4, 0);
+  cam.controls.target.copy(t0);
+  cam.setAutoRotate(!!spinOn);
+  const p0 = cam.camera.position.clone();
+  const p1 = new global.T3.THREE.Vector3(t0.x + (p0.x - t0.x) * k,
+                                         t0.y + (p0.y - t0.y) * k,
+                                         t0.z + (p0.z - t0.z) * k);
+  /* both lerps are distances, so the orbit's turn about the target's axis
+     leaves them unchanged and the closed form is what the sample must hit */
+  const want = PROBES.map(function (p) {
+    const e = 1 - Math.pow(1 - p.k, 3);
+    return {y: 3 + 1.5 * e,
+            r: p0.clone().lerpVectors(p0, p1, e)
+              .distanceTo(t0.clone().lerpVectors(t0, t1, e))};
+  });
+  cam._to(p1, t1.clone(), 1000);
+  const from = az();
+  const got = [];
+  for (let i = 0; i < 300; i++) {
+    cam.update(1 / 240);
+    PROBES.forEach(function (p, n) {
+      if (i === p.i) got[n] = {y: cam.controls.target.y,
+                               r: cam.camera.position.distanceTo(cam.controls.target)};
+    });
+  }
+  return {swept: Math.abs(unwrap(from, az())), tween: cam.tween,
+          radius: cam.camera.position.distanceTo(cam.controls.target),
+          end: p1.distanceTo(t1), want: want, got: got,
+          targetY: cam.controls.target.y};
+};
+const checkEase = function (arm, label) {
+  PROBES.forEach(function (p, n) {
+    assert.ok(Math.abs(arm.got[n].y - arm.want[n].y) < 1e-3,
+              label + ": the target eased off the curve at k=" + p.k +
+              ", y = " + arm.got[n].y);
+    assert.ok(Math.abs(arm.got[n].r - arm.want[n].r) < 1e-6,
+              label + ": the camera eased at the wrong curve at k=" + p.k +
+              ", " + arm.got[n].r + " of " + arm.want[n].r);
+  });
+};
+
+/* paused turns nothing, but it must not stall the ease either: a refit that
+   starts while paused has to finish, or director.js waits on its latch */
+const still = easeArm(false);
+assert.ok(still.swept < 1e-9,
+          "the ease turned the camera by itself, swept " + still.swept);
+assert.equal(still.tween, null, "the ease must finish even while paused");
+assert.ok(Math.abs(still.targetY - 4.5) < 1e-6,
+          "the ease never moved the target, y = " + still.targetY);
+checkEase(still, "paused");
+assert.ok(Math.abs(still.radius - still.end) < 1e-6,
+          "the ease landed off its endpoint, radius " + still.radius);
+
+const live = easeArm(true);
+assert.equal(live.tween, null, "the tween should have finished");
+const wantSweep = 0.6 * unit * 1.25;
+assert.ok(Math.abs(live.swept - wantSweep) < 1e-6 * wantSweep,
+          "the tween froze the orbit: swept " + live.swept + " of " +
+          wantSweep + " over 1.25 s");
+assert.ok(Math.abs(live.targetY - 4.5) < 1e-6,
+          "the ease never moved the target, y = " + live.targetY);
+checkEase(live, "orbiting");
+assert.ok(Math.abs(live.radius - live.end) < 1e-6,
+          "the ease landed off its endpoint, radius " + live.radius);
+/* a tween may turn the orbit off in OrbitControls; it must not turn it on */
+assert.equal(cam.controls.autoRotate, false,
+             "a tween re-enabled OrbitControls' orbit");
+assert.equal(cam.controls.turns, 0, "the second driver must never turn");
+""")
+    src = CAMERA.read_text(encoding="utf-8")
+    # Every assignment to OrbitControls' flag is off; any other right-hand
+    # side (`!!on`, a variable, a call) is the double driver coming back. The
+    # lookarounds skip comparisons, which read the flag instead of setting it.
+    writes = re.findall(r"controls\.autoRotate\s*(?<![=!<>])=(?!=)\s*([^;\n]+)", src)
+    assert writes, "the constructor must keep OrbitControls' rotation off"
+    assert set(w.strip() for w in writes) == {"false"}, \
+        "controls.autoRotate is turned on in: " + str(writes)
+    assert not re.search(r"\b_spin\s*[=:]|function\s+_spin\b", src), \
+        "the per-frame _spin helper is back"
+    # The space bar reads the same flag it writes, or it can never resume.
+    assert "setAutoRotate(!self.camera.autoRotate)" in UI.read_text(encoding="utf-8")
+
+
+def test_refit_gate_needs_material_growth():
+    """Refits follow growth, not the clock, or the camera eases constantly.
+
+    A 1.6 s timer fitted the graph on every batch and the camera spent half of
+    each two seconds in a tween, which read as the stutter this pass removes.
+    The gate has to watch the extent as well: a layout patch re-spreads a fixed
+    node count, and a count-only gate would never re-frame that.
+
+    Matched on squashed whitespace so the assertions survive reformatting but
+    fail if `grew` leaves the condition or the high-water marks stop being
+    stamped -- either one brings the stutter back with the test still green.
+    """
+    js = " ".join(DIRECTOR.read_text(encoding="utf-8").split())
+    assert ("var grew = this.live.n >= (this._fitN || 0) * 1.3 + 6 || "
+            "this.renderer.sceneRadius >= (this._fitR || 0) * 1.15;") in js
+    assert "this.live.n && grew && this.time - (this._fitTick || 0) > 1.6" in js
+    assert "this._fitN = this.live.n;" in js
+    assert "this._fitR = this.renderer.sceneRadius;" in js
+
+
+def test_city_gpu_pipeline_is_declared():
+    """The WebGPU backend must carry the city, depth buffer included."""
+    js = GPU.read_text(encoding="utf-8")
+    assert "var CITY_WGSL" in js
+    assert "fn vs_city" in js and "fn fs_city" in js
+    assert "city: pipeline(modules.city" in js
+    assert 'depthCompare: "less"' in js
+    assert "depthStencilAttachment" in js
+    assert '"depth24plus"' in js
+    assert "GpuRenderer.prototype._packCity" in js
+    assert "fn skyline(" in js
+    # The city is the only pass that writes depth, and the only one that
+    # rejects fragments: links and rings test "less-equal" so a tower hides
+    # what is behind it, and every other pass ignores the buffer.
+    assert js.count("depthWriteEnabled: true") == 1
+    assert js.count('depthCompare: "less"') == 1
+    assert js.count('depthCompare: "less-equal"') == 2
+    assert js.count('depthCompare: "always"') == 1
+    # Reversed smoothstep edges are undefined in GLSL ES; the twin uses 1-ss.
+    assert "ss(0.76, 0.70" not in js and "ss(0.78, 0.70" not in js
+    # And it is drawn with its own index buffer.
+    assert 'this._bind("city", CITY_SLOTS, cityGeo)' in js
 
 
 def test_connect_events_resumes_and_resets_on_new_run():
@@ -278,6 +716,7 @@ def test_connect_events_resumes_and_resets_on_new_run():
   });
   assert.equal(sources.length, 1);
   assert.equal(sources[0].url, "http://live.test/events?since=3");
+  assert.equal(live.runId, "run-a");
   sources[0].onmessage({data: JSON.stringify(
     {t: "node_added", id: "b", title: "B", seq: 5})});
   assert.equal(director.batcher.queue.length, 1);
@@ -300,6 +739,42 @@ def test_connect_events_resumes_and_resets_on_new_run():
   assert.equal(live.ids[0], "z");
   handle.close();
   assert.equal(sources[1].closed, true);
+})().catch(function (err) {
+  console.error(err && err.stack ? err.stack : err);
+  process.exit(1);
+});
+""")
+
+
+def test_connect_events_discards_the_previous_run():
+    _run(_prelude(CORE, DIRECTOR) + """
+(async function () {
+  const live = new SK.LiveGraph(8);
+  live.runId = "run-old";
+  live.nodeAdded("old", {t: "Old", c: "x", g: 3, r: 0.2});
+  assert.equal(live.n, 1);
+  const director = new SK.Director(live, null, null, null);
+  const sources = [];
+  function FakeSource(url) { this.url = url; sources.push(this); }
+  FakeSource.prototype.close = function () {};
+  director.connectEvents("run-new", 12, {
+    base: "", EventSource: FakeSource, timer: false
+  });
+  /* A fresh crawl must not inherit the finished graph from the last one, and
+     it must replay from sequence zero instead of skipping the opening events. */
+  assert.equal(live.n, 0);
+  assert.equal(live.runId, "run-new");
+  assert.equal(sources[0].url, "/events?since=0");
+  director.connectEvents("run-new", 4, {
+    base: "", EventSource: FakeSource, timer: false
+  });
+  assert.equal(sources[1].url, "/events?since=4");
+  live.nodeAdded("keep", {t: "Keep", c: "x", g: 1, r: 0.1});
+  director.connectEvents("run-new", 9, {
+    base: "", EventSource: FakeSource, timer: false
+  });
+  assert.equal(live.n, 1);
+  assert.equal(sources[2].url, "/events?since=9");
 })().catch(function (err) {
   console.error(err && err.stack ? err.stack : err);
   process.exit(1);
@@ -416,6 +891,46 @@ assert.equal(L.readout(null).label, "0 pages · 0 nodes · 0 edges");
 """)
 
 
+def test_launcher_readout_shows_discovery_and_failure():
+    _run(_prelude(LAUNCHER) + """
+const L = SK.launcher;
+assert.equal(L.phaseLabel("failed"), "failed", "failed is not folded into ingesting");
+const found = L.readout({pages: 0, nodes: 0, edges: 0, discovered: 17,
+                         state: "ingesting"});
+assert.equal(found.found, true);
+assert.equal(found.label, "17 pages found · 0 nodes · 0 edges");
+assert.equal(found.building, true);
+// once real pages arrive they replace the discovery hint
+const fetched = L.readout({pages: 12, nodes: 9, edges: 21, discovered: 17,
+                           state: "ingesting"});
+assert.equal(fetched.found, false);
+assert.equal(fetched.label, "12 pages · 9 nodes · 21 edges");
+// completion still reports the real page/edge counts
+const done = L.readout({pages: 17, nodes: 12, edges: 40, discovered: 20,
+                        state: "complete"});
+assert.equal(done.label, "17 pages · 12 nodes · 40 edges");
+assert.equal(done.phase, "complete");
+// archive with no doc count keeps the no-pages contract
+const archive = L.readout({pages: 9, nodes: 5, edges: 3, discovered: 9},
+                          {pages: false});
+assert.equal(archive.label, "5 nodes · 3 edges");
+// failure surfaces the server error, truncated, with a visible phase label
+const failed = L.readout({state: "failed",
+                          error: "discovery timed out after 180s"});
+assert.equal(failed.phase, "failed");
+assert.equal(failed.failed, true);
+assert.equal(failed.building, false);
+assert.equal(failed.label, "failed: discovery timed out after 180s");
+const long = L.readout({state: "failed", error: "x".repeat(500)});
+assert.ok(long.label.length <= 128, "error summary stays bounded");
+assert.ok(long.label.indexOf("failed: ") === 0);
+const blank = L.readout({state: "failed"});
+assert.equal(blank.label, "failed: live run failed");
+""")
+src = (ROOT / "site_kg" / "viewer" / "launcher.js").read_text()
+assert 'failed: "failed"' in src
+
+
 def test_batcher_folds_progress_pages_into_live_state():
     _run(_prelude(CORE, DIRECTOR) + """
 const g = new SK.LiveGraph(16);
@@ -492,15 +1007,78 @@ assert.deepEqual(P(null, {visible: 4}), ["4 visible"]);
     assert "UI.finaleParts(this.cfg, status)" in src
 
 
+def test_set_live_target_updates_bar_and_document_title():
+    """A new launch updates the host chip and the tab, while the masthead stays
+    the product name instead of a raw URL; archive viewers never call this."""
+    _run(_prelude(UI, LAUNCHER) + """
+global.document = {title: "old baked title"};
+const ui = new SK.UI();
+ui.titleEl = {textContent: "old baked title"};
+ui.targetEl = {textContent: "", title: ""};
+ui.setLiveTarget("https://new.example/docs/start");
+assert.equal(ui.targetEl.textContent, "new.example");
+assert.equal(ui.titleEl.textContent, "site-kg");
+assert.equal(document.title, "site-kg \u00b7 new.example");
+// no mounted elements (archive-ish harness) must not throw
+const bare = new SK.UI();
+bare.setLiveTarget("https://other.example/");
+assert.equal(document.title, "site-kg \u00b7 other.example");
+""")
+
+
+def test_build_view_stages_progress_and_titles():
+    """The build overlay's model: stage words, a determinate ratio once pages
+    arrive, and a five-title stream trimmed for the panel."""
+    _run(_prelude(LAUNCHER) + """
+const B = SK.launcher.buildView;
+const finding = B({state: "ingesting", pages: 0, nodes: 0, edges: 0,
+                   discovered: 12}, []);
+assert.equal(finding.phase, "finding pages");
+assert.equal(finding.indeterminate, true);
+assert.equal(finding.ratio, 0);
+const fetching = B({state: "ingesting", pages: 6, nodes: 0, edges: 0,
+                    discovered: 12}, []);
+assert.equal(fetching.phase, "fetching pages");
+assert.equal(fetching.indeterminate, false);
+assert.ok(Math.abs(fetching.ratio - 0.5) < 1e-9);
+const growing = B({state: "ingesting", pages: 6, nodes: 6, edges: 9,
+                   discovered: 12}, []);
+assert.equal(growing.phase, "growing graph");
+assert.ok(Math.abs(growing.ratio - 0.5) < 1e-9);
+assert.equal(growing.label, "6 pages \\u00b7 6 nodes \\u00b7 9 edges");
+const settling = B({state: "settling", pages: 12, nodes: 10, edges: 20,
+                    discovered: 12}, []);
+assert.equal(settling.phase, "settling");
+assert.equal(settling.ratio, 1);
+const done = B({state: "complete", pages: 12, nodes: 10, edges: 20}, []);
+assert.equal(done.phase, "complete");
+assert.equal(done.complete, true);
+const failed = B({state: "failed", pages: 3, nodes: 2, edges: 1}, []);
+assert.equal(failed.phase, "failed");
+assert.equal(failed.failed, true);
+const titles = B({state: "ingesting", pages: 2, discovered: 5},
+                 ["a", "b", "c", "d", "e", "f"]);
+assert.equal(titles.titles.length, 5);
+assert.equal(titles.titles[0], "b");
+assert.equal(titles.titles[4], "f");
+assert.equal(SK.launcher.trimTitle("  a   b  "), "a b");
+assert.equal(SK.launcher.trimTitle("9. Classes \\u00b6"), "9. Classes");
+const long = SK.launcher.trimTitle("x".repeat(80));
+assert.equal(long.length, 54);
+assert.ok(long.indexOf("\\u2026") > 0);
+""")
+
+
 def test_launcher_copy_deck_constraints():
     src = (ROOT / "site_kg" / "viewer" / "launcher.js").read_text()
     _run(_prelude(LAUNCHER) + """
 const copy = SK.launcher.copy;
-assert.equal(copy.line1, "ANY SITE IS A GRAPH.");
-assert.equal(copy.line2, "WATCH IT BUILD.");
+assert.equal(copy.line1, "TURN ANY SITE");
+assert.equal(copy.line2, "INTO A WORLD.");
 assert.equal(copy.steps.length, 3);
 assert.ok(copy.action && copy.placeholder);
-assert.ok(copy.ctaWord && copy.ctaNote);
+assert.ok(copy.ctaNote);
+assert.ok(copy.worldIdle && copy.worldOn);
 Object.keys(copy.scenes).forEach(function (key) {
   assert.ok(copy.scenes[key].length > 10);
 });
@@ -516,13 +1094,13 @@ global.document = {
   getElementById: function (id) {
     if (id !== "sk-launch-art") return null;
     return {textContent: JSON.stringify({
-      people: "data:image/jpeg;base64,AAAA",
+      neural: "data:image/jpeg;base64,AAAA",
       hud: "data:image/jpeg;base64,BBBB"
     })};
   }
 };
 const art = SK.launcher.loadArt();
-assert.equal(art.people, "data:image/jpeg;base64,AAAA");
+assert.equal(art.neural, "data:image/jpeg;base64,AAAA");
 assert.equal(art.hud, "data:image/jpeg;base64,BBBB");
 global.document = {getElementById: function () { return null; }};
 assert.deepEqual(SK.launcher.loadArt(), {});
@@ -534,17 +1112,24 @@ assert.deepEqual(SK.launcher.loadArt(), {});
 
 
 def test_bar_resize_floor_and_convergence():
-    """--bar follows the measured bar height but never drops below the 52px
-    design floor, and a ResizeObserver echo loop converges instead of ratcheting."""
+    """--bar follows the measured HUD box (bar plus its float inset) but never
+    drops below the 60px design floor, and a ResizeObserver echo loop converges
+    instead of ratcheting."""
     _run(_prelude(UI) + r"""
+let hudHeight = 60;
 let barHeight = 40;
+const hud = {
+  getBoundingClientRect: function () { return {height: hudHeight}; }
+};
 const bar = {
   style: {minHeight: ""},
   getBoundingClientRect: function () { return {height: barHeight}; }
 };
 const props = {};
 global.document = {
-  getElementById: function (id) { return id === "bar" ? bar : null; },
+  getElementById: function (id) {
+    return id === "hud" ? hud : (id === "bar" ? bar : null);
+  },
   documentElement: {style: {
     setProperty: function (k, v) { props[k] = v; }
   }}
@@ -561,18 +1146,18 @@ const ui = new SK.UI();
 ui._wireBarResize();
 assert.equal(typeof roCb, "function", "ResizeObserver path was wired");
 assert.equal(bar.style.minHeight, "", "min-height restored after measuring");
-assert.equal(props["--bar"], "52px", "40px height lifts to the 52px floor");
+assert.equal(props["--bar"], "60px", "60px box sits on the 60px floor");
 
-barHeight = 83;
+hudHeight = 83;
 roCb();
-assert.equal(props["--bar"], "83px", "taller bar is followed exactly");
+assert.equal(props["--bar"], "83px", "taller deck is followed exactly");
 assert.equal(bar.style.minHeight, "");
 
 // echo loop: the observer firing on its own write must settle, not climb
-barHeight = 30;
+hudHeight = 30;
 for (let i = 0; i < 5; i++) roCb();
-assert.equal(props["--bar"], "52px", "repeated triggers settle on the floor");
-barHeight = 83;
+assert.equal(props["--bar"], "60px", "repeated triggers settle on the floor");
+hudHeight = 83;
 for (let i = 0; i < 5; i++) roCb();
 assert.equal(props["--bar"], "83px", "repeated triggers settle on the height");
 """)
@@ -638,4 +1223,477 @@ ui2.hideLauncher();
 assert.equal(listeners.length, 0, "reduced motion registers no listener");
 assert.equal(launcher2.classList.contains("on"), false);
 assert.equal(launcher2.classList.contains("leave"), false);
+""")
+
+
+def test_spring_step_overshoots_then_settles():
+    """Drag feel: the spring must trail the pointer and, once released, cross
+    the target once before settling — a snap or a limp follow would both fail
+    this."""
+    _run(_prelude(CORE) + """
+const t = SK.DRAG_SPRING, dt = 1 / 60;
+const stiff = t.stiff, damp = 2 * Math.sqrt(stiff) * t.damping;
+let pos = 0, vel = 0, crossed = false, frames = 0;
+for (; frames < 180; frames++) {
+  const next = SK.springStep(pos, vel, 1, stiff, damp, dt);
+  pos = next[0]; vel = next[1];
+  if (pos > 1.001) crossed = true;
+  if (Math.abs(1 - pos) < 0.003 && Math.abs(vel) < 0.01) break;
+}
+assert.ok(crossed, "released node overshoots its target");
+assert.ok(frames < 120, "and settles in under two seconds, took " + frames);
+assert.ok(Math.abs(pos - 1) < 0.01, "at rest, got " + pos);
+
+// while held, the first frame must not jump the whole distance
+let p2 = 0, v2 = 0;
+const first = SK.springStep(p2, v2, 1, stiff, damp, dt);
+assert.ok(first[0] > 0 && first[0] < 0.4, "first frame trails, got " + first[0]);
+""")
+
+
+def test_drag_phase_is_a_stable_seed_not_a_position_hash():
+    """Dragging must not shake. The drift phase used to be hashed from the
+    node position, so every frame of a drag re-rolled it and the cell jumped
+    by up to two drift amplitudes; it is now an immutable per-cell attribute
+    that the edge endpoints inherit."""
+    src = (ROOT / "site_kg" / "viewer" / "render.js").read_text(encoding="utf-8")
+    assert "skHash" not in src, "a position hash puts the shake back"
+    assert src.count("attribute float a_seed") == 2, "node and edge shaders"
+    assert src.count("float ph = a_seed;") == 2
+    assert src.count('setAttribute("a_seed"') == 2
+    # Links are now resampled into segments; the seed is still inherited from
+    # the endpoint cell, never hashed from a coordinate or a segment index.
+    assert ("this.eSeed[at] = v % 2 === 0 ? this.nSeed[a] : this.nSeed[b];"
+            in src)
+
+
+def test_links_are_curved_and_bodies_cannot_share_a_point():
+    """Two pure helpers behind the connectome look: a link bows out of its
+    chord, and two overlapping bodies get a symmetric half-overlap shove.
+    Both are deterministic per seed, so a redraw never makes a link jump."""
+    _run(_prelude(CORE) + """
+function close(a, b, eps) { return Math.abs(a - b) <= eps; }
+
+/* Arc: deterministic, off the straight line, and anchored at both ends. */
+const c1 = SK.arcControl(0, 0, 0, 10, 0, 0, 7, 0.2);
+const c2 = SK.arcControl(0, 0, 0, 10, 0, 0, 7, 0.2);
+assert.deepEqual(c2, c1, "same edge must bend the same way");
+assert.ok(Math.abs(c1[1]) > 0.5 || Math.abs(c1[2]) > 0.5,
+          "control point is off the straight chord");
+assert.ok(close(c1[0], 5, 1e-9), "midpoint along the chord");
+/* Bend scales with length: a short link stays near the line. */
+const short = SK.arcControl(0, 0, 0, 0.1, 0, 0, 7, 0.2);
+assert.ok(Math.hypot(short[1], short[2]) < 0.1);
+/* A vertical link must not collapse its perpendicular. */
+const up = SK.arcControl(0, 0, 0, 0, 10, 0, 3, 0.2);
+assert.ok(Math.abs(up[0]) > 0.5 || Math.abs(up[2]) > 0.5);
+
+/* Quadratic: exact at the ends, and at t=0.5 it is the Bezier midpoint. */
+const out = [0, 0, 0];
+SK.quadPoint([0, 0, 0], [5, 4, 0], [10, 0, 0], 0, out);
+assert.deepEqual(out, [0, 0, 0]);
+SK.quadPoint([0, 0, 0], [5, 4, 0], [10, 0, 0], 1, out);
+assert.deepEqual(out, [10, 0, 0]);
+SK.quadPoint([0, 0, 0], [5, 4, 0], [10, 0, 0], 0.5, out);
+assert.ok(close(out[0], 5, 1e-9) && close(out[1], 2, 1e-9));
+
+/* Collision: clear pairs do not move; overlaps split the correction. */
+assert.deepEqual(SK.pushApart(10, 0, 0, 2, 1), [0, 0, 0]);
+const push = SK.pushApart(1, 0, 0, 3, 1);
+assert.ok(close(push[0], 1, 1e-9), "half of the 2-unit overlap, outwards");
+assert.equal(push[1], 0);
+/* Coincident centres still fan out along a seeded, finite axis. */
+const pile = SK.pushApart(0, 0, 0, 2, 11);
+assert.ok(Math.hypot(pile[0], pile[1], pile[2]) > 0.5);
+assert.ok(pile.every(Number.isFinite));
+assert.deepEqual(SK.pushApart(0, 0, 0, 2, 11), pile);
+""")
+
+
+def test_anchored_cells_stretch_then_bounce_home():
+    """A neuron is anchored: the scene declares a recoil limit and a livelier
+    spring, and that spring must cross its home position before settling, or
+    letting go would read as a drop instead of a bounce."""
+    _run(_prelude(CORE, NEURAL) + """
+const cfg = SK.scenes.neural;
+assert.equal(cfg.draggable, true);
+assert.equal(cfg.recoil, true);
+assert.ok(cfg.recoilMax > 0 && cfg.recoilMax < 3,
+          "the pull has to stay near one soma, got " + cfg.recoilMax);
+
+const tune = SK.DRAG_SPRING.recoil;
+assert.ok(tune, "the recoil tuning must exist");
+assert.ok(tune.stiff > SK.DRAG_SPRING.stiff, "anchored springs are stiffer");
+assert.ok(tune.damping < SK.DRAG_SPRING.damping, "and much less damped");
+
+/* Release a full stretch at 1.0 and integrate one second of frames. */
+const damp = 2 * Math.sqrt(tune.stiff) * tune.damping;
+let cur = 1, vel = 0, low = 1;
+for (let i = 0; i < 120; i++) {
+  const r = SK.springStep(cur, vel, 0, tune.stiff, damp, 1 / 60);
+  cur = r[0];
+  vel = r[1];
+  if (cur < low) low = cur;
+}
+assert.ok(low < -0.02, "the cell must overshoot home, got " + low.toFixed(3));
+assert.ok(Math.abs(cur) < 0.01, "and come to rest at home, got " + cur.toFixed(4));
+""")
+
+    src = (ROOT / "site_kg" / "viewer" / "render.js").read_text()
+    assert "this.cfg.recoil" in src
+    assert "recoilMax" in src
+
+
+def test_chapters_are_an_additive_selection():
+    """Chapter rows toggle membership: two selected chapters show the union of
+    their nodes, and an empty selection shows the whole graph."""
+    _run(_prelude(CORE, DIRECTOR) + """
+const g = new SK.LiveGraph(16);
+for (let i = 0; i < 6; i++) {
+  g.nodeAdded("n" + i, {t: "N" + i, c: "ch" + (i % 3), g: 0, r: 0});
+}
+g.edgeAdded("n0", "n1", "ref");   /* ch0 -> ch1 */
+g.edgeAdded("n1", "n3", "ref");   /* ch1 -> ch0 */
+g.edgeAdded("n2", "n5", "ref");   /* ch2 -> ch2 */
+g.revealed.fill(1);
+g.eRevealed.fill(1);
+const d = new SK.Director(g, {name: "planets", SCALE: 50,
+                              samplePoints: function () { return new Float32Array(0); }},
+                          {settled: true}, null);
+
+function visible() {
+  let n = 0;
+  for (let i = 0; i < g.n; i++) if (g.dim[i] > 0) n++;
+  return n;
+}
+
+d._recomputeDims();
+assert.deepEqual(d.chapters, []);
+assert.equal(visible(), 6, "no chapter selected means the whole graph");
+
+assert.equal(d.toggleChapter("ch0"), true);
+assert.equal(d.toggleChapter("ch1"), true);
+assert.deepEqual(d.chapters.slice().sort(), ["ch0", "ch1"]);
+assert.equal(d.chapterOn("ch0"), true);
+assert.equal(d.chapterOn("ch2"), false);
+d._recomputeDims();
+assert.equal(visible(), 4, "the union of two chapters");
+/* n2 and n5 are the only ch2 cells, and they must be gone. */
+assert.equal(g.dim[2], 0);
+assert.equal(g.dim[5], 0);
+assert.ok(g.dim[0] > 0 && g.dim[3] > 0);
+/* An edge between two selected chapters survives; one touching ch2 does not. */
+assert.ok(g.eDim[0] > 0);
+assert.ok(g.eDim[1] > 0);
+assert.equal(g.eDim[2], 0);
+
+assert.equal(d.toggleChapter("ch0"), false);
+d._recomputeDims();
+assert.deepEqual(d.chapters, ["ch1"]);
+assert.equal(visible(), 2);
+
+/* The single-chapter entry point still replaces instead of adding. */
+d.setChapter("ch2");
+assert.deepEqual(d.chapters, ["ch2"]);
+d.toggleChapter("ch0");
+assert.deepEqual(d.chapters.slice().sort(), ["ch0", "ch2"]);
+
+d.clearChapters();
+d._recomputeDims();
+assert.deepEqual(d.chapters, []);
+assert.equal(visible(), 6);
+""")
+
+def test_brain_sequence_is_deterministic_and_on_the_unit_sphere():
+    """R2 has to be a pure function of the index: the head is cached per node
+    count, but a rebuild after the graph grows must not move the cells that
+    were already there."""
+    _run(_prelude(CORE) + """
+function close(a, b, eps) { return Math.abs(a - b) <= eps; }
+for (let i = 0; i < 500; i++) {
+  const d = SK.brainSequence(i);
+  assert.equal(d.length, 3);
+  assert.ok(d.every(Number.isFinite), "finite at " + i);
+  const len = Math.hypot(d[0], d[1], d[2]);
+  assert.ok(close(len, 1, 1e-9), "unit at " + i + ", got " + len);
+  const again = SK.brainSequence(i);
+  assert.deepEqual(again, d, "deterministic at " + i);
+  // copies, not aliases: an in-place nudge by the renderer must not leak
+  again[0] += 1;
+  assert.notEqual(SK.brainSequence(i)[0], again[0], "fresh array each call");
+}
+// the first few directions are distinct, not a degenerate point
+assert.notDeepEqual(SK.brainSequence(0), SK.brainSequence(1));
+""")
+
+
+def test_brain_jitter_is_deterministic_and_stays_unit_length():
+    """The jitter nudges a direction along two tangents; it must stay on the
+    unit sphere, or cells float off the cortex and the soma stand-off becomes
+    meaningless."""
+    _run(_prelude(CORE) + """
+const base = SK.brainSequence(37);
+const a = SK.brainJitter(base[0], base[1], base[2], 37 * 0.618 + 1.7);
+const b = SK.brainJitter(base[0], base[1], base[2], 37 * 0.618 + 1.7);
+assert.deepEqual(a, b, "same seed, same direction");
+const c = SK.brainJitter(base[0], base[1], base[2], 38 * 0.618 + 1.7);
+assert.notDeepEqual(a, c, "a different seed moves the cell");
+assert.ok(Math.abs(Math.hypot(a[0], a[1], a[2]) - 1) < 1e-9, "unit length");
+assert.ok(Math.abs(a[0] * base[0] + a[1] * base[1] + a[2] * base[2]) > 0.99,
+          "still on the same patch of cortex");
+
+// a zero vector must not produce NaN: it falls back to the pole
+const z = SK.brainJitter(0, 0, 0, 1);
+assert.ok(z.every(Number.isFinite), "degenerate input stays finite");
+assert.ok(Math.abs(Math.hypot(z[0], z[1], z[2]) - 1) < 1e-9);
+
+// the poles are the one place a naive tangent basis degenerates
+for (let i = 0; i < 64; i++) {
+  const d = SK.brainJitter(0, i % 2 ? 1 : -1, 0, i + 0.5);
+  assert.ok(Math.abs(Math.hypot(d[0], d[1], d[2]) - 1) < 1e-9, "pole " + i);
+  assert.ok(d.every(Number.isFinite), "pole finite " + i);
+}
+""")
+
+
+def test_brain_patch_returns_finite_radius_fold_age():
+    """Every direction must resolve to a radius on the skin, a fold offset and
+    an age. A NaN in any of them poisons a whole vertex or a whole cell."""
+    _run(_prelude(CORE) + """
+const out = [0, 0, 0];
+for (let i = 0; i < 2000; i++) {
+  const d = SK.brainSequence(i);
+  const p = SK.brainPatch(d[0], d[1], d[2], out);
+  assert.equal(p.length, 3);
+  assert.ok(p.every(Number.isFinite), "finite at " + i);
+  // The floor is the basal plane, not the ellipsoid: straight down the skin is
+  // the floor of the skull, 0.28 out, so the shortest ray is far shorter than
+  // a bare ellipsoid's. The ceiling is the occipital pole plus the cerebellar
+  // mass. Neither may drift: a collapsed head and a spiked one are both bugs.
+  assert.ok(p[0] > 0.24 && p[0] < 1.10, "radius in bounds at " + i + ": " + p[0]);
+  assert.ok(p[1] > -0.25 && p[1] < 0.15, "fold in bounds at " + i + ": " + p[1]);
+  assert.ok(p[2] >= 0 && p[2] <= 1, "age in [0,1] at " + i + ": " + p[2]);
+  // the caller's buffer is reused, not replaced
+  assert.equal(p, out);
+}
+// age really does order the build: the brainstem is younger tissue than the
+// frontal pole, so the two ends must not collapse to the same value
+const stem = SK.brainPatch(0, -0.97, -0.24, [0, 0, 0])[2];
+const front = SK.brainPatch(0, 0, 1, [0, 0, 0])[2];
+assert.ok(stem < front, "stem forms before the frontal pole: " + stem + " < " + front);
+""")
+
+
+def test_brain_mesh_indices_normals_and_max_radius():
+    """The cortex is uploaded as Uint16 indices, so every index must stay under
+    the vertex count and under 65536; the normals must be unit length or the
+    gyri catch no light; the head must be the size the renderer scales to."""
+    _run(_prelude(CORE) + """
+const rows = 96, cols = 192;
+const m = SK.brainMesh(rows, cols);
+assert.equal(m.rows, rows);
+assert.equal(m.cols, cols);
+assert.equal(m.count, rows * cols);
+assert.equal(m.positions.length, m.count * 3);
+assert.equal(m.normals.length, m.count * 3);
+assert.equal(m.indices.length, (rows - 1) * cols * 6);
+assert.ok(m.count < 65536, "Uint16 indices can address the grid");
+
+let maxIdx = -1, maxR = 0, badNormal = 0;
+for (let i = 0; i < m.positions.length; i++) {
+  if (!Number.isFinite(m.positions[i])) throw new Error("non-finite position " + i);
+}
+for (let i = 0; i < m.indices.length; i++) {
+  const idx = m.indices[i];
+  if (!Number.isInteger(idx) || idx < 0 || idx >= m.count) {
+    throw new Error("index out of bounds at " + i + ": " + idx);
+  }
+  if (idx > maxIdx) maxIdx = idx;
+}
+assert.equal(maxIdx, m.count - 1, "the last vertex is referenced");
+for (let i = 0; i < m.count; i++) {
+  const x = m.normals[i * 3], y = m.normals[i * 3 + 1], z = m.normals[i * 3 + 2];
+  if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
+    throw new Error("non-finite normal at " + i);
+  }
+  const len = Math.hypot(x, y, z);
+  if (Math.abs(len - 1) > 1e-4) badNormal++;
+  const r = Math.hypot(m.positions[i * 3], m.positions[i * 3 + 1],
+                       m.positions[i * 3 + 2]);
+  if (!Number.isFinite(r)) throw new Error("non-finite radius at " + i);
+  if (r > maxR) maxR = r;
+}
+assert.equal(badNormal, 0, "every normal is unit length");
+// The renderer normalizes by this number, so its exact value is not the
+// contract; the envelope is. A spike from a bad bump would break the first
+// bound, a shrunken head the second.
+assert.ok(maxR > 0.85 && maxR < 1.15, "head max radius, got " + maxR);
+assert.ok(m.dev.length === m.count && m.fold.length === m.count);
+""")
+
+
+def test_gpu_backend_inherits_the_renderer_contract():
+    """The WebGPU backend is a subclass on purpose: layout, births, drag
+    springs and finale state are built by SK.Renderer._initState/sync, so every
+    method the camera, labels and director call must still resolve. Only the
+    drawing path may be replaced."""
+    _run(_prelude(CORE, RENDER, GPU) + r"""
+assert.equal(typeof SK.GpuRenderer, "function");
+assert.equal(Object.getPrototypeOf(SK.GpuRenderer.prototype),
+             SK.Renderer.prototype);
+assert.ok(SK.GpuRenderer.prototype instanceof SK.Renderer);
+
+const draw = ["mount", "setScene", "resize", "render", "dispose"];
+const shadowed = Object.getOwnPropertyNames(SK.Renderer.prototype)
+  .filter(function (name) {
+    return name !== "constructor" && draw.indexOf(name) < 0 &&
+      SK.GpuRenderer.prototype[name] !== SK.Renderer.prototype[name];
+  });
+assert.deepEqual(shadowed, [],
+  "scene methods must be the base implementation, not a copy");
+
+/* draw calls are overridden; the shared scene machinery is not */
+["mount", "setScene", "resize", "render", "dispose"].forEach(function (name) {
+  assert.ok(Object.prototype.hasOwnProperty.call(SK.GpuRenderer.prototype, name),
+            name + " is the WebGPU draw path");
+});
+["sync", "beginDrag", "moveDrag", "endDrag", "advanceDrag", "startFinale",
+ "advanceFinale", "pick", "samplePoints", "ensureBrain"].forEach(function (name) {
+  assert.ok(!Object.prototype.hasOwnProperty.call(SK.GpuRenderer.prototype, name),
+            name + " must stay shared, or the backends can drift");
+});
+
+/* the probe only checks for the API; a missing adapter is the mount's job */
+assert.equal(SK.GpuRenderer.supported(), false, "node has no navigator.gpu");
+assert.equal(SK.hasWebGPU, SK.GpuRenderer.supported);
+Object.defineProperty(global, "navigator", {
+  value: {gpu: {}}, configurable: true
+});
+assert.equal(SK.GpuRenderer.supported(), true);
+assert.equal(SK.hasWebGPU(), true);
+""")
+
+
+def test_gpu_backend_ships_wgsl_and_point_quads():
+    """No WebGPURenderer in the vendored Three, and WebGPU has no
+    gl_PointSize: every scene element needs its own WGSL entry point, and the
+    node sprite is an instanced quad whose size is a diameter in device
+    pixels."""
+    src = GPU.read_text(encoding="utf-8")
+    for entry in ("fn vs_sky", "fn fs_sky", "fn vs_cortex", "fn fs_cortex",
+                  "fn vs_node", "fn fs_node", "fn fs_halo",
+                  "fn vs_edge", "fn fs_edge", "fn vs_ring", "fn fs_ego",
+                  "fn vs_city", "fn fs_city"):
+        assert entry in src, entry
+    # the halo is the node quad with an additive blend and its own fragment
+    # stage, so it has no vertex entry point of its own
+    assert "fn vs_halo" not in src
+    assert src.count("@vertex") == 7 and src.count("@fragment") == 8
+    assert "multisample: {count: 4}" in src, "pipelines must match the MSAA pass"
+    assert "navigator.gpu" in src
+    # gl_PointSize is a diameter; the quad's half-extent is size/res, not
+    # twice that. Getting this wrong renders the scene four times too large.
+    assert "size / u.res.xy" in src
+    assert "2.0 * size / u.res.xy" not in src
+
+
+def test_ui_boots_webgpu_first_and_keeps_the_fallbacks_ordered():
+    src = UI.read_text(encoding="utf-8")
+    gpu = src.index("SK.GpuRenderer.supported()")
+    gl = src.index("renderer = new SK.Renderer()")
+    assert gpu < gl, "WebGPU is tried before WebGL"
+    assert "SK.Fallback2D && SK.hasWebGL2 && !SK.hasWebGL2()" in src
+    assert src.count("new SK.Fallback2D(canvas)") == 2, "no-WebGL2 and mount failure"
+    # the adapter probe is async, so the Canvas2D tier hangs off ready, on a
+    # canvas element that never held a webgpu context
+    assert "gpu.ready.then" in src
+    assert "flatFallback(gpu.gpuFailed)" in src
+    assert "canvas.cloneNode(false)" in src
+    assert "startView(renderer)" in src
+
+    from site_kg.viewer import PRE_SCENE_MODULES
+    mods = list(PRE_SCENE_MODULES)
+    assert mods.index("gpu.js") == mods.index("render.js") + 1
+
+
+def test_sky_uniform_carries_width_and_height_the_way_the_shader_reads_them():
+    """The sky shader stretches by width/height. The packer writes
+    b.z = width, b.w = height, and the WGSL must divide in that order: the
+    reversed form renders the planets backdrop 3.16x anamorphic on 16:9."""
+    _run(_prelude(CORE, RENDER, GPU) + r"""
+const r = Object.create(SK.GpuRenderer.prototype);
+r.camera = {position: {x: 0, y: 0, z: 2, length: function () { return 2; }}};
+r.time = 1;
+r.skyUni = {u_mode: {value: 0}};
+r._resW = 1920;
+r._resH = 1080;
+const out = new Float32Array(8);
+const ret = r._packSky(out);
+assert.equal(ret, undefined, "packer writes into the caller's block");
+assert.equal(out[6], 1920, "b.z is width");
+assert.equal(out[7], 1080, "b.w is height");
+""")
+    src = GPU.read_text(encoding="utf-8")
+    assert "u.b.z / max(u.b.w, 1.0)" in src, "aspect is width over height"
+    assert "u.b.w / max(u.b.z, 1.0)" not in src
+    # out[6]/out[7] only land in b.z/b.w because a is declared first; a field
+    # reorder would silently put the resolution in the wrong slot
+    sky = src[src.index("struct U {"):src.index("fn hash2")]
+    assert sky.index("a: vec4f") < sky.index("b: vec4f")
+
+
+def test_fallback_reports_a_dead_canvas_instead_of_pretending_to_draw():
+    """_fallbackGL decides the tier after an async probe. WebGL2 missing must
+    be visible to ui.js (dead), and a canvas that already handed out a webgpu
+    context must be marked dead rather than sent to _mountGL, where
+    getContext('webgl2') can only return null."""
+    _run(_prelude(CORE, RENDER, GPU) + r"""
+const gl = Object.create(SK.GpuRenderer.prototype);
+gl._mountGL = function () { this.mounted = true; };
+gl.resize = function () {};
+gl._fallbackGL(new Error("no WebGPU adapter"));
+assert.equal(gl._gl, true);
+assert.equal(gl.backend, "webgl");
+assert.equal(gl.dead, undefined);
+
+const dead = Object.create(SK.GpuRenderer.prototype);
+dead._mountGL = function () { throw new Error("WebGL2 unavailable"); };
+dead.resize = function () {};
+dead._fallbackGL(new Error("no WebGPU adapter"));
+assert.ok(!dead._gl);
+assert.equal(dead.dead, true, "dead marks a canvas no backend can take");
+assert.match(dead.gpuFailed, /no WebGPU adapter \/ webgl: WebGL2 unavailable/);
+
+const locked = Object.create(SK.GpuRenderer.prototype);
+locked._context = {};
+locked._mountGL = function () { throw new Error("must not be attempted"); };
+locked._fallbackGL(new Error("pipeline build failed"));
+assert.equal(locked.dead, true);
+assert.equal(locked.gpuFailed, "pipeline build failed");
+""")
+
+
+def test_buffer_sweep_drops_attributes_that_left_the_scene():
+    """Capacity growth installs new BufferAttributes; the old cache entries
+    are unreachable and, without a sweep, their GPU buffers are never
+    destroyed."""
+    _run(_prelude(CORE, RENDER, GPU) + r"""
+const r = Object.create(SK.GpuRenderer.prototype);
+const liveAttr = {array: new Float32Array(4)};
+const staleAttr = {array: new Float32Array(4)};
+const indexAttr = {array: new Uint16Array(3)};
+r.scene = {traverse: function (fn) {
+  fn({geometry: {attributes: {position: liveAttr}, index: indexAttr}});
+}};
+const destroyed = [];
+const map = new Map([
+  [liveAttr, {buffer: {destroy: function () { destroyed.push("live"); }}}],
+  [staleAttr, {buffer: {destroy: function () { destroyed.push("stale"); }}}],
+  [indexAttr, {buffer: {destroy: function () { destroyed.push("index"); }}}]
+]);
+r._sweep(map);
+assert.deepEqual(destroyed, ["stale"]);
+assert.equal(map.has(liveAttr), true);
+assert.equal(map.has(indexAttr), true);
+assert.equal(map.has(staleAttr), false);
 """)

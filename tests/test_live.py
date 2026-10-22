@@ -114,6 +114,17 @@ def test_start_rejects_unknown_scene(server):
     assert err.value.code == 400
 
 
+def test_start_rejects_removed_people_scene(server):
+    """The people scene no longer exists; the API answers 400, not 200."""
+    with pytest.raises(urllib.error.HTTPError) as err:
+        _post(server.url, "/api/start", {"target": "https://example.com",
+                                          "scene": "people"})
+    assert err.value.code == 400
+    body = json.loads(err.value.read())
+    assert body["ok"] is False
+    assert "people" in body["error"]
+
+
 def test_traversal_path_returns_404(server):
     conn = http.client.HTTPConnection("127.0.0.1", server.port, timeout=5.0)
     try:

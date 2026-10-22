@@ -96,11 +96,11 @@ def test_live_local_directory(monkeypatch, tmp_path):
     calls, _ = _fake_serve(monkeypatch)
     root = tmp_path / "docs"
     root.mkdir()
-    cli.main(["live", str(root), "--local", "--scene", "people"])
+    cli.main(["live", str(root), "--local", "--scene", "neural"])
     resolved = str(root.resolve())
     assert calls["site_id"] == store.site_id_for(f"file://{resolved}")
     assert calls["source"] == resolved
-    assert calls["scene"] == "people"
+    assert calls["scene"] == "neural"
 
 
 def test_live_token_is_printed_in_the_url(monkeypatch, capsys, tmp_path):
@@ -122,7 +122,7 @@ def test_live_site_id_replays(monkeypatch, site):
 
 def test_live_site_id_without_replay_flag_also_replays(monkeypatch, site):
     calls, _ = _fake_serve(monkeypatch)
-    cli.main(["live", site, "--scene", "people"])
+    cli.main(["live", site, "--scene", "neural"])
     assert calls["site_id"] == site
     assert calls["replay"] is True
 
@@ -154,6 +154,13 @@ def test_live_unknown_scene_fails(monkeypatch):
     _fake_serve(monkeypatch)
     with pytest.raises(SystemExit):
         cli.main(["live", "https://example.com", "--scene", "galaxy"])
+
+
+def test_live_removed_people_scene_fails(monkeypatch):
+    """The people scene is gone; the CLI must not silently accept it."""
+    _fake_serve(monkeypatch)
+    with pytest.raises(SystemExit):
+        cli.main(["live", "https://example.com", "--scene", "people"])
 
 
 # -- CLI: render ------------------------------------------------------------
@@ -189,11 +196,11 @@ def test_render_embedded_payload_by_default(site, capsys):
 
 
 def test_mcp_render_site_archive_keeps_path(site):
-    out = mcp_server.render_site(site, scene="people", max_nodes=1)
+    out = mcp_server.render_site(site, scene="neural", max_nodes=1)
     assert out["ok"] is True
     assert Path(out["path"]) == store.site_dir(site) / "viewer.html"
     assert out["pages"] == 2 and out["edges"] == 1  # counts describe the site
-    assert '"scene":"people"' in Path(out["path"]).read_text(encoding="utf-8")
+    assert '"scene":"neural"' in Path(out["path"]).read_text(encoding="utf-8")
 
 
 def test_mcp_render_site_live_starts_replay_handle(site, monkeypatch):
@@ -207,11 +214,11 @@ def test_mcp_render_site_live_starts_replay_handle(site, monkeypatch):
 
     monkeypatch.setattr("site_kg.live.serve_live", serve)
     monkeypatch.setattr(mcp_server, "_LIVE_HANDLES", {})
-    out = mcp_server.render_site(site, scene="people", max_nodes=5, mode="live")
+    out = mcp_server.render_site(site, scene="neural", max_nodes=5, mode="live")
     assert out == {"ok": True, "live_url": handle.url, "run_id": handle.run_id,
                    "last_seq": handle.last_seq}
     assert calls["site_id"] == site
-    assert calls["scene"] == "people"
+    assert calls["scene"] == "neural"
     assert calls["max_nodes"] == 5
     assert calls["replay"] is True
     assert mcp_server._LIVE_HANDLES[site] is handle

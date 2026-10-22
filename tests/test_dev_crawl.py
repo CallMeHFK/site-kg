@@ -93,7 +93,8 @@ def test_page_inventory_passes_dev_to_bfs(monkeypatch):
     async def none(client, base):
         return None
 
-    async def fake_bfs(client, base, max_pages, max_depth, stats, respect_robots=True):
+    async def fake_bfs(client, base, max_pages, max_depth, stats, on_discover=None,
+                       on_page_found=None, respect_robots=True):
         seen["respect_robots"] = respect_robots
         return ["https://x.example/"]
 

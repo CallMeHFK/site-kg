@@ -113,6 +113,14 @@ def test_settle_graph_75k_is_finite_and_under_60s(graph75k):
         assert abs(x) <= 1.0 and abs(y) <= 1.0 and abs(z) <= 1.0
 
 
+# applyBatch(10k) takes ~0.4 ms on a laptop, but shared CI runners have been
+# measured at 3-8x that. This is an algorithmic smoke gate, not a micro
+# benchmark: an accidental linear scan per event over the 75k-node graph would
+# land in the hundreds of milliseconds, so 10 ms still catches the regression
+# that matters while surviving a busy runner.
+BATCH_BUDGET_MS = 10.0
+
+
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
 def test_livegraph_growth_and_10k_batch_budget():
     script = f"""
@@ -149,7 +157,8 @@ for (let k = 0; k < 7; k++) {{
   const ms = Number(process.hrtime.bigint() - t0) / 1e6;
   if (ms < best) best = ms;
 }}
-assert.ok(best < 2.0, "applyBatch(10k) took " + best.toFixed(3) + " ms");
+assert.ok(best < {BATCH_BUDGET_MS},
+          "applyBatch(10k) took " + best.toFixed(3) + " ms");
 console.log(JSON.stringify({{bestMs: best, cap: g.cap, capE: g.capE,
                             n: g.n, m: g.m}}));
 """
@@ -158,11 +167,11 @@ console.log(JSON.stringify({{bestMs: best, cap: g.cap, capE: g.capE,
     assert proc.returncode == 0, proc.stderr + "\n" + proc.stdout
     result = json.loads(proc.stdout.strip().splitlines()[-1])
     assert result["n"] == N_NODES and result["m"] == N_EDGES
-    assert result["bestMs"] < 2.0
+    assert result["bestMs"] < BATCH_BUDGET_MS
 
 
 def test_label_budgets_are_capped():
-    budgets = {"planets": (40, 12), "people": (24, 10), "neural": (36, 10)}
+    budgets = {"planets": (40, 12), "neural": (6, 4)}
     for name, (desktop, mobile) in budgets.items():
         src = (SCENES / f"{name}.js").read_text(encoding="utf-8")
         found_desktop = int(re.search(r"labelBudget:\s*(\d+)", src).group(1))
@@ -176,9 +185,20 @@ def test_renderer_draw_call_and_object_budget():
     points = len(re.findall(r"new THREE\.Points\b", src))
     lines = len(re.findall(r"new THREE\.LineSegments\b", src))
     instanced = len(re.findall(r"new THREE\.InstancedMesh\b", src))
+    # one fullscreen quad carries the animated nebula + parallax starfield;
+    # everything else stays merged
+    meshes = len(re.findall(r"new THREE\.Mesh\(", src))
     assert (points, lines, instanced) == (2, 2, 1), (
         "renderer must keep one cloud+halo, one edge mesh and one merged ring mesh")
-    assert points + lines + instanced <= 6
+    # Three meshes: the fullscreen sky shader, the cortex the neural scene
+    # grows its neurons on, and the merged city the city scene grows towers
+    # from. Each is deliberate: a brain silhouette cannot be carried by
+    # points, and a thousand buildings must be one draw call.
+    assert meshes == 3 and "this.sky = new THREE.Mesh(" in src, (
+        "the meshes are the sky shader, the cortex substrate and the city")
+    assert "this.cortex = new THREE.Mesh(" in src
+    assert "this.cityMesh = new THREE.Mesh(" in src
+    assert points + lines + instanced + meshes <= 8
     rings = src[src.index("Renderer.prototype._ensureRings"):
                 src.index("Renderer.prototype._disposeRings")]
     assert len(re.findall(r"new THREE\.LineSegments\b", rings)) == 1, (
@@ -186,7 +206,6 @@ def test_renderer_draw_call_and_object_budget():
     assert "this.ringMesh = new THREE.LineSegments" in rings
     assert src.count("new THREE.Object3D") == 1  # one reusable instance dummy
     assert "new THREE.Sprite" not in src
-    assert "new THREE.Mesh(" not in src
     assert "new THREE.InstancedMesh(sphere, this.egoMat, 120)" in src
 
 
@@ -259,3 +278,47 @@ def test_playwright_archive_perf_and_no_oom(scale_artifacts):
             browser.close()
     finally:
         playwright.stop()
+
+
+def test_scene_sky_names_resolve_to_a_shader():
+    """A scene's ``sky`` name must exist as ``vec3 <name>(`` in the shader and
+    be the one the u_mode switch selects. A rename that misses either side
+    silently falls back to the cosmos nebula — the neural scene would then sit
+    on a bright backdrop that fights its own edges."""
+    src = (VIEWER / "render.js").read_text(encoding="utf-8")
+    named = 0
+    for scene in sorted(SCENES.glob("*.js")):
+        text = scene.read_text(encoding="utf-8")
+        m = re.search(r'sky:\s*"([a-z_]+)"', text)
+        if not m:
+            continue
+        name = m.group(1)
+        named += 1
+        assert f"vec3 {name}(" in src, f"{scene.name}: no shader for sky {name!r}"
+        assert f'cfg.sky === "{name}"' in src, \
+            f"{scene.name}: u_mode does not select {name!r}"
+    assert named >= 1, "at least one scene should name its sky"
+
+
+def test_neural_backdrop_is_quiet():
+    """The neural scene draws bright synapses; its backdrop must stay near
+    black instead of carrying filaments of its own."""
+    src = (VIEWER / "render.js").read_text(encoding="utf-8")
+    block = src[src.index("vec3 deepvoid("):]
+    block = block[:block.index("void main()")]
+    assert "wetware" not in block
+    for term in ("fil1", "fil2", "syn", "0.38, 0.06, 0.34", "0.07, 0.44, 0.58"):
+        assert term not in block, f"neural backdrop still contains {term}"
+
+
+def test_hud_keeps_chapters_on_the_bar():
+    """The toolbar is one row on desktop: the button used to drop to a second
+    line when the search box and the scene switcher ran out of room."""
+    css = (ROOT / "site_kg" / "templates" / "viewer.html").read_text(encoding="utf-8")
+    assert re.search(r"#bar\{display:flex;flex-wrap:nowrap", css), \
+        "the command bar must not wrap; the search box shrinks instead"
+    assert re.search(r"\.hud-tools\{[^}]*flex-wrap:nowrap", css)
+    assert re.search(r"\.mb\{[^}]*flex:none", css), "buttons keep their intrinsic width"
+    # narrow screens still get the deliberate two-row layout
+    mobile = css[css.index("@media (max-width:760px){"):]
+    assert re.search(r"#bar\{[^}]*flex-wrap:wrap", mobile[:400])

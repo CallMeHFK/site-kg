@@ -160,9 +160,13 @@ def build_graph(corpus_dir: Path, relations: str | None = None, events=None, *,
     df: Counter = Counter()
     postings: dict[str, dict[str, int]] = {}
     digest: dict[str, str] = {}
+    words: dict[str, int] = {}
     for d in docs:
         prose = _prose(d["body"])
         digest[d["id"]] = re.sub(r"\s+", " ", prose).strip()[:150]
+        # Data volume, not importance: the viewer sizes worlds, lights windows
+        # and paces synapses by how much text a page actually carries.
+        words[d["id"]] = len(prose.split())
         tf: Counter = Counter()
         for tok in TOKEN.findall(prose[:2600].lower()):
             if tok not in STOP and not tok.isdigit():
@@ -183,7 +187,8 @@ def build_graph(corpus_dir: Path, relations: str | None = None, events=None, *,
     rank = _pagerank([d["id"] for d in docs], list(edges))
     nodes = [
         {"i": d["id"], "c": d["chapter"], "t": d["title"], "u": d["url"],
-         "g": in_deg.get(d["id"], 0), "r": round(rank.get(d["id"], 0.0), 6)}
+         "g": in_deg.get(d["id"], 0), "r": round(rank.get(d["id"], 0.0), 6),
+         "w": words.get(d["id"], 0)}
         for d in docs
     ]
     edge_list = [{"s": a, "t": b, "k": k} for (a, b), k in sorted(edges.items())]
@@ -192,7 +197,7 @@ def build_graph(corpus_dir: Path, relations: str | None = None, events=None, *,
     if events is not None:
         for node in nodes:
             events({"t": "node_updated", "id": node["i"],
-                    "g": node["g"], "r": node["r"]})
+                    "g": node["g"], "r": node["r"], "w": node["w"]})
         derived_keys = {(e["s"], e["t"]) for e in derived_edges}
         for e in edge_list:
             if (e["s"], e["t"]) in derived_keys:

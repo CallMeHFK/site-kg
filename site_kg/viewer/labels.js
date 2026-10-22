@@ -64,8 +64,8 @@
       var title = live.titles[idx] || live.ids[idx] || "";
       if (title.length > 34) title = title.slice(0, 33) + "\u2026";
       var tw = ctx.measureText(title).width;
-      var x0 = sx - tw / 2 - 5, y0 = sy - 20;
-      var box = [x0, y0, x0 + tw + 10, y0 + 17];
+      var x0 = sx - tw / 2 - 7, y0 = sy - 22;
+      var box = [x0, y0, x0 + tw + 14, y0 + 18];
       var hit = false;
       for (var b = 0; b < boxes.length; b++) {
         var o = boxes[b];
@@ -76,11 +76,64 @@
       }
       if (hit) continue;
       boxes.push(box);
-      ctx.fillStyle = idx === focus ? "rgba(31,111,235,.92)" : "rgba(13,17,23,.76)";
-      ctx.fillRect(box[0], box[1], box[2] - box[0], 17);
-      ctx.fillStyle = idx === focus ? "#ffffff" : "#c9d1d9";
-      ctx.fillText(title, x0 + 5, y0 + 9);
+      /* A glass capsule rather than a flat white chip: the scene is mostly
+         dark, so a translucent indigo plate with a thin cold rim reads as part
+         of the sky instead of a sticker pasted on top of it. */
+      var w = box[2] - box[0], h = box[3] - box[1], rr = h / 2;
+      ctx.beginPath();
+      if (ctx.roundRect) {
+        ctx.roundRect(box[0], box[1], w, h, rr);
+      } else {
+        ctx.moveTo(box[0] + rr, box[1]);
+        ctx.arcTo(box[2], box[1], box[2], box[3], rr);
+        ctx.arcTo(box[2], box[3], box[0], box[3], rr);
+        ctx.arcTo(box[0], box[3], box[0], box[1], rr);
+        ctx.arcTo(box[0], box[1], box[2], box[1], rr);
+      }
+      ctx.fillStyle = idx === focus ? "rgba(56,132,255,.90)" : "rgba(8,13,32,.62)";
+      ctx.fill();
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = idx === focus
+        ? "rgba(190,225,255,.85)" : "rgba(124,196,255,.26)";
+      ctx.stroke();
+      ctx.fillStyle = idx === focus ? "#ffffff" : "#d3e3ff";
+      ctx.fillText(title, x0 + 7, y0 + 9);
     }
+    this._finale(ctx, opts.finale);
+  };
+
+  /* The closing caption lives on this canvas instead of in its own fixed DOM
+     panel. A separately created fixed element over the WebGL canvas leaves a
+     stale compositor tile (a dark ghost of the panel near the top of the
+     scene); this canvas is cleared and repainted every frame, so there is no
+     layer to go stale. */
+  Labels.prototype._finale = function (ctx, note) {
+    if (!note || !note.title) return;
+    ctx.textAlign = "center";
+    ctx.font = "600 14px system-ui,-apple-system,'Segoe UI',sans-serif";
+    var tw = ctx.measureText(note.title).width;
+    ctx.font = "12px system-ui,-apple-system,'Segoe UI',sans-serif";
+    var dw = note.detail ? ctx.measureText(note.detail).width : 0;
+    var w = Math.max(tw, dw) + 36;
+    var h = note.detail ? 58 : 36;
+    var x = (this.width - w) / 2;
+    var y = this.height - 30 - h;
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(x, y, w, h, 10);
+    else ctx.rect(x, y, w, h);
+    ctx.fillStyle = "rgba(7,11,28,.72)";
+    ctx.fill();
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = "rgba(124,196,255,.30)";
+    ctx.stroke();
+    ctx.fillStyle = "#eef5ff";
+    ctx.fillText(note.title, this.width / 2, y + (note.detail ? 22 : 18));
+    if (note.detail) {
+      ctx.fillStyle = "rgba(180,204,238,.86)";
+      ctx.fillText(note.detail, this.width / 2, y + 42);
+    }
+    ctx.textAlign = "left";
+    ctx.font = "12px system-ui,-apple-system,'Segoe UI',sans-serif";
   };
 
   Labels.prototype.clear = function () {

@@ -22,8 +22,8 @@ ROOT = Path(__file__).resolve().parent
 VENDOR = ROOT / "vendor" / "three-viewer.min.js"
 TEMPLATE = ROOT / "templates" / "viewer.html"
 VIEWER_DIR = ROOT / "viewer"
-SCENES = ("planets", "people", "neural")
-PRE_SCENE_MODULES = ("core.js", "render.js", "labels.js", "camera.js")
+SCENES = ("planets", "neural", "city")
+PRE_SCENE_MODULES = ("core.js", "render.js", "gpu.js", "labels.js", "camera.js")
 POST_SCENE_MODULES = ("director.js", "launcher.js", "fallback2d.js", "ui.js")
 MODES = ("archive", "live")
 EXTERNAL_FILES = {"graph": "sk-graph.bin", "layout": "sk-layout.bin",
@@ -31,8 +31,11 @@ EXTERNAL_FILES = {"graph": "sk-graph.bin", "layout": "sk-layout.bin",
 
 # Real render captures shown on the launcher poster (live mode only; archive
 # viewers never show the launcher and stay lean).
-LAUNCH_ART_FILES = {"people": "asset-people.jpg", "neural": "asset-neural.jpg",
-                    "planets": "asset-planets.jpg", "hud": "asset-hud.jpg"}
+LAUNCH_ART_FILES = {"neural": "asset-neural.jpg",
+                    "planets": "asset-planets.jpg",
+                    "city": "asset-city.jpg",
+                    "hero": "asset-hero.jpg",
+                    "build": "asset-build.jpg"}
 
 _PLACEHOLDER = re.compile(
     r"__(TITLE_JSON|STATS_JSON|DOCS_JSON|RUN_ID_JSON|LIVE_URL_JSON|TITLE|MODE|SCENE|EXTERNAL|PAYLOAD|BUNDLE|LAUNCH_ART)__")

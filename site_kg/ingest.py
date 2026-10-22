@@ -59,6 +59,12 @@ def _robots(base: str) -> RobotFileParser:
     return rp
 
 
+async def _robots_async(base: str) -> RobotFileParser:
+    """``RobotFileParser.read()`` is blocking (urllib); run it off-loop so a
+    slow robots.txt cannot stall SSE heartbeats and every other request."""
+    return await asyncio.to_thread(_robots, base)
+
+
 async def fetch_pages(urls: list[str], base: str, concurrency: int = 4, delay: float = 0.2,
                       respect_robots: bool = True,
                       on_page=None, dev: bool = False) -> tuple[dict[str, str], dict]:
@@ -71,7 +77,7 @@ async def fetch_pages(urls: list[str], base: str, concurrency: int = 4, delay: f
     delay, so authorized deep crawls finish in a fraction of the time."""
     if dev:
         respect_robots, delay = False, 0.0
-    rp = _robots(base) if respect_robots else None
+    rp = await _robots_async(base) if respect_robots else None
     sem = asyncio.Semaphore(concurrency)
     out: dict[str, str] = {}
     stats: dict = {"robots_blocked": 0, "errors": {}, "skipped": 0}
@@ -151,6 +157,16 @@ def _internal_links(soup: BeautifulSoup, page_url: str, base: str, own_id: str) 
         if pid and pid != own_id:
             ids.add(pid)
     return sorted(ids)
+
+
+def page_meta(html: str, url: str, base: str) -> tuple[str, str, list[str]]:
+    """Cheap (id, title, links) for streaming a node the moment its page lands.
+    The markdown conversion in ``to_markdown`` is deferred to corpus write."""
+    soup = BeautifulSoup(html, "html.parser")
+    pid = page_id(base, url)
+    title = _title(soup, url.rsplit("/", 1)[-1])
+    main = _content_el(soup)
+    return pid, title, _internal_links(main, url, base, pid)
 
 
 def _headings(el) -> list[str]:
