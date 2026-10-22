@@ -126,6 +126,23 @@ fn deepvoid(uv: vec2f, t: f32) -> vec3f {
   col += vec3f(0.40, 0.30, 0.22) * mote * (0.50 + 0.50 * sin(t * 0.8 + h * 37.0));
   return col;
 }
+/* City: a night sky lit from below by the streets. The glow sits where the
+   skyline will be and the stars only survive above it, so the towers stand
+   against haze rather than against a black plate. */
+fn skyline(uv: vec2f, t: f32) -> vec3f {
+  let h = uv.y;
+  let zenith = vec3f(0.006, 0.008, 0.022);
+  let low = vec3f(0.044, 0.038, 0.068);
+  var col = mix(low, zenith, ss(-0.10, 0.52, h));
+  let glow = exp(-pow(max(0.0, h + 0.04) * 3.4, 2.0));
+  col += vec3f(0.30, 0.17, 0.070) * glow * 0.50;
+  col += stars(uv + vec2f(t * 0.0022, 0.0), 170.0, 0.40, 0.042, 13.0, t * 0.55)
+         * ss(0.04, 0.42, h);
+  let band = sin(h * 9.0 + uv.x * 1.3 + t * 0.05) * 0.5 + 0.5;
+  col += vec3f(0.022, 0.019, 0.030) * pow(band, 3.0)
+         * ss(0.42, 0.02, abs(h - 0.12));
+  return col;
+}
 
 struct VOut {
   @builtin(position) pos: vec4f,
@@ -146,7 +163,9 @@ struct VOut {
   let aspect = u.b.z / max(u.b.w, 1.0);
   let uv = (in.uv - vec2f(0.5)) * vec2f(aspect, 1.0);
   let t = u.a.x;
-  let col = mix(cosmos(uv, t), deepvoid(uv, t), u.a.y);
+  var col = cosmos(uv, t);
+  if (u.a.y > 1.5) { col = skyline(uv, t); }
+  else if (u.a.y > 0.5) { col = deepvoid(uv, t); }
   let vig = ss(1.32, 0.26, length(in.uv - vec2f(0.5)));
   return vec4f(col * mix(0.45, 1.0, vig), 1.0);
 }
@@ -550,6 +569,129 @@ struct VOut {
 }
 `;
 
+  /* The city: one merged box mesh. Windows, street grid and the finale ring
+     are all cut in the fragment shader, so the vertex stage only lifts the
+     towers out of their plots. Depth is on for this pipeline alone -- the
+     rest of the pass is painter-ordered and writes no depth. */
+  var CITY_WGSL = WGSL_COMMON + `
+struct U {
+  a: vec4f,     /* time, padding, finale, city radius */
+  b: vec4f,     /* street pitch */
+  view: mat4x4f,
+  proj: mat4x4f,
+}
+@group(0) @binding(0) var<uniform> u: U;
+
+struct VOut {
+  @builtin(position) pos: vec4f,
+  @location(0) local: vec3f,
+  @location(1) face: f32,
+  @location(2) spec: vec4f,
+  @location(3) col: vec3f,
+  @location(4) nrm: vec3f,
+  @location(5) world: vec3f,
+  @location(6) depth: f32,
+}
+
+@vertex fn vs_city(
+  @location(0) position: vec3f,
+  @location(1) normal: vec3f,
+  @location(2) color: vec3f,
+  @location(3) local: vec3f,
+  @location(4) face: f32,
+  @location(5) spec: vec4f,
+  @location(6) birth: f32) -> VOut {
+  var o: VOut;
+  let grow = ss(0.0, 0.85, max(0.0, u.a.x - birth));
+  let p = vec3f(position.x, position.y * (grow + 0.00001), position.z);
+  let mv = u.view * vec4f(p, 1.0);
+  o.pos = u.proj * mv;
+  o.local = local;
+  o.face = face;
+  o.spec = spec;
+  o.col = color;
+  o.nrm = normal;
+  o.world = p;
+  o.depth = -mv.z;
+  return o;
+}
+
+fn h21(p0: vec2f) -> f32 {
+  var p = fract(p0 * vec2f(127.31, 311.7));
+  p = p + vec2f(dot(p, p + vec2f(34.23)));
+  return fract(p.x * p.y);
+}
+
+fn hazeCol() -> vec3f { return vec3f(0.030, 0.034, 0.056); }
+
+@fragment fn fs_city(i: VOut) -> @location(0) vec4f {
+  var col = vec3f(0.0);
+  var alpha = 1.0;
+  if (i.face > 5.5) {
+    let g = i.local.xy;
+    let P = max(u.b.x, 0.5);
+    let dx = abs(fract(g.x / P + 0.5) - 0.5) * P;
+    let dz = abs(fract(g.y / P + 0.5) - 0.5) * P;
+    let lane = (1.0 - ss(0.03, 0.18, dx)) + (1.0 - ss(0.03, 0.18, dz));
+    col = vec3f(0.017, 0.020, 0.029);
+    col = col + vec3f(0.30, 0.19, 0.086) * lane * 0.22;
+    let r = length(g) / max(u.a.w, 1.0);
+    col = mix(col, hazeCol(), ss(0.85, 1.60, r));
+    alpha = 1.0 - ss(1.15, 1.85, r);
+  } else if (i.face > 4.5) {
+    col = i.col * 0.012;
+  } else if (i.face > 3.5) {
+    let e = max(abs(i.local.x), abs(i.local.y));
+    col = i.col * 0.085 + vec3f(0.012, 0.014, 0.020);
+    col = col + i.col * 0.26 * ss(0.84, 1.0, e);
+    var beacon = 1.0 - ss(0.0, 0.13, length(i.local.xy));
+    beacon = beacon * (0.40 + 1.45 * i.spec.y);
+    beacon = beacon * (0.70 + 0.30 * sin(u.a.x * 2.1 + i.spec.z * 31.0));
+    col = col + vec3f(1.0, 0.74, 0.42) * beacon * 1.25;
+  } else {
+    let N = normalize(i.nrm);
+    let facing = 0.55 + 0.45 * abs(dot(N, normalize(vec3f(0.45, 0.72, 0.33))));
+    col = i.col * (0.20 * facing) * (0.55 + 0.45 * i.local.y);
+    col = col + i.col * 0.24 * ss(0.87, 1.0, abs(i.local.x));
+    let up = 1.0 - i.local.y;
+    col = col + vec3f(0.26, 0.17, 0.085) * up * up * up * 0.18;
+    let floors = max(i.spec.x, 1.0);
+    let uu = (i.local.x * 0.5 + 0.5) * 4.0;
+    let vv = i.local.y * floors;
+    let cell = floor(vec2f(uu, vv));
+    let f = fract(vec2f(uu, vv));
+    let win = ss(0.24, 0.30, f.x) * (1.0 - ss(0.70, 0.76, f.x))
+            * ss(0.28, 0.36, f.y) * (1.0 - ss(0.70, 0.78, f.y));
+    let seed = i.spec.z;
+    let pick = h21(cell + vec2f(seed * 37.0, seed * 11.0));
+    var lit = step(pick, i.spec.y);
+    let ring = u.a.z * 1.95 - 0.35;
+    /* Plots start half a pitch in, so the wave has to start there too. */
+    let q = i.world.xz - vec2f(max(u.b.x, 0.5) * 0.5);
+    let dist = length(q) / max(u.a.w, 1.0);
+    let band = ss(ring - 0.24, ring, dist) * (1.0 - ss(ring, ring + 0.15, dist));
+    lit = max(lit, band * step(0.42, pick));
+    let lamp = mix(vec3f(1.0, 0.82, 0.56), i.col, 0.30);
+    let flick = 0.86 + 0.14 * sin(u.a.x * 1.6 + cell.x * 2.7
+                                + cell.y * 1.9 + seed * 9.0);
+    col = col + vec3f(0.013, 0.016, 0.023) * win;
+    col = col + lamp * win * lit * flick * 1.45;
+  }
+  let haze = ss(u.a.w * 1.05, u.a.w * 2.30, i.depth);
+  col = mix(col, hazeCol(), haze * 0.88);
+  return vec4f(col, alpha);
+}
+`;
+
+  var CITY_SLOTS = [
+    {stride: 12, format: "float32x3", loc: 0, name: "position"},
+    {stride: 12, format: "float32x3", loc: 1, name: "normal"},
+    {stride: 12, format: "float32x3", loc: 2, name: "color"},
+    {stride: 12, format: "float32x3", loc: 3, name: "a_local"},
+    {stride: 4, format: "float32", loc: 4, name: "a_face"},
+    {stride: 16, format: "float32x4", loc: 5, name: "a_spec"},
+    {stride: 4, format: "float32", loc: 6, name: "a_birth"}
+  ];
   var NODE_SLOTS = [
     {stride: 12, format: "float32x3", loc: 0, name: "position"},
     {stride: 12, format: "float32x3", loc: 1, name: "color"},
@@ -719,15 +861,22 @@ struct VOut {
       node: device.createShaderModule({code: NODE_WGSL}),
       edge: device.createShaderModule({code: EDGE_WGSL}),
       ring: device.createShaderModule({code: RING_WGSL}),
-      ego: device.createShaderModule({code: EGO_WGSL})
+      ego: device.createShaderModule({code: EGO_WGSL}),
+      city: device.createShaderModule({code: CITY_WGSL})
     };
-    function pipeline(module, vs, fs, topology, buffers, blend, cull) {
+    function pipeline(module, vs, fs, topology, buffers, blend, cull, depth) {
       return device.createRenderPipeline({
         layout: "auto",
         vertex: {module: module, entryPoint: vs, buffers: buffers},
         fragment: {module: module, entryPoint: fs,
-                   targets: [{format: format, blend: blend}]},
+                   targets: [{format: format, blend: blend || undefined}]},
         primitive: {topology: topology, cullMode: cull || "none"},
+        /* The city writes depth so its towers hide each other and the links
+           behind them; every other pass is painter-ordered and leaves depth
+           alone, so the buffer stays at its cleared 1.0 for them. Links and
+           rings are the exception: they test depth without writing it. */
+        depthStencil: depth || {format: "depth24plus", depthWriteEnabled: false,
+                                depthCompare: "always"},
         multisample: {count: 4}
       });
     }
@@ -739,12 +888,20 @@ struct VOut {
                      layoutOf(NODE_SLOTS, "instance"), ALPHA_BLEND),
       halo: pipeline(modules.node, "vs_node", "fs_halo", "triangle-list",
                      layoutOf(NODE_SLOTS, "instance"), ADD_BLEND),
+      /* Links and rings test depth but never write it: in the city a link
+         disappears behind a tower, and in the other scene modules the buffer
+         is the cleared 1.0, so "less-equal" passes and the painter order
+         stands unchanged. */
       edge: pipeline(modules.edge, "vs_edge", "fs_edge", "line-list",
-                     layoutOf(EDGE_SLOTS), ALPHA_BLEND),
+                     layoutOf(EDGE_SLOTS), ALPHA_BLEND, "none",
+                     {format: "depth24plus", depthWriteEnabled: false,
+                      depthCompare: "less-equal"}),
       ring: pipeline(modules.ring, "vs_ring", "fs_ring", "line-list",
                      layoutOf([{stride: 12, format: "float32x3", loc: 0},
                                {stride: 12, format: "float32x3", loc: 1}]),
-                     ALPHA_BLEND),
+                     ALPHA_BLEND, "none",
+                     {format: "depth24plus", depthWriteEnabled: false,
+                      depthCompare: "less-equal"}),
       ego: pipeline(modules.ego, "vs_ego", "fs_ego", "triangle-list",
                     [{arrayStride: 12, stepMode: "vertex",
                       attributes: [{shaderLocation: 0, offset: 0, format: "float32x3"}]},
@@ -753,13 +910,18 @@ struct VOut {
                         {shaderLocation: 1, offset: 0, format: "float32x3"},
                         {shaderLocation: 2, offset: 12, format: "float32"},
                         {shaderLocation: 3, offset: 16, format: "float32x3"}]}],
-                    ALPHA_BLEND)
+                    ALPHA_BLEND),
+      city: pipeline(modules.city, "vs_city", "fs_city", "triangle-list",
+                     layoutOf(CITY_SLOTS), ALPHA_BLEND, "back",
+                     {format: "depth24plus", depthWriteEnabled: true,
+                      depthCompare: "less"})
     };
-    var names = ["sky", "cortex", "node", "halo", "edge", "ring", "ego"];
+    var names = ["sky", "cortex", "node", "halo", "edge", "ring", "ego", "city"];
     for (var i = 0; i < names.length; i++) {
       var pipe = this._pipelines[names[i]];
       var size = names[i] === "node" || names[i] === "halo" ? 256 :
                  names[i] === "cortex" ? 256 : names[i] === "edge" ? 192 :
+                 names[i] === "city" ? 160 :
                  names[i] === "ring" ? 208 : names[i] === "ego" ? 128 : 32;
       var buffer = device.createBuffer({size: size,
                                         usage: GPUBufferUsage.UNIFORM |
@@ -846,6 +1008,15 @@ struct VOut {
       usage: GPUTextureUsage.RENDER_ATTACHMENT
     });
     this._msaaView = this._msaa.createView();
+    /* Depth only exists for the city pass; the other scenes ignore it. */
+    if (this._depth) this._depth.destroy();
+    this._depth = this.device.createTexture({
+      size: [Math.max(1, w), Math.max(1, h)],
+      sampleCount: 4,
+      format: "depth24plus",
+      usage: GPUTextureUsage.RENDER_ATTACHMENT
+    });
+    this._depthView = this._depth.createView();
   };
 
   GpuRenderer.prototype.resize = function () {
@@ -942,6 +1113,21 @@ struct VOut {
     }
   };
 
+  GpuRenderer.prototype._packCity = function (out) {
+    var cu = this.cityUni;
+    var view = this.camera.matrixWorldInverse.elements;
+    var proj = this.camera.projectionMatrix.elements;
+    out[0] = this.time || 0;
+    /* a.y is padding: the lights are the node's own lit fraction (a_spec.y). */
+    out[2] = cu.u_finale.value;
+    out[3] = cu.u_cityR.value;
+    out[4] = cu.u_pitch.value;
+    for (var i = 0; i < 16; i++) {
+      out[8 + i] = view[i];
+      out[24 + i] = proj[i];
+    }
+  };
+
   GpuRenderer.prototype._packSky = function (out) {
     var cam = this.camera.position;
     var clen = Math.max(cam.length(), 1);
@@ -1008,6 +1194,13 @@ struct VOut {
     this.device.queue.writeBuffer(this._ubos.halo.buffer, 0, this._uHalo);
     this.device.queue.writeBuffer(this._ubos.edge.buffer, 0, this._uEdge);
 
+    var city = this.cityMesh && this.cityMesh.visible && this.cityGeo &&
+               this.cityGeo.getAttribute("position");
+    if (city) {
+      this._packCity(this._uCity);
+      this.device.queue.writeBuffer(this._ubos.city.buffer, 0, this._uCity);
+    }
+
     if (this.cortex && this.cortex.visible) {
       this.cortex.updateMatrixWorld(true);
       this._packCortex(this._uCortex);
@@ -1023,7 +1216,13 @@ struct VOut {
         clearValue: this._clear,
         loadOp: "clear",
         storeOp: "discard"
-      }]
+      }],
+      depthStencilAttachment: this._depthView ? {
+        view: this._depthView,
+        depthClearValue: 1,
+        depthLoadOp: "clear",
+        depthStoreOp: "discard"
+      } : undefined
     });
     this._pass = pass;
 
@@ -1031,6 +1230,20 @@ struct VOut {
       pass.setPipeline(this._pipelines.sky);
       pass.setBindGroup(0, this._ubos.sky.group);
       pass.draw(3);
+    }
+
+    /* The sky is a depth-ignoring full-screen quad, so the city has to come
+       after it and before every additive pass: it is the only writer of the
+       depth buffer, and the later passes compare "always" so they paint over
+       it as before. */
+    if (city) {
+      var cityGeo = this.cityGeo;
+      var cityIdx = cityGeo.index;
+      var cbuf = cityIdx && this._upload(cityIdx, GPUBufferUsage.INDEX);
+      if (cbuf && this._bind("city", CITY_SLOTS, cityGeo)) {
+        pass.setIndexBuffer(cbuf, "uint32");
+        pass.drawIndexed(cityIdx.count);
+      }
     }
 
     if (this.ringMesh && this.ringMesh.visible && this.ringMesh.geometry) {
@@ -1152,6 +1365,11 @@ struct VOut {
       this._msaa.destroy();
       this._msaa = null;
     }
+    if (this._depth) {
+      this._depth.destroy();
+      this._depth = null;
+      this._depthView = null;
+    }
     if (this._context) {
       try { this._context.unconfigure(); } catch (ignored) {}
     }
@@ -1167,6 +1385,7 @@ struct VOut {
     this._uCortex = new Float32Array(64);
     this._uRing = new Float32Array(52);
     this._uEgo = new Float32Array(32);
+    this._uCity = new Float32Array(40);
     this._uEgoData = new Float32Array(120 * 8);
     this._egoBufBytes = 0;
   };

@@ -24,6 +24,7 @@
        above the temporal lobe. The later fits keep this direction, so the
        scene never opens looking straight down at an oval. */
     if (renderer.cfg && renderer.cfg.brain) this._placeBrain(1);
+    if (renderer.cfg && renderer.cfg.city) this._placeCity(1);
     var self = this;
     this.controls.addEventListener("start", function () {
       self.userInteracting = true;
@@ -67,6 +68,36 @@
       .multiplyScalar(d);
     p.y += 1.5;
     this._to(p, new THREE.Vector3(0, 0.4, 0), 900);
+  };
+
+  /* The city is read from the air, not from orbit: a low three-quarter view
+     puts the towers against the sky and keeps the street grid visible. The
+     shot is shared by the constructor and the scene switch, and it honours
+     the scene's radius floor so a small build is not framed inside a tower. */
+  Camera.prototype._cityShot = function (zoom) {
+    var THREE = T3.THREE;
+    var cfg = this.renderer.cfg || {};
+    var r = Math.max(this.renderer.sceneRadius || 18,
+                    cfg.fitMinRadius != null ? cfg.fitMinRadius : 14);
+    /* A skyline is shallow and wide: 2.15 radii of distance left the city a
+       patch in the middle of the frame, so the shot sits closer and higher. */
+    var d = r * 1.72 * (zoom || 1);
+    var p = new THREE.Vector3(0.58, 0.42, 0.70).normalize().multiplyScalar(d);
+    p.y += r * 0.40;
+    return {p: p, t: new THREE.Vector3(0, r * 0.16, 0)};
+  };
+
+  Camera.prototype._placeCity = function (zoom) {
+    var s = this._cityShot(zoom);
+    this.camera.position.copy(s.p);
+    this.controls.target.copy(s.t);
+    this.camera.lookAt(s.t);
+  };
+
+  Camera.prototype.frameCity = function () {
+    if (!this.renderer.cfg || !this.renderer.cfg.city) return;
+    var s = this._cityShot(1);
+    this._to(s.p, s.t, 900);
   };
 
   Camera.prototype.setAutoRotate = function (on) {

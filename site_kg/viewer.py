@@ -22,7 +22,7 @@ ROOT = Path(__file__).resolve().parent
 VENDOR = ROOT / "vendor" / "three-viewer.min.js"
 TEMPLATE = ROOT / "templates" / "viewer.html"
 VIEWER_DIR = ROOT / "viewer"
-SCENES = ("planets", "neural")
+SCENES = ("planets", "neural", "city")
 PRE_SCENE_MODULES = ("core.js", "render.js", "gpu.js", "labels.js", "camera.js")
 POST_SCENE_MODULES = ("director.js", "launcher.js", "fallback2d.js", "ui.js")
 MODES = ("archive", "live")
@@ -33,6 +33,7 @@ EXTERNAL_FILES = {"graph": "sk-graph.bin", "layout": "sk-layout.bin",
 # viewers never show the launcher and stay lean).
 LAUNCH_ART_FILES = {"neural": "asset-neural.jpg",
                     "planets": "asset-planets.jpg",
+                    "city": "asset-city.jpg",
                     "hero": "asset-hero.jpg",
                     "build": "asset-build.jpg"}
 

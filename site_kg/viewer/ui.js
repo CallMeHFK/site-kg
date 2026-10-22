@@ -725,7 +725,8 @@
         }
         return;
       }
-      if (e.key >= "1" && e.key <= "2") {
+      /* One hotkey per world, in sceneOrder: 1 planets, 2 neural, 3 city. */
+      if (e.key >= "1" && e.key <= "9") {
         var n = parseInt(e.key, 10) - 1;
         var names = SK.sceneOrder || [];
         if (names[n]) self.activateScene(names[n]);
@@ -868,7 +869,7 @@
     this.errEl = err;
     refresh();
 
-    /* two worlds: one real render each, text and image trading sides */
+    /* one tile per world: a real render each, text and image trading sides */
     var worldsSec = el("section", "p-worlds");
     (SK.sceneOrder || []).forEach(function (name, i) {
       var scene = SK.scenes[name] || {};
