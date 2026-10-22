@@ -556,6 +556,7 @@ const t1 = new global.T3.THREE.Vector3(2, 4.5, -1);
 const k = 1.6;
 /* half of a cubic ease-out at k = 0.625, over a 1.5 rise */
 const MID_Y = 3 + 1.5 * (1 - Math.pow(1 - 0.625, 3));
+const E_MID = 1 - Math.pow(1 - 0.625, 3);
 const easeArm = function (spinOn) {
   cam.camera.position.set(9, 4, 0);
   cam.controls.target.copy(t0);
@@ -564,16 +565,23 @@ const easeArm = function (spinOn) {
   const p1 = new global.T3.THREE.Vector3(t0.x + (p0.x - t0.x) * k,
                                          t0.y + (p0.y - t0.y) * k,
                                          t0.z + (p0.z - t0.z) * k);
+  /* both lerps are distances, so the orbit's turn about the target's axis
+     leaves them unchanged and the closed form is what the sample must hit */
+  const midWant = p0.clone().lerpVectors(p0, p1, E_MID)
+    .distanceTo(t0.clone().lerpVectors(t0, t1, E_MID));
   cam._to(p1, t1.clone(), 1000);
   const from = az();
-  let midY = 0;
+  let midY = 0, midR = 0;
   for (let i = 0; i < 300; i++) {
     cam.update(1 / 240);
-    if (i === 149) midY = cam.controls.target.y;
+    if (i === 149) {
+      midY = cam.controls.target.y;
+      midR = cam.camera.position.distanceTo(cam.controls.target);
+    }
   }
   return {swept: Math.abs(unwrap(from, az())), tween: cam.tween,
           radius: cam.camera.position.distanceTo(cam.controls.target),
-          want: p1.distanceTo(t1), midY: midY,
+          want: p1.distanceTo(t1), midY: midY, midR: midR, midWant: midWant,
           targetY: cam.controls.target.y};
 };
 
@@ -587,6 +595,9 @@ assert.ok(Math.abs(still.targetY - 4.5) < 1e-6,
           "the ease never moved the target, y = " + still.targetY);
 assert.ok(Math.abs(still.midY - MID_Y) < 1e-3,
           "the target snapped instead of easing, mid y = " + still.midY);
+assert.ok(Math.abs(still.midR - still.midWant) < 1e-6,
+          "the camera eased at the wrong curve, mid distance " + still.midR +
+          " of " + still.midWant);
 assert.ok(Math.abs(still.radius - still.want) < 1e-6,
           "the ease landed off its endpoint, radius " + still.radius);
 
@@ -600,6 +611,9 @@ assert.ok(Math.abs(live.targetY - 4.5) < 1e-6,
           "the ease never moved the target, y = " + live.targetY);
 assert.ok(Math.abs(live.midY - MID_Y) < 1e-3,
           "the target snapped instead of easing, mid y = " + live.midY);
+assert.ok(Math.abs(live.midR - live.midWant) < 1e-6,
+          "the camera eased at the wrong curve, mid distance " + live.midR +
+          " of " + live.midWant);
 assert.ok(Math.abs(live.radius - live.want) < 1e-6,
           "the ease landed off its endpoint, radius " + live.radius);
 /* a tween may turn the orbit off in OrbitControls; it must not turn it on */
