@@ -784,7 +784,7 @@ fn hazeCol() -> vec3f { return vec3f(0.030, 0.036, 0.060); }
     this._vbs = new Map();
     this._ibs = new Map();
     this._pipelines = {};
-    this._clear = {r: 0.016, g: 0.020, b: 0.043, a: 1};
+    this._clear = {r: 0x07 / 255, g: 0x0a / 255, b: 0x14 / 255, a: 1};
     this._resW = 1;
     this._resH = 1;
   }
@@ -817,7 +817,7 @@ fn hazeCol() -> vec3f { return vec3f(0.030, 0.036, 0.060); }
   GpuRenderer.prototype.setScene = function (name) {
     SK.Renderer.prototype.setScene.call(this, name);
     var bg = this.cfg && this.cfg.bg;
-    var hex = typeof bg === "number" ? bg : 0x04050b;
+    var hex = typeof bg === "number" ? bg : 0x070a14;
     this._clear = {r: ((hex >> 16) & 255) / 255,
                    g: ((hex >> 8) & 255) / 255,
                    b: (hex & 255) / 255, a: 1};
@@ -1268,9 +1268,9 @@ fn hazeCol() -> vec3f { return vec3f(0.030, 0.036, 0.060); }
     }
 
     /* The sky is a depth-ignoring full-screen quad, so the city has to come
-       after it and before every additive pass: it is the only writer of the
-       depth buffer, and the later passes compare "always" so they paint over
-       it as before. */
+       after it and before the additive passes: it is the only writer of the
+       depth buffer, and links and rings test against it, so a link behind a
+       tower disappears the way it does in the WebGL path. */
     if (city) {
       var cityGeo = this.cityGeo;
       var cityIdx = cityGeo.index;

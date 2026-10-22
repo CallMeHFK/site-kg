@@ -468,6 +468,20 @@ def test_orbit_turns_once_per_frame_from_dt():
     assert "setAutoRotate(!self.camera.autoRotate)" in ui
 
 
+def test_refit_gate_needs_material_growth():
+    """Refits follow growth, not the clock, or the camera eases constantly.
+
+    A 1.6 s timer fitted the graph on every batch and the camera spent half of
+    each two seconds in a tween, which read as the stutter this pass removes.
+    The gate has to watch the extent as well: a layout patch re-spreads a fixed
+    node count, and a count-only gate would never re-frame that.
+    """
+    js = DIRECTOR.read_text(encoding="utf-8")
+    assert "var grew = this.live.n >= (this._fitN || 0) * 1.3 + 6 ||" in js
+    assert "this.renderer.sceneRadius >= (this._fitR || 0) * 1.15;" in js
+    assert "this._fitR = this.renderer.sceneRadius;" in js
+
+
 def test_city_gpu_pipeline_is_declared():
     """The WebGPU backend must carry the city, depth buffer included."""
     js = GPU.read_text(encoding="utf-8")
