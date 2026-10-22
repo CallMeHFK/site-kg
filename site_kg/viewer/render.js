@@ -111,8 +111,8 @@
        node's fan-out -- the same number the windows carry. */
     "    float e = max(max(abs(vLocal.x), abs(vLocal.y)),"
       + " (abs(vLocal.x) + abs(vLocal.y)) * 0.5952);",
-    "    col = vCol * 0.12 + vec3(0.013, 0.016, 0.024);"
-      + "    col *= 0.82 + 0.30 * fract(vSpec.z * 5.7);",
+    "    col = vCol * 0.12 + vec3(0.013, 0.016, 0.024);",
+    "    col *= 0.82 + 0.30 * fract(vSpec.z * 5.7);",
     "    col += (h21(floor(vLocal.xy * 9.0)) - 0.5) * 0.012;",
     "    col += vCol * 0.44 * smoothstep(0.86, 1.0, e);",
     "    float beacon = 1.0 - smoothstep(0.0, 0.13, length(vLocal.xy));",
