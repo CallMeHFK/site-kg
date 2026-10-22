@@ -554,9 +554,9 @@ cam.reduced = false;
 const t0 = new global.T3.THREE.Vector3(2, 3, -1);
 const t1 = new global.T3.THREE.Vector3(2, 4.5, -1);
 const k = 1.6;
-/* half of a cubic ease-out at k = 0.625, over a 1.5 rise */
-const MID_Y = 3 + 1.5 * (1 - Math.pow(1 - 0.625, 3));
-const E_MID = 1 - Math.pow(1 - 0.625, 3);
+/* probe the ease at three points: two of them make a curve that is right at
+   the ends but wrong in between (an overshoot, a backtrack) impossible */
+const PROBES = [{i: 74, k: 0.3125}, {i: 149, k: 0.625}, {i: 224, k: 0.9375}];
 const easeArm = function (spinOn) {
   cam.camera.position.set(9, 4, 0);
   cam.controls.target.copy(t0);
@@ -567,22 +567,36 @@ const easeArm = function (spinOn) {
                                          t0.z + (p0.z - t0.z) * k);
   /* both lerps are distances, so the orbit's turn about the target's axis
      leaves them unchanged and the closed form is what the sample must hit */
-  const midWant = p0.clone().lerpVectors(p0, p1, E_MID)
-    .distanceTo(t0.clone().lerpVectors(t0, t1, E_MID));
+  const want = PROBES.map(function (p) {
+    const e = 1 - Math.pow(1 - p.k, 3);
+    return {y: 3 + 1.5 * e,
+            r: p0.clone().lerpVectors(p0, p1, e)
+              .distanceTo(t0.clone().lerpVectors(t0, t1, e))};
+  });
   cam._to(p1, t1.clone(), 1000);
   const from = az();
-  let midY = 0, midR = 0;
+  const got = [];
   for (let i = 0; i < 300; i++) {
     cam.update(1 / 240);
-    if (i === 149) {
-      midY = cam.controls.target.y;
-      midR = cam.camera.position.distanceTo(cam.controls.target);
-    }
+    PROBES.forEach(function (p, n) {
+      if (i === p.i) got[n] = {y: cam.controls.target.y,
+                               r: cam.camera.position.distanceTo(cam.controls.target)};
+    });
   }
   return {swept: Math.abs(unwrap(from, az())), tween: cam.tween,
           radius: cam.camera.position.distanceTo(cam.controls.target),
-          want: p1.distanceTo(t1), midY: midY, midR: midR, midWant: midWant,
+          end: p1.distanceTo(t1), want: want, got: got,
           targetY: cam.controls.target.y};
+};
+const checkEase = function (arm, label) {
+  PROBES.forEach(function (p, n) {
+    assert.ok(Math.abs(arm.got[n].y - arm.want[n].y) < 1e-3,
+              label + ": the target eased off the curve at k=" + p.k +
+              ", y = " + arm.got[n].y);
+    assert.ok(Math.abs(arm.got[n].r - arm.want[n].r) < 1e-6,
+              label + ": the camera eased at the wrong curve at k=" + p.k +
+              ", " + arm.got[n].r + " of " + arm.want[n].r);
+  });
 };
 
 /* paused turns nothing, but it must not stall the ease either: a refit that
@@ -593,28 +607,20 @@ assert.ok(still.swept < 1e-9,
 assert.equal(still.tween, null, "the ease must finish even while paused");
 assert.ok(Math.abs(still.targetY - 4.5) < 1e-6,
           "the ease never moved the target, y = " + still.targetY);
-assert.ok(Math.abs(still.midY - MID_Y) < 1e-3,
-          "the target snapped instead of easing, mid y = " + still.midY);
-assert.ok(Math.abs(still.midR - still.midWant) < 1e-6,
-          "the camera eased at the wrong curve, mid distance " + still.midR +
-          " of " + still.midWant);
-assert.ok(Math.abs(still.radius - still.want) < 1e-6,
+checkEase(still, "paused");
+assert.ok(Math.abs(still.radius - still.end) < 1e-6,
           "the ease landed off its endpoint, radius " + still.radius);
 
 const live = easeArm(true);
 assert.equal(live.tween, null, "the tween should have finished");
-const want = 0.6 * unit * 1.25;
-assert.ok(Math.abs(live.swept - want) < 1e-6 * want,
-          "the tween froze the orbit: swept " + live.swept + " of " + want +
-          " over 1.25 s");
+const wantSweep = 0.6 * unit * 1.25;
+assert.ok(Math.abs(live.swept - wantSweep) < 1e-6 * wantSweep,
+          "the tween froze the orbit: swept " + live.swept + " of " +
+          wantSweep + " over 1.25 s");
 assert.ok(Math.abs(live.targetY - 4.5) < 1e-6,
           "the ease never moved the target, y = " + live.targetY);
-assert.ok(Math.abs(live.midY - MID_Y) < 1e-3,
-          "the target snapped instead of easing, mid y = " + live.midY);
-assert.ok(Math.abs(live.midR - live.midWant) < 1e-6,
-          "the camera eased at the wrong curve, mid distance " + live.midR +
-          " of " + live.midWant);
-assert.ok(Math.abs(live.radius - live.want) < 1e-6,
+checkEase(live, "orbiting");
+assert.ok(Math.abs(live.radius - live.end) < 1e-6,
           "the ease landed off its endpoint, radius " + live.radius);
 /* a tween may turn the orbit off in OrbitControls; it must not turn it on */
 assert.equal(cam.controls.autoRotate, false,
