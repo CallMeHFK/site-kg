@@ -261,6 +261,7 @@ struct VOut {
   @location(7) seed: f32,
   @location(8) face: f32,
   @location(9) coord: vec2f,
+  @location(10) act: f32,
 };
 
 @vertex fn vs_node(
@@ -271,7 +272,8 @@ struct VOut {
   @location(3) a_dim: f32,
   @location(4) a_ring: f32,
   @location(5) a_birth: f32,
-  @location(6) a_seed: f32
+  @location(6) a_seed: f32,
+  @location(7) a_act: f32
 ) -> VOut {
   var q: array<vec2f, 6> = array<vec2f, 6>(
     vec2f(-1.0, -1.0), vec2f(1.0, -1.0), vec2f(1.0, 1.0),
@@ -308,9 +310,10 @@ struct VOut {
   let tl2 = length(td);
   var tailDir = vec2f(0.0, 1.0);
   if (tl2 > 1e-4) { tailDir = td / tl2; }
-  p = p + u.b.y * vec3f(sin(u.a.w * 0.55 + ph * 6.283),
-                        cos(u.a.w * 0.47 + ph * 11.0),
-                        sin(u.a.w * 0.63 + ph * 17.0));
+  p = p + u.b.y * (0.55 + 0.9 * a_act)
+      * vec3f(sin(u.a.w * 0.55 + ph * 6.283),
+              cos(u.a.w * 0.47 + ph * 11.0),
+              sin(u.a.w * 0.63 + ph * 17.0));
   let swelled = (0.35 + 0.65 * born) * (1.0 + 0.18 * sin(born * 3.14159));
   let mv = u.view * vec4f(p, 1.0);
   var size = a_size * u.b.w * u.a.y * u.a.x * (300.0 / max(-mv.z, 1.0));
@@ -332,6 +335,7 @@ struct VOut {
   out.sprout = sprout;
   out.tail = vec3f(tailDir, flight);
   out.seed = ph;
+  out.act = a_act;
   out.face = face;
   out.coord = corner;
   return out;
@@ -387,12 +391,16 @@ struct VOut {
     let nu = b - vec2f(0.035, 0.045);
     let nucleus = ss(0.130, 0.0, length(nu));
     let aura = exp(-r * 2.8) * 0.24;
+    /* Activity is data volume: a page that carries more text fires more
+       often, and the flash sits in the nucleus so it reads as a cell, not as
+       a blinking light. */
+    let fire = pow(max(0.0, sin(u.a.w * 1.7 + in.seed * 37.0)), 12.0) * in.act;
     var col = in.c * (0.44 + 1.38 * arms * (1.0 + 0.22 * in.sprout))
             + mix(in.c, u.tint.rgb, vec3f(0.55)) * soma * (1.02 + 0.16 * in.sprout)
-            + u.tint.rgb * (membrane * 0.80 + nucleus * 1.18)
+            + u.tint.rgb * (membrane * 0.80 + nucleus * (1.18 + 1.4 * fire))
             + in.c * aura;
     var a = clamp(soma * 0.98 + arms * 0.78 + membrane * 0.45
-                  + nucleus * 0.9 + aura, 0.0, 1.0);
+                  + nucleus * 0.9 + aura + fire * 0.35, 0.0, 1.0);
     col = mix(col, sC, sA * (1.0 - soma));
     a = max(a, sA * (1.0 - soma));
     col *= in.face;
@@ -591,6 +599,7 @@ struct VOut {
   @location(4) nrm: vec3f,
   @location(5) world: vec3f,
   @location(6) depth: f32,
+  @location(7) dim: f32,
 }
 
 @vertex fn vs_city(
@@ -600,7 +609,8 @@ struct VOut {
   @location(3) local: vec3f,
   @location(4) face: f32,
   @location(5) spec: vec4f,
-  @location(6) birth: f32) -> VOut {
+  @location(6) birth: f32,
+  @location(7) dim: f32) -> VOut {
   var o: VOut;
   let grow = ss(0.0, 0.85, max(0.0, u.a.x - birth));
   let p = vec3f(position.x, position.y * (grow + 0.00001), position.z);
@@ -613,6 +623,7 @@ struct VOut {
   o.nrm = normal;
   o.world = p;
   o.depth = -mv.z;
+  o.dim = dim;
   return o;
 }
 
@@ -714,6 +725,8 @@ fn hazeCol() -> vec3f { return vec3f(0.030, 0.036, 0.060); }
   }
   let haze = ss(u.a.w * 1.05, u.a.w * 2.30, i.depth);
   col = mix(col, hazeCol(), haze * 0.88);
+  alpha = alpha * i.dim;
+  if (alpha < 0.01) { discard; }
   return vec4f(col, alpha);
 }
 `;
@@ -725,7 +738,8 @@ fn hazeCol() -> vec3f { return vec3f(0.030, 0.036, 0.060); }
     {stride: 12, format: "float32x3", loc: 3, name: "a_local"},
     {stride: 4, format: "float32", loc: 4, name: "a_face"},
     {stride: 16, format: "float32x4", loc: 5, name: "a_spec"},
-    {stride: 4, format: "float32", loc: 6, name: "a_birth"}
+    {stride: 4, format: "float32", loc: 6, name: "a_birth"},
+    {stride: 4, format: "float32", loc: 7, name: "a_dim"}
   ];
   var NODE_SLOTS = [
     {stride: 12, format: "float32x3", loc: 0, name: "position"},
@@ -734,7 +748,8 @@ fn hazeCol() -> vec3f { return vec3f(0.030, 0.036, 0.060); }
     {stride: 4, format: "float32", loc: 3, name: "a_dim"},
     {stride: 4, format: "float32", loc: 4, name: "a_ring"},
     {stride: 4, format: "float32", loc: 5, name: "a_birth"},
-    {stride: 4, format: "float32", loc: 6, name: "a_seed"}
+    {stride: 4, format: "float32", loc: 6, name: "a_seed"},
+    {stride: 4, format: "float32", loc: 7, name: "a_act"}
   ];
   var CORTEX_SLOTS = [
     {stride: 12, format: "float32x3", loc: 0, name: "position"},
@@ -1312,12 +1327,12 @@ fn hazeCol() -> vec3f { return vec3f(0.030, 0.036, 0.060); }
           var fraction = ratio > 2.4 ? 0.3 : (ratio > 1.5 ? 0.6 : 1);
           var idx = this._upload(edgeGeo.index, GPUBufferUsage.INDEX);
           if (idx) {
-            var segs = Math.max(1, Math.floor(this.live.m * fraction));
+            var segs = Math.max(1, Math.floor((this._lodCount || this.live.m) * fraction));
             pass.setIndexBuffer(idx, "uint32");
-            pass.drawIndexed(segs * 2);
+            pass.drawIndexed(segs * this.segK * 2);
           }
         } else {
-          pass.draw(this._drawEdges * 2);
+          pass.draw(this._drawEdges * this.segK * 2);
         }
       }
     }

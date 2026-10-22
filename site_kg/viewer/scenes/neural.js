@@ -27,6 +27,16 @@
     /* Axons are the second half of "brain made of neurons": at 0.62 they
        vanished into the tissue and the head read as a walnut with glitter. */
     edgeOpacity: 0.95,
+    /* A connectome is not wiring: every axon leaves its soma, bows out and
+       comes back in. 0.17 of the link's own length is the sagitta, and eight
+       segments keep the arc smooth without making the line buffer three times
+       the size of the graph. */
+    edgeBend: 0.17,
+    curveSegs: 8,
+    /* A neuron is a body, not a chart marker: grabbing one pulls its own
+       synapses along, and the pair cannot pass through each other. */
+    draggable: true,
+    collidePad: 0.30,
     starfield: true,
     sky: "deepvoid",
     neuralNodes: true,
