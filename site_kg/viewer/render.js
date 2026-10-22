@@ -21,8 +21,9 @@
      geometry -- the fragment shader cuts a grid out of each facade, which is
      what keeps a 200-tower city under 20,000 vertices.
 
-     Face ids: 0..3 are the four walls, 4 the crown roof, 5 a setback terrace
-     and 6 the ground quad that all the towers stand on. */
+     Face ids: 0..7 are the eight walls (four wide, four chamfers), 8 the
+     crown roof, 9 a setback terrace and 10 the ground quad that all the
+     towers stand on. */
   var CITY_VS = [
     "attribute vec3 a_local; attribute float a_face;",
     "attribute vec4 a_spec; attribute float a_birth; attribute vec3 color;",
@@ -1309,7 +1310,10 @@
         pos[o] = cx + unit[k * 3] * w * sc;
         pos[o + 1] = yf * h;
         pos[o + 2] = cz + unit[k * 3 + 2] * d * sc;
-        loc[o + 1] = yf;
+        /* Walls carry their height in local.y. A cap must keep the plan
+           coordinate the table wrote for it instead, or the roof pattern
+           reads a constant and the beacon never lights. */
+        loc[o + 1] = table.face[k] > 7 ? table.loc[k * 3 + 1] : yf;
         col[o] = c.r; col[o + 1] = c.g; col[o + 2] = c.b;
         spec[v * 4] = floors; spec[v * 4 + 1] = lit;
         spec[v * 4 + 2] = seed;
@@ -1615,10 +1619,13 @@
           this._cityFloors[i] = spec.floors;
           this._cityLit[i] = spec.lit;
           this._cityCols[i] = spec.cols;
-          this._cityTiers[i * 4] = spec.tiers[0];
-          this._cityTiers[i * 4 + 1] = spec.tiers[1];
-          this._cityTiers[i * 4 + 2] = spec.tiers[2];
-          this._cityTiers[i * 4 + 3] = 1;
+          /* Tier bases, street to crown. The spec hands back the three cut
+             heights; the first base is the ground itself, and the crown's
+             top is the roof line. */
+          this._cityTiers[i * 4] = 0;
+          this._cityTiers[i * 4 + 1] = spec.tiers[0];
+          this._cityTiers[i * 4 + 2] = spec.tiers[1];
+          this._cityTiers[i * 4 + 3] = spec.tiers[2];
           this._cityTierW[i * 4] = spec.tierw[0];
           this._cityTierW[i * 4 + 1] = spec.tierw[1];
           this._cityTierW[i * 4 + 2] = spec.tierw[2];

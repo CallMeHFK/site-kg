@@ -426,6 +426,20 @@ def test_city_geometry_is_tiered():
     # shader its own share of the window columns.
     assert "CITY_CHAMFER" in js
     assert "table.wf[k]" in js
+    # The stamped values are tier *bases*, not the spec's cut heights: the
+    # first base is the street and the last is the crown base. Reading the
+    # cuts as bases lifted every tower a storey off its plot and left the
+    # crown with zero height, so its roof sat coplanar with the terrace below
+    # and lost the depth test. Neither fault shows up in a citySpec test.
+    assert "this._cityTiers[i * 4] = 0;" in js
+    assert "this._cityTiers[i * 4 + 1] = spec.tiers[0];" in js
+    assert "this._cityTiers[i * 4 + 2] = spec.tiers[1];" in js
+    assert "this._cityTiers[i * 4 + 3] = spec.tiers[2];" in js
+    # Cap vertices keep the plan coordinate the table wrote for them. Writing
+    # the tier height into local.y for every vertex made length(local.xy) >= 1
+    # on a roof, which put the beacon out and flattened the parapet into a
+    # wash of one colour.
+    assert "table.face[k] > 7 ? table.loc[k * 3 + 1] : yf" in js
 
 
 def test_city_gpu_pipeline_is_declared():
