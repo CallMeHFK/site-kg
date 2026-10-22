@@ -11,7 +11,10 @@
     this.mode = "archive";
     this.state = "ingesting";
     this.query = "";
-    this.chapter = null;
+    /* Chapters are additive: an empty selection means the whole graph, and
+       any number of chapters can be on at once. */
+    this.chapters = [];
+    this._chapterSet = {};
     this.focusIndex = -1;
     this.ingestDone = false;
     this.layoutSettled = false;
@@ -204,10 +207,38 @@
     this._visKey = "";
   };
 
-  Director.prototype.setChapter = function (chapter) {
-    this.chapter = this.chapter === chapter ? null : (chapter == null ? null : chapter);
+  /* Chapter rows are toggles, not a radio group: selecting a second chapter
+     adds it to the visible set instead of replacing the first. Returns
+     whether the chapter is on now. */
+  Director.prototype.toggleChapter = function (chapter) {
+    chapter = chapter == null ? "" : String(chapter);
+    if (!chapter) return false;
+    if (this._chapterSet[chapter]) delete this._chapterSet[chapter];
+    else this._chapterSet[chapter] = true;
+    this.chapters = Object.keys(this._chapterSet);
     this._visKey = "";
-    return this.chapter;
+    return !!this._chapterSet[chapter];
+  };
+
+  Director.prototype.chapterOn = function (chapter) {
+    return !!this._chapterSet[String(chapter)];
+  };
+
+  /* Legacy single-chapter entry point: setting a chapter replaces the
+     selection, passing null clears it. Kept so callers that think in one
+     chapter still work. */
+  Director.prototype.setChapter = function (chapter) {
+    this._chapterSet = {};
+    if (chapter != null && chapter !== "") this._chapterSet[String(chapter)] = true;
+    this.chapters = Object.keys(this._chapterSet);
+    this._visKey = "";
+    return this.chapters.length ? this.chapters[0] : null;
+  };
+
+  Director.prototype.clearChapters = function () {
+    this._chapterSet = {};
+    this.chapters = [];
+    this._visKey = "";
   };
 
   Director.prototype.focus = function (index) {
@@ -220,7 +251,8 @@
 
   Director.prototype.clear = function () {
     this.query = "";
-    this.chapter = null;
+    this._chapterSet = {};
+    this.chapters = [];
     this.focusIndex = -1;
     this._visKey = "";
   };
@@ -598,12 +630,12 @@
         focusEdges.add(adj[focus][j][1]);
       }
     }
-    var q = this.query, ch = this.chapter;
+    var q = this.query, ch = this._chapterSet, anyChapter = this.chapters.length > 0;
     for (var i = 0; i < live.n; i++) {
       var on = !!live.revealed[i];
       if (on && selected && !selected.has(i)) on = false;
       if (on && q && (live.titles[i] || "").toLowerCase().indexOf(q) < 0) on = false;
-      if (on && ch != null && live.clusters[live._nodeCluster[i]] !== ch) on = false;
+      if (on && anyChapter && !ch[live.clusters[live._nodeCluster[i]]]) on = false;
       vis[i] = on ? 1 : 0;
       live.dim[i] = !on ? 0 : (nbr ? (nbr.has(i) ? 1.2 : 0.07) : 1);
     }
@@ -656,7 +688,7 @@
       this.replay.elapsed += dt * 1000;
       this._advanceReplay();
     }
-    var key = [this.query, this.chapter, this.focusIndex, this.live.n, this.live.m,
+    var key = [this.query, this.chapters.join(","), this.focusIndex, this.live.n, this.live.m,
                this.live.version, this.replay ? this.replay.idx : -1].join("|");
     if (key !== this._visKey) {
       this._visKey = key;
