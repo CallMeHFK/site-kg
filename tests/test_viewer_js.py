@@ -454,9 +454,14 @@ def test_orbit_turns_once_per_frame_from_dt():
     stutter this pass was meant to remove.
 
     This drives the real update() over a stub rig: sixty frames of 1/60 s have
-    to sweep exactly cfg.spin * 0.10472 rad, once.
+    to sweep exactly cfg.spin * one unit of the constant in _angle, once. The
+    unit is read out of the source rather than copied here, so the two cannot
+    drift apart.
     """
-    _run(_prelude(CORE, CAMERA) + r"""
+    src = CAMERA.read_text(encoding="utf-8")
+    unit = re.search(r"return\s+dt\s*\*\s*speed\s*\*\s*([0-9.]+)\s*;", src)
+    assert unit, "_angle no longer turns dt into a constant angle"
+    _run((_prelude(CORE, CAMERA) + r"""
 global.T3 = (function () {
   function V(x, y, z) { this.x = x || 0; this.y = y || 0; this.z = z || 0; }
   V.prototype.set = function (x, y, z) { this.x = x; this.y = y; this.z = z;
@@ -511,8 +516,8 @@ assert.equal(cam.controls.autoRotate, false,
 let before = az();
 for (let i = 0; i < 60; i++) cam.update(1 / 60);
 const swept = Math.abs(unwrap(before, az()));
-assert.ok(Math.abs(swept - 0.6 * 0.10472) < 1e-9,
-          "one second should sweep cfg.spin * 0.10472 rad, got " + swept);
+assert.ok(Math.abs(swept - 0.6 * __SPIN__) < 1e-9,
+          "one second should sweep cfg.spin * __SPIN__ rad, got " + swept);
 assert.equal(cam.controls.turns, 0, "the second driver must never turn");
 
 /* paused means paused: the space bar flips the same flag */
@@ -534,29 +539,52 @@ for (let i = 0; i < 30; i++) cam.update(1 / 60);
 assert.ok(Math.abs(unwrap(before, az())) < 1e-12, "orbit moved under reduced");
 cam.reduced = false;
 
-/* and a tween keeps turning instead of freezing: the ease runs for a second
-   while the azimuth advances the whole time, then hands back to the plain
-   orbit without moving the camera off its radius */
-cam.tween = {p0: cam.camera.position.clone(), p1: new global.T3.THREE.Vector3(0, 0, 12),
-             t0: cam.controls.target.clone(), t1: cam.controls.target.clone(),
-             t: 0, dur: 1000};
-before = az();
-for (let i = 0; i < 300; i++) cam.update(1 / 240);
-const turned = Math.abs(unwrap(before, az()));
-assert.ok(turned > 0.3 * 0.10472, "the tween froze the orbit, swept " + turned);
-assert.equal(cam.tween, null, "the tween should have finished");
-const radius = cam.camera.position.distanceTo(cam.controls.target);
-assert.ok(Math.abs(radius - 12) < 1e-6,
-          "the tween must still land on its endpoint's radius, got " + radius);
-""")
-    src = CAMERA.read_text(encoding="utf-8")
+/* and a tween keeps turning instead of freezing. The endpoint sits on the
+   same ray from the anchor as the start, so the ease turns the camera by zero
+   on its own: run the identical ease twice, orbit off and orbit on, and the
+   difference can only be the orbit's share of the wall clock. */
+const anchor = new global.T3.THREE.Vector3(2, 3, -1);
+const easeArm = function (spinOn) {
+  const k = 1.6;
+  cam.camera.position.set(9, 4, 0);
+  cam.controls.target.copy(anchor);
+  cam.setAutoRotate(!!spinOn);
+  const p0 = cam.camera.position.clone();
+  cam.tween = {
+    p0: p0,
+    p1: new global.T3.THREE.Vector3(anchor.x + (p0.x - anchor.x) * k,
+                                    anchor.y + (p0.y - anchor.y) * k,
+                                    anchor.z + (p0.z - anchor.z) * k),
+    t0: anchor.clone(), t1: anchor.clone(), t: 0, dur: 1000
+  };
+  const from = az();
+  for (let i = 0; i < 300; i++) cam.update(1 / 240);
+  return {swept: Math.abs(unwrap(from, az())), tween: cam.tween,
+          radius: cam.camera.position.distanceTo(cam.controls.target),
+          start: p0.distanceTo(anchor), k: k};
+};
+const still = easeArm(false);
+assert.ok(still.swept < 1e-9,
+          "the ease turned the camera by itself, swept " + still.swept);
+const live = easeArm(true);
+assert.equal(live.tween, null, "the tween should have finished");
+const want = 0.6 * __SPIN__ * 1.25;
+assert.ok(Math.abs(live.swept - want) < 1e-6 * want,
+          "the tween froze the orbit: swept " + live.swept + " of " + want +
+          " over 1.25 s");
+assert.ok(Math.abs(live.radius - live.start * live.k) < 1e-6,
+          "the tween must still land on its endpoint, radius " + live.radius);
+""").replace("__SPIN__", unit.group(1)))
     # Every assignment to OrbitControls' flag is off; any other right-hand
-    # side (`!!on`, a variable, a call) is the double driver coming back.
-    writes = re.findall(r"controls\.autoRotate\s*=\s*([^;\n]+)", src)
+    # side (`!!on`, a variable, a call) is the double driver coming back. The
+    # lookarounds skip comparisons, which read the flag instead of setting it.
+    writes = re.findall(r"controls\.autoRotate\s*(?<![=!<>])=(?!=)\s*([^;\n]+)", src)
     assert writes, "the constructor must keep OrbitControls' rotation off"
     assert set(w.strip() for w in writes) == {"false"}, \
         "controls.autoRotate is turned on in: " + str(writes)
-    assert "_spin" not in src
+    assert not re.search(
+        r"prototype\._spin\s*=|function\s+_spin\b|_spin\s*:\s*function", src), \
+        "the per-frame _spin helper is back"
     # The space bar reads the same flag it writes, or it can never resume.
     assert "setAutoRotate(!self.camera.autoRotate)" in UI.read_text(encoding="utf-8")
 
