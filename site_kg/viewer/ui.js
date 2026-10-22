@@ -470,6 +470,11 @@
   /* Live build readings: pages/nodes/edges prominent while ingesting, calm at
      rest; the phase chip carries the ingest state machine. */
   UI.prototype.updateStatus = function (s) {
+    /* The bottom caption outlives the finale, so keep its "N visible" honest
+       when the chapter or edge-kind filters change long after completion. */
+    if (this.finaleNote && s) {
+      this.finaleNote.detail = UI.finaleParts(this.cfg, s).join(" \u00b7 ");
+    }
     var L = SK.launcher;
     if (this.readoutEl && L) {
       var opts = null;
