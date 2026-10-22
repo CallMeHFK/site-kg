@@ -11,9 +11,11 @@
     /* Night facades: steel, brick, slate teal, sandstone, plum. The hues stay
        close to the grey so a district reads as a neighbourhood, and the
        windows supply the warmth: lit glass is the only saturated thing in the
-       frame. Slot 0 is the dominant cluster, so the steel blue sits there. */
-    palette: [0x6f7f96, 0x8a6a52, 0x5f7d7a, 0xb08a58, 0x7a6a86, 0x9a8f7a,
-              0x6a7f8f, 0x8f7a68, 0x5e6b82, 0x7d8a6f, 0x96775f, 0x6b6f7d],
+       frame. Slot 0 is the dominant cluster, so the steel blue sits there.
+       Luma zigzags 0.35-0.62: at the facade gain below, that is the only
+       thing that keeps two neighbouring towers from melting together. */
+    palette: [0x8496b0, 0x6f6257, 0x5c7a76, 0x9d8058, 0x565e78, 0x9a9388,
+              0x49606e, 0x8a7c6a, 0x6f7f96, 0x7d7464, 0x5f7d7a, 0x7f7876],
     starfield: true,
     sky: "skyline",
     lightDir: [0.42, 0.78, 0.34],

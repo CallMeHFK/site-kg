@@ -132,10 +132,10 @@ fn deepvoid(uv: vec2f, t: f32) -> vec3f {
 fn skyline(uv: vec2f, t: f32) -> vec3f {
   let h = uv.y;
   let zenith = vec3f(0.006, 0.008, 0.022);
-  let low = vec3f(0.044, 0.038, 0.068);
+  let low = vec3f(0.036, 0.032, 0.060);
   var col = mix(low, zenith, ss(-0.10, 0.52, h));
   let glow = exp(-pow(max(0.0, h + 0.04) * 3.4, 2.0));
-  col += vec3f(0.30, 0.17, 0.070) * glow * 0.50;
+  col += vec3f(0.30, 0.17, 0.070) * glow * 0.42;
   col += stars(uv + vec2f(t * 0.0022, 0.0), 170.0, 0.40, 0.042, 13.0, t * 0.55)
          * ss(0.04, 0.42, h);
   let band = sin(h * 9.0 + uv.x * 1.3 + t * 0.05) * 0.5 + 0.5;
@@ -622,7 +622,7 @@ fn h21(p0: vec2f) -> f32 {
   return fract(p.x * p.y);
 }
 
-fn hazeCol() -> vec3f { return vec3f(0.030, 0.034, 0.056); }
+fn hazeCol() -> vec3f { return vec3f(0.024, 0.028, 0.048); }
 
 @fragment fn fs_city(i: VOut) -> @location(0) vec4f {
   var col = vec3f(0.0);
@@ -633,17 +633,20 @@ fn hazeCol() -> vec3f { return vec3f(0.030, 0.034, 0.056); }
     let dx = abs(fract(g.x / P + 0.5) - 0.5) * P;
     let dz = abs(fract(g.y / P + 0.5) - 0.5) * P;
     let lane = (1.0 - ss(0.03, 0.18, dx)) + (1.0 - ss(0.03, 0.18, dz));
-    col = vec3f(0.017, 0.020, 0.029);
-    col = col + vec3f(0.30, 0.19, 0.086) * lane * 0.22;
+    col = vec3f(0.010, 0.012, 0.018);
+    col = col + vec3f(0.30, 0.19, 0.086) * lane * 0.14;
     let r = length(g) / max(u.a.w, 1.0);
     col = mix(col, hazeCol(), ss(0.85, 1.60, r));
+    /* Dither the ramp into the haze: 8-bit steps would band here. */
+    col = col + vec3f((h21(g * 37.0) - 0.5) * 0.003);
     alpha = 1.0 - ss(1.15, 1.85, r);
   } else if (i.face > 4.5) {
-    col = i.col * 0.012;
+    col = i.col * 0.075;
   } else if (i.face > 3.5) {
     let e = max(abs(i.local.x), abs(i.local.y));
-    col = i.col * 0.085 + vec3f(0.012, 0.014, 0.020);
-    col = col + i.col * 0.26 * ss(0.84, 1.0, e);
+    col = i.col * 0.30 + vec3f(0.030, 0.036, 0.052);
+    col = col * (0.82 + 0.30 * fract(i.spec.z * 5.7));
+    col = col + i.col * 0.40 * ss(0.84, 1.0, e);
     var beacon = 1.0 - ss(0.0, 0.13, length(i.local.xy));
     beacon = beacon * (0.40 + 1.45 * i.spec.y);
     beacon = beacon * (0.70 + 0.30 * sin(u.a.x * 2.1 + i.spec.z * 31.0));
@@ -651,10 +654,12 @@ fn hazeCol() -> vec3f { return vec3f(0.030, 0.034, 0.056); }
   } else {
     let N = normalize(i.nrm);
     let facing = 0.55 + 0.45 * abs(dot(N, normalize(vec3f(0.45, 0.72, 0.33))));
-    col = i.col * (0.20 * facing) * (0.55 + 0.45 * i.local.y);
-    col = col + i.col * 0.24 * ss(0.87, 1.0, abs(i.local.x));
+    col = i.col * (0.40 * facing) * (0.34 + 0.66 * i.local.y)
+        * vec3f(0.90, 0.97, 1.08);
+    col = col * (0.82 + 0.30 * fract(i.spec.z * 5.7));
+    col = col + i.col * 0.45 * ss(0.87, 1.0, abs(i.local.x));
     let up = 1.0 - i.local.y;
-    col = col + vec3f(0.26, 0.17, 0.085) * up * up * up * 0.18;
+    col = col + vec3f(0.26, 0.17, 0.085) * up * up * up * 0.05;
     let floors = max(i.spec.x, 1.0);
     let uu = (i.local.x * 0.5 + 0.5) * 4.0;
     let vv = i.local.y * floors;
@@ -671,7 +676,7 @@ fn hazeCol() -> vec3f { return vec3f(0.030, 0.034, 0.056); }
     let dist = length(q) / max(u.a.w, 1.0);
     let band = ss(ring - 0.24, ring, dist) * (1.0 - ss(ring, ring + 0.15, dist));
     lit = max(lit, band * step(0.42, pick));
-    let lamp = mix(vec3f(1.0, 0.82, 0.56), i.col, 0.30);
+    let lamp = mix(vec3f(1.0, 0.84, 0.58), i.col, 0.22);
     let flick = 0.86 + 0.14 * sin(u.a.x * 1.6 + cell.x * 2.7
                                 + cell.y * 1.9 + seed * 9.0);
     col = col + vec3f(0.013, 0.016, 0.023) * win;
