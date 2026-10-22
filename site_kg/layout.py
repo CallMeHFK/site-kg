@@ -28,7 +28,9 @@ CELL_CUT = 0.35
 MAX_STEP = 0.06
 STRUCT_WEIGHT = {"ref": 1.0, "imports": 1.0, "contains": 0.30, "hub": 0.30}
 DERIVED = frozenset({"mentions_symbol", "similar_to", "sibling_of", "supersedes",
-                     "shares_entity", "semantic_similar"})
+                     "shares_entity", "semantic_similar",
+                     "shares_heading", "shares_term", "duplicate_of",
+                     "coupled_with", "co_cited_with"})
 
 
 def _rand(seed: int, *parts: object) -> float:
