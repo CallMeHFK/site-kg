@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -12,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 CORE = ROOT / "site_kg" / "viewer" / "core.js"
 RENDER = ROOT / "site_kg" / "viewer" / "render.js"
 GPU = ROOT / "site_kg" / "viewer" / "gpu.js"
+CAMERA = ROOT / "site_kg" / "viewer" / "camera.js"
 DIRECTOR = ROOT / "site_kg" / "viewer" / "director.js"
 LAUNCHER = ROOT / "site_kg" / "viewer" / "launcher.js"
 PLANETS = ROOT / "site_kg" / "viewer" / "scenes" / "planets.js"
@@ -440,6 +442,223 @@ def test_city_geometry_is_tiered():
     # on a roof, which put the beacon out and flattened the parapet into a
     # wash of one colour.
     assert "table.face[k] > 7 ? table.loc[k * 3 + 1] : yf" in js
+
+
+def test_orbit_turns_once_per_frame_from_dt():
+    """The orbit is dt-based and must not also run OrbitControls' auto-rotate.
+
+    setAutoRotate used to assign controls.autoRotate, and switchScene calls it
+    on every scene change. From then on OrbitControls stepped a fixed angle per
+    rendered frame on top of the dt-based turn: the measured rate went from
+    1.3 to 4.2 degrees per second, and it changed with the frame rate -- the
+    stutter this pass was meant to remove.
+
+    This drives the real update() over a stub rig: sixty frames of 1/60 s have
+    to sweep exactly cfg.spin * one unit of _angle, once. The unit is measured
+    from the rig (spin 1 for one second) rather than copied out of the source.
+    """
+    _run(_prelude(CORE, CAMERA) + r"""
+global.T3 = (function () {
+  function V(x, y, z) { this.x = x || 0; this.y = y || 0; this.z = z || 0; }
+  V.prototype.set = function (x, y, z) { this.x = x; this.y = y; this.z = z;
+    return this; };
+  V.prototype.clone = function () { return new V(this.x, this.y, this.z); };
+  V.prototype.copy = function (v) { return this.set(v.x, v.y, v.z); };
+  V.prototype.lerpVectors = function (a, b, t) {
+    return this.set(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t,
+                    a.z + (b.z - a.z) * t);
+  };
+  V.prototype.distanceTo = function (v) {
+    return Math.hypot(this.x - v.x, this.y - v.y, this.z - v.z);
+  };
+  /* OrbitControls with its own auto-rotate is the bug: update() here turns
+     the camera whenever the flag is on, exactly as Three would. */
+  function Controls(cam, el) {
+    this.camera = cam;
+    this.target = new V();
+    this.autoRotate = false;
+    this.enabled = true;
+    this.turns = 0;
+  }
+  Controls.prototype.addEventListener = function () {};
+  Controls.prototype.update = function () {
+    if (this.autoRotate) this.turns++;
+  };
+  return {THREE: {Vector3: V}, OrbitControls: Controls};
+})();
+
+const cfg = {spin: 0.6};
+const renderer = {cfg: cfg,
+                  camera: {position: new global.T3.THREE.Vector3(10, 4, 0)},
+                  canvas: {}};
+const cam = new SK.Camera(renderer);
+const az = function () {
+  const p = cam.camera.position, t = cam.controls.target;
+  return Math.atan2(p.x - t.x, p.z - t.z);
+};
+const unwrap = function (a, b) {
+  let d = b - a;
+  while (d > Math.PI) d -= 2 * Math.PI;
+  while (d < -Math.PI) d += 2 * Math.PI;
+  return d;
+};
+
+/* setAutoRotate may record the intent, never hand the turn to OrbitControls */
+cam.setAutoRotate(true);
+assert.equal(cam.autoRotate, true);
+assert.equal(cam.controls.autoRotate, false,
+             "OrbitControls must stay out of the orbit");
+
+/* One unit of _angle, measured off the rig: spin 1 for one second at dt 1
+   sweeps exactly that much. Measuring it keeps this test out of the tuning. */
+cfg.spin = 1;
+cam.camera.position.set(10, 4, 0);
+cam.controls.target.set(0, 0, 0);
+const u0 = az();
+cam.update(1);
+const unit = Math.abs(unwrap(u0, az()));
+cfg.spin = 0.6;
+assert.ok(unit > 0.01, "the orbit unit collapsed to " + unit);
+
+let before = az();
+for (let i = 0; i < 60; i++) cam.update(1 / 60);
+const swept = Math.abs(unwrap(before, az()));
+assert.ok(Math.abs(swept - 0.6 * unit) < 1e-9,
+          "one second should sweep cfg.spin * " + unit + " rad, got " + swept);
+assert.equal(cam.controls.turns, 0, "the second driver must never turn");
+
+/* paused means paused: the space bar flips the same flag */
+cam.setAutoRotate(false);
+before = az();
+for (let i = 0; i < 30; i++) cam.update(1 / 60);
+assert.ok(Math.abs(unwrap(before, az())) < 1e-12, "paused orbit still moved");
+cam.setAutoRotate(true);
+
+/* a drag wins over the intent, and reduced motion stops it */
+cam.userInteracting = true;
+before = az();
+for (let i = 0; i < 30; i++) cam.update(1 / 60);
+assert.ok(Math.abs(unwrap(before, az())) < 1e-12, "orbit moved during a drag");
+cam.userInteracting = false;
+cam.reduced = true;
+before = az();
+for (let i = 0; i < 30; i++) cam.update(1 / 60);
+assert.ok(Math.abs(unwrap(before, az())) < 1e-12, "orbit moved under reduced");
+cam.reduced = false;
+
+/* and a tween keeps turning instead of freezing, while still easing. The
+   endpoint sits on the same ray from the anchor as the start, so the ease
+   turns the camera by zero on its own; the target only rises, which leaves
+   the horizontal azimuth alone. Run the identical ease twice, orbit off and
+   orbit on: the arms must agree on the ease and differ only by the orbit. */
+const t0 = new global.T3.THREE.Vector3(2, 3, -1);
+const t1 = new global.T3.THREE.Vector3(2, 4.5, -1);
+const k = 1.6;
+/* probe the ease at three points: two of them make a curve that is right at
+   the ends but wrong in between (an overshoot, a backtrack) impossible */
+const PROBES = [{i: 74, k: 0.3125}, {i: 149, k: 0.625}, {i: 224, k: 0.9375}];
+const easeArm = function (spinOn) {
+  cam.camera.position.set(9, 4, 0);
+  cam.controls.target.copy(t0);
+  cam.setAutoRotate(!!spinOn);
+  const p0 = cam.camera.position.clone();
+  const p1 = new global.T3.THREE.Vector3(t0.x + (p0.x - t0.x) * k,
+                                         t0.y + (p0.y - t0.y) * k,
+                                         t0.z + (p0.z - t0.z) * k);
+  /* both lerps are distances, so the orbit's turn about the target's axis
+     leaves them unchanged and the closed form is what the sample must hit */
+  const want = PROBES.map(function (p) {
+    const e = 1 - Math.pow(1 - p.k, 3);
+    return {y: 3 + 1.5 * e,
+            r: p0.clone().lerpVectors(p0, p1, e)
+              .distanceTo(t0.clone().lerpVectors(t0, t1, e))};
+  });
+  cam._to(p1, t1.clone(), 1000);
+  const from = az();
+  const got = [];
+  for (let i = 0; i < 300; i++) {
+    cam.update(1 / 240);
+    PROBES.forEach(function (p, n) {
+      if (i === p.i) got[n] = {y: cam.controls.target.y,
+                               r: cam.camera.position.distanceTo(cam.controls.target)};
+    });
+  }
+  return {swept: Math.abs(unwrap(from, az())), tween: cam.tween,
+          radius: cam.camera.position.distanceTo(cam.controls.target),
+          end: p1.distanceTo(t1), want: want, got: got,
+          targetY: cam.controls.target.y};
+};
+const checkEase = function (arm, label) {
+  PROBES.forEach(function (p, n) {
+    assert.ok(Math.abs(arm.got[n].y - arm.want[n].y) < 1e-3,
+              label + ": the target eased off the curve at k=" + p.k +
+              ", y = " + arm.got[n].y);
+    assert.ok(Math.abs(arm.got[n].r - arm.want[n].r) < 1e-6,
+              label + ": the camera eased at the wrong curve at k=" + p.k +
+              ", " + arm.got[n].r + " of " + arm.want[n].r);
+  });
+};
+
+/* paused turns nothing, but it must not stall the ease either: a refit that
+   starts while paused has to finish, or director.js waits on its latch */
+const still = easeArm(false);
+assert.ok(still.swept < 1e-9,
+          "the ease turned the camera by itself, swept " + still.swept);
+assert.equal(still.tween, null, "the ease must finish even while paused");
+assert.ok(Math.abs(still.targetY - 4.5) < 1e-6,
+          "the ease never moved the target, y = " + still.targetY);
+checkEase(still, "paused");
+assert.ok(Math.abs(still.radius - still.end) < 1e-6,
+          "the ease landed off its endpoint, radius " + still.radius);
+
+const live = easeArm(true);
+assert.equal(live.tween, null, "the tween should have finished");
+const wantSweep = 0.6 * unit * 1.25;
+assert.ok(Math.abs(live.swept - wantSweep) < 1e-6 * wantSweep,
+          "the tween froze the orbit: swept " + live.swept + " of " +
+          wantSweep + " over 1.25 s");
+assert.ok(Math.abs(live.targetY - 4.5) < 1e-6,
+          "the ease never moved the target, y = " + live.targetY);
+checkEase(live, "orbiting");
+assert.ok(Math.abs(live.radius - live.end) < 1e-6,
+          "the ease landed off its endpoint, radius " + live.radius);
+/* a tween may turn the orbit off in OrbitControls; it must not turn it on */
+assert.equal(cam.controls.autoRotate, false,
+             "a tween re-enabled OrbitControls' orbit");
+assert.equal(cam.controls.turns, 0, "the second driver must never turn");
+""")
+    src = CAMERA.read_text(encoding="utf-8")
+    # Every assignment to OrbitControls' flag is off; any other right-hand
+    # side (`!!on`, a variable, a call) is the double driver coming back. The
+    # lookarounds skip comparisons, which read the flag instead of setting it.
+    writes = re.findall(r"controls\.autoRotate\s*(?<![=!<>])=(?!=)\s*([^;\n]+)", src)
+    assert writes, "the constructor must keep OrbitControls' rotation off"
+    assert set(w.strip() for w in writes) == {"false"}, \
+        "controls.autoRotate is turned on in: " + str(writes)
+    assert not re.search(r"\b_spin\s*[=:]|function\s+_spin\b", src), \
+        "the per-frame _spin helper is back"
+    # The space bar reads the same flag it writes, or it can never resume.
+    assert "setAutoRotate(!self.camera.autoRotate)" in UI.read_text(encoding="utf-8")
+
+
+def test_refit_gate_needs_material_growth():
+    """Refits follow growth, not the clock, or the camera eases constantly.
+
+    A 1.6 s timer fitted the graph on every batch and the camera spent half of
+    each two seconds in a tween, which read as the stutter this pass removes.
+    The gate has to watch the extent as well: a layout patch re-spreads a fixed
+    node count, and a count-only gate would never re-frame that.
+
+    Matched on squashed whitespace so the assertions survive reformatting but
+    fail if `grew` leaves the condition or the high-water marks stop being
+    stamped -- either one brings the stutter back with the test still green.
+    """
+    js = " ".join(DIRECTOR.read_text(encoding="utf-8").split())
+    assert ("var grew = this.live.n >= (this._fitN || 0) * 1.3 + 6 || "
+            "this.renderer.sceneRadius >= (this._fitR || 0) * 1.15;") in js
+    assert "this.live.n && grew && this.time - (this._fitTick || 0) > 1.6" in js
+    assert "this._fitN = this.live.n;" in js
+    assert "this._fitR = this.renderer.sceneRadius;" in js
 
 
 def test_city_gpu_pipeline_is_declared():

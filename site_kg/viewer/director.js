@@ -666,15 +666,22 @@
     if (this.batcher && this.batcher.pump) this.batcher.pump();
     if (this.renderer) this.renderer.time = this.time;
     this.renderer.sync(this.live);
-    /* Keep framing the graph while it grows: nodes arrive over minutes and a
-       fit that only happens at ingest_done leaves the build off-centre. */
+    /* Keep framing the graph while it grows, but only when the growth is
+       material. Refitting on every batch eased the camera for half a second
+       out of every two, and that read as a stutter rather than as a fit.
+       Count alone is not enough: a layout patch re-spreads a fixed number of
+       nodes, so the extent has to count too or that fit never fires. */
+    var grew = this.live.n >= (this._fitN || 0) * 1.3 + 6 ||
+      this.renderer.sceneRadius >= (this._fitR || 0) * 1.15;
     if (!this.camera.userInteracting && this.state === "ingesting" &&
-        this.live.n && this.time - (this._fitTick || 0) > 1.6) {
+        this.live.n && grew && this.time - (this._fitTick || 0) > 1.6) {
       this._fitTick = this.time;
       this._fitNext = true;
     }
     if (this._fitNext && this.live.n && !this.camera.tween) {
       this._fitNext = false;
+      this._fitN = this.live.n;
+      this._fitR = this.renderer.sceneRadius;
       this.camera.fitLive({robust: true, duration: 500});
       this._fittedOnce = true;
     }

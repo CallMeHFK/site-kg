@@ -54,7 +54,7 @@
     "  p = fract(p*vec2(127.31, 311.7));",
     "  p += dot(p, p + 34.23);",
     "  return fract(p.x*p.y); }",
-    "vec3 hazeCol(){ return vec3(0.024, 0.028, 0.048); }",
+    "vec3 hazeCol(){ return vec3(0.030, 0.036, 0.060); }",
     "void main(){",
     "  vec3 col;",
     "  float alpha = 1.0;",
@@ -83,9 +83,9 @@
        ground. Far out that difference is one pixel wide and only aliases, so
        the pattern dissolves into flat ground before it turns into moire. */
     "    float near = 1.0 - smoothstep(0.45, 0.88, r);",
-    "    col = mix(vec3(0.027, 0.028, 0.034), vec3(0.011, 0.012, 0.016),"
+    "    col = mix(vec3(0.040, 0.042, 0.052), vec3(0.020, 0.022, 0.030),"
       + " road * near);",
-    "    col = mix(col, vec3(0.040, 0.041, 0.048), walk * near);",
+    "    col = mix(col, vec3(0.062, 0.064, 0.076), walk * near);",
     "    col += vec3(0.30, 0.19, 0.086) * road *"
       + " (1.0 - smoothstep(0.0, kerb, m)) * 0.05 * near;",
     "    col += vec3(0.40, 0.30, 0.16) * mark * 0.20 * near;",
@@ -102,7 +102,7 @@
        step in the silhouette. */
     "    float e = max(max(abs(vLocal.x), abs(vLocal.y)),"
       + " (abs(vLocal.x) + abs(vLocal.y)) * 0.5952);",
-    "    col = vCol * 0.15 + vec3(0.014, 0.017, 0.026);",
+    "    col = vCol * 0.18 + vec3(0.020, 0.024, 0.034);",
     "    col *= 0.84 + 0.24 * fract(vSpec.z * 5.7);",
     "    col += (h21(floor(vLocal.xy * 9.0)) - 0.5) * 0.010;",
     "    col += vCol * 0.36 * smoothstep(0.86, 1.0, e);",
@@ -111,7 +111,7 @@
        node's fan-out -- the same number the windows carry. */
     "    float e = max(max(abs(vLocal.x), abs(vLocal.y)),"
       + " (abs(vLocal.x) + abs(vLocal.y)) * 0.5952);",
-    "    col = vCol * 0.12 + vec3(0.013, 0.016, 0.024);",
+    "    col = vCol * 0.15 + vec3(0.018, 0.022, 0.032);",
     "    col *= 0.82 + 0.30 * fract(vSpec.z * 5.7);",
     "    col += (h21(floor(vLocal.xy * 9.0)) - 0.5) * 0.012;",
     "    col += vCol * 0.44 * smoothstep(0.86, 1.0, e);",
@@ -127,9 +127,9 @@
     /* One sun, not a studio rig: the two faces turned away from it fall into
        shadow, and that contrast is what tells a chamfer from a flat slab. */
     "    vec3 L = normalize(vec3(0.45, 0.72, 0.33));",
-    "    float facing = 0.34 + 0.66 * max(dot(N, L), 0.0);",
-    "    float sky = 0.05 + 0.09 * (N.y * 0.5 + 0.5);",
-    "    col = vCol * (0.62 * facing + sky) * (0.38 + 0.62 * vLocal.y)"
+    "    float facing = 0.40 + 0.72 * max(dot(N, L), 0.0);",
+    "    float sky = 0.09 + 0.13 * (N.y * 0.5 + 0.5);",
+    "    col = vCol * (0.80 * facing + sky) * (0.46 + 0.54 * vLocal.y)"
       + " * vec3(0.90, 0.97, 1.08)"
       + " * (0.82 + 0.30 * fract(vSpec.z * 5.7));",
     /* The corner columns catch the sky: without them two neighbouring slabs
@@ -253,7 +253,7 @@
     this.live = live;
     this.scene = new THREE.Scene();
     this.camera = new THREE.PerspectiveCamera(60, 1, 0.1, 1e6);
-    this.scene.background = new THREE.Color(0x04050b);
+    this.scene.background = new THREE.Color(0x070a14);
 
     /* The cosmos is a shader, not a baked image: three parallax star layers
        twinkle over drifting nebulae, a milky-way band crosses the field, and
@@ -500,7 +500,7 @@
     this.cityGeo = new THREE.BufferGeometry();
     this.cityMesh = new THREE.Mesh(this.cityGeo, new THREE.ShaderMaterial({
       uniforms: this.cityUni, vertexShader: CITY_VS, fragmentShader: CITY_FS,
-      transparent: true, depthTest: true, depthWrite: true, side: THREE.FrontSide
+      transparent: true, depthTest: true, depthWrite: true, side: THREE.DoubleSide
     }));
     this.cityMesh.frustumCulled = false;
     this.cityMesh.renderOrder = -1;
