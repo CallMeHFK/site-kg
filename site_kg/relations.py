@@ -332,7 +332,7 @@ def _index_groups(profiles: list[dict]) -> None:
 
 
 # ---- dimension builders ---------------------------------------------------
-def _symbol_edges(profiles: list[dict]) -> list[tuple[str, str, str]]:
+def _symbol_edges(profiles: list[dict], notes: list[str]) -> list[tuple[str, str, str]]:
     """Cross-file symbol references: identifiers defined in one file, used in
     another. Ranked by mention count plus a title bonus (a symbol the page is
     *about* beats one pasted into a helper), with a (-score, symbol) tie-break:
@@ -340,6 +340,10 @@ def _symbol_edges(profiles: list[dict]) -> list[tuple[str, str, str]]:
     could permute which symbols make the cap."""
     code = [p for p in profiles if p["is_code"]]
     if len(code) > MAX_SYMBOL_DOCS:
+        # the selector gates on total corpus size, the pass itself on *code*
+        # docs: between the two budgets the dimension ran and stayed silent
+        notes.append(f"mentions_symbol skipped: {len(code)} code docs over the "
+                     f"{MAX_SYMBOL_DOCS}-doc budget for the symbol pass")
         return []
     owners: dict[str, set[str]] = defaultdict(set)
     for p in code:
@@ -619,8 +623,9 @@ def _sibling_edges(profiles: list[dict]) -> list[tuple[str, str, str]]:
     for members in groups.values():
         if not SIBLING_MIN <= len(members) - 1 <= SIBLING_MAX:
             continue
-        for i, a in enumerate(sorted(members)):
-            for b in sorted(members)[i + 1:]:
+        ordered = sorted(members)  # once per group: the inner loop re-sorted every row
+        for i, a in enumerate(ordered):
+            for b in ordered[i + 1:]:
                 out.append((a, b, "sibling_of"))
     return out
 
@@ -657,7 +662,7 @@ def _entity_edges(profiles: list[dict], notes: list[str]) -> list[tuple[str, str
             notes.append("shares_entity skipped: no chat model on the gateway")
             return []
     except Exception as e:  # config missing, gateway down -> not fatal
-        notes.append(f"shares_entity skipped: {type(e).__name__}")
+        notes.append(f"shares_entity skipped: {type(e).__name__}: {e}")
         return []
 
     entities: dict[str, set[str]] = defaultdict(set)
@@ -744,15 +749,24 @@ def _embed_edges(profiles: list[dict], notes: list[str]) -> list[tuple[str, str,
         texts = [f"{p['title']}\n{p['body'][:600]}" for p in cands]
         vecs = semantic.embed(texts, model)
     except Exception as e:
-        notes.append(f"semantic_similar skipped: {type(e).__name__}")
+        notes.append(f"semantic_similar skipped: {type(e).__name__}: {e}")
         return []
+    # one dot per unordered pair with precomputed norms: semantic.cosine
+    # re-derives both norms on every call, so a 5000-page budget recomputed
+    # each vector's norm ~10k times over the pair pass
+    norms = [math.sqrt(sum(x * x for x in v)) for v in vecs]
+    near: dict[int, list[tuple[float, str]]] = defaultdict(list)
+    for i in range(len(cands)):
+        for j in range(i + 1, len(cands)):
+            dot = sum(x * y for x, y in zip(vecs[i], vecs[j]))
+            cos = dot / (norms[i] * norms[j] + 1e-12)  # semantic.cosine's epsilon
+            if cos >= EMBED_THRESHOLD:  # threshold before the cap: identical
+                near[i].append((cos, cands[j]["id"]))  # selection, fewer sort keys
+                near[j].append((cos, cands[i]["id"]))
     out = []
     for i, p in enumerate(cands):
-        scored = sorted(((semantic.cosine(vecs[i], vecs[j]), cands[j]["id"])
-                         for j in range(len(cands)) if j != i),
-                        key=lambda kv: (-kv[0], kv[1]))[:EMBED_CAP]
-        for cos, other in scored:
-            if cos >= EMBED_THRESHOLD and p["id"] < other:
+        for _cos, other in sorted(near[i], key=lambda kv: (-kv[0], kv[1]))[:EMBED_CAP]:
+            if p["id"] < other:
                 out.append((p["id"], other, "semantic_similar"))
     return out
 
@@ -778,7 +792,7 @@ def route_with_llm(profiles: list[dict], enabled: set[str],
             notes.append("llm router skipped: no chat model on the gateway")
             return {}
     except Exception as e:
-        notes.append(f"llm router skipped: {type(e).__name__}")
+        notes.append(f"llm router skipped: {type(e).__name__}: {e}")
         return {}
     menu = "\n".join(f"- {k}: {DIMENSIONS[k]}" for k in sorted(enabled))
     picks: dict[str, list[str]] = {}
@@ -850,13 +864,13 @@ def build_relations(docs: list[dict], mode: str | None = None,
         picks = route_with_llm(profiles, enabled, notes)
     chosen: dict[str, list[str]] = {}
     for p in profiles:
+        gate = select_dimensions(p, enabled=enabled, heavy_ok=heavy_ok)
         if p["id"] in picks:
-            dims = picks[p["id"]]  # the router's narrowing stands, even to zero
+            # the router's narrowing stands, even to zero -- but the router may
+            # pick a dimension the content cannot support, so re-gate against it
+            chosen[p["id"]] = [d for d in picks[p["id"]] if d in gate]
         else:
-            dims = select_dimensions(p, enabled=enabled, heavy_ok=heavy_ok)
-        # the router may pick a dimension the content cannot support; re-gate it
-        chosen[p["id"]] = [d for d in dims
-                           if d in select_dimensions(p, enabled=enabled, heavy_ok=heavy_ok)]
+            chosen[p["id"]] = gate
 
     seen = have or set()
     raw: list[tuple[str, str, str]] = []
@@ -869,7 +883,7 @@ def build_relations(docs: list[dict], mode: str | None = None,
     if "co_cited_with" in enabled and link_pairs:
         raw += _overlap_edges(link_pairs, "in")
     if any("mentions_symbol" in v for v in chosen.values()):
-        raw += _symbol_edges(profiles)
+        raw += _symbol_edges(profiles, notes)
     if any("similar_to" in v for v in chosen.values()):
         raw += _similar_edges(profiles)
     if any("sibling_of" in v for v in chosen.values()):
