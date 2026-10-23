@@ -8,7 +8,9 @@
   var PALETTE = [0xc87358, 0x9db4d0, 0x74b4ba, 0xe8c07d, 0xe6d5b0, 0xb097c6,
                  0xf2e6cf, 0x5b90d2, 0xb3656a, 0x8396c4, 0xd8a35f, 0xaab7a4];
   var DERIVED = {mentions_symbol: 1, similar_to: 1, sibling_of: 1,
-                 supersedes: 1, shares_entity: 1, semantic_similar: 1};
+                 supersedes: 1, shares_entity: 1, semantic_similar: 1,
+                 shares_heading: 1, shares_term: 1, duplicate_of: 1,
+                 coupled_with: 1, co_cited_with: 1};
 
   SK.PALETTE = PALETTE;
   SK.DERIVED = DERIVED;

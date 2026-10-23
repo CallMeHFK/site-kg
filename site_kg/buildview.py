@@ -34,10 +34,13 @@ from html import escape as _html_escape
 from pathlib import Path
 
 # Evidence kinds in the order graph.py resolves them; derived kinds in the
-# registry order relations.py documents (docs/RELATIONS.md).
+# registry order relations.py documents (docs/RELATIONS.md), with later
+# additions appended so existing archives keep their phase timeline.
 EVIDENCE_ORDER = ("ref", "imports", "contains", "hub")
 DERIVED_ORDER = ("mentions_symbol", "similar_to", "sibling_of", "supersedes",
-                 "shares_entity", "semantic_similar")
+                 "shares_entity", "semantic_similar",
+                 "shares_heading", "shares_term", "duplicate_of",
+                 "coupled_with", "co_cited_with")
 
 CHAPTER_COLORS = (0x58a6ff, 0x3fb950, 0xd29922, 0xf778ba, 0xa371f7, 0x76e3ea,
                   0xffa657, 0xff7b72, 0x7ee787, 0xe3b341, 0x79c0ff, 0x56d4bc)

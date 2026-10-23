@@ -244,6 +244,14 @@
     return best;
   };
 
+  /* ui.js drives the same drag surface on both renderers; nothing can be
+     picked up in 2D, so beginDrag declines and the press ends in a no-op
+     poke instead of a TypeError. */
+  Fallback2D.prototype.beginDrag = function (i, x, y) { return false; };
+  Fallback2D.prototype.moveDrag = function (x, y) {};
+  Fallback2D.prototype.endDrag = function () {};
+  Fallback2D.prototype.poke = function (i) {};
+
   Fallback2D.prototype.prepareEdgeLod = function () {};
   Fallback2D.prototype.startFinale = function () {};
   Fallback2D.prototype.resetFinale = function () {};
