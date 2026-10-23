@@ -847,7 +847,9 @@ function loop(now) {
   requestAnimationFrame(loop);
   const dt = Math.min(0.1, (now - last) / 1000);
   last = now;
-  fps += (1000 / Math.max(dt, 1) - fps) * 0.05;
+  // dt is seconds (capped at 0.1 above): a milliseconds-style guard would
+  // read Math.max(dt,1)==1 and pin the HUD at FPS 1000
+  fps += (1 / Math.max(dt, 1e-3) - fps) * 0.05;
   if (!paused) t += dt * speed;
   if (autoRotate && !dragging) cam.yaw += dt * 0.06;
   const eye = camPos();

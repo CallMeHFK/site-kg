@@ -203,8 +203,8 @@ def decode_graph(data: bytes) -> dict:
     return {"nodes": nodes, "edges": edges, "hash": graph_hash}
 
 
-def _q(v: float) -> int:
-    return max(-32767, min(32767, round(float(v) * Q)))
+def _q(v: float, scale: float = Q) -> int:
+    return max(-32767, min(32767, round(float(v) * scale)))
 
 
 def _dq(v: int, scale: float) -> float:
@@ -216,7 +216,9 @@ def encode_layout(nodes: list[dict], patches: list[dict], *, final: int | None =
     for nd in nodes:
         best = max(best, abs(float(nd.get("x", 0.0))), abs(float(nd.get("y", 0.0))),
                    abs(float(nd.get("z", 0.0))))
-    # keep the encoding lossless-in-range even if a caller leaks coords past 1
+    # keep the encoding lossless-in-range even if a caller leaks coords past 1:
+    # quantize WITH the recorded scale -- decoding divides by it, so a fixed-Q
+    # quantization here would scale every coordinate back up by ~best
     scale = float(Q) if best <= 1.0 else Q / best
     header = _LAYOUT_HEADER.pack(
         LAYOUT_MAGIC, VERSION, 0, len(nodes), len(patches), scale, 0)
@@ -225,7 +227,8 @@ def encode_layout(nodes: list[dict], patches: list[dict], *, final: int | None =
         cluster = nd.get("c", 0)
         depth = nd.get("d", 0)
         out.append(_LAYOUT_NODE.pack(
-            _q(nd.get("x", 0.0)), _q(nd.get("y", 0.0)), _q(nd.get("z", 0.0)),
+            _q(nd.get("x", 0.0), scale), _q(nd.get("y", 0.0), scale),
+            _q(nd.get("z", 0.0), scale),
             int(cluster) if isinstance(cluster, int) else 0,
             int(depth) if isinstance(depth, int) else 0, 0))
     for patch in patches:
@@ -240,7 +243,8 @@ def encode_layout(nodes: list[dict], patches: list[dict], *, final: int | None =
             if not 0 <= i < len(nodes):
                 raise ValueError(f"layout patch references unknown node index {i}")
             out.append(_PATCH_ROW.pack(
-                i, _q(row.get("x", 0.0)), _q(row.get("y", 0.0)), _q(row.get("z", 0.0)), 0))
+                i, _q(row.get("x", 0.0), scale), _q(row.get("y", 0.0), scale),
+                _q(row.get("z", 0.0), scale), 0))
     last = patches[-1] if patches else {}
     final_seq = int(final) if final is not None else int(last.get("seq", 0))
     out.append(_LAYOUT_FINAL.pack(final_seq, int(last.get("ms", 0)), len(nodes), 0))

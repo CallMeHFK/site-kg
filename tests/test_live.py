@@ -254,3 +254,21 @@ def test_start_block_private_refuses_private_targets():
             socket.getaddrinfo = orig
     finally:
         srv.stop()
+
+
+def test_token_guard_survives_non_ascii(hub):
+    srv = serve_hub(hub, port=0, token="tokén")
+    srv.start()
+    try:
+        with pytest.raises(urllib.error.HTTPError) as err:
+            _get(srv.url, "/health")
+        assert err.value.code == 401
+        # a non-ASCII supplied token must be a clean 401, not a TypeError that
+        # kills the handler thread and drops the connection
+        with pytest.raises(urllib.error.HTTPError) as err2:
+            _get(srv.url, "/health?token=%C3%A9")
+        assert err2.value.code == 401
+        with _get(srv.url, "/health?token=tok%C3%A9n") as resp:
+            assert resp.status == 200
+    finally:
+        srv.stop()

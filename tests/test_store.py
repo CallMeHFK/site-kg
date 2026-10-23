@@ -103,7 +103,7 @@ def test_legacy_docs_json_still_read(isolated_data):
 
 def test_unknown_site_raises(isolated_data):
     with pytest.raises(KeyError):
-        store.get_doc("no-such-site", "a")
+        store.get_doc("no-such-site-12345678", "a")
 
 
 def test_external_rewrite_seen_without_save_site(isolated_data, tmp_path):
@@ -164,3 +164,25 @@ def test_bucket_shrink_drops_stale_shards(isolated_data, tmp_path, monkeypatch):
     _ingest(src)
     assert [p.name for p in (store.site_dir(site_id) / "docs").glob("*.json")] == ["0.json"]
     assert store.get_doc(site_id, "a")["title"] == "A"
+
+
+def test_site_dir_rejects_path_escape(isolated_data):
+    # site_id is caller-controlled via every MCP tool: traversal, absolute
+    # paths and non-generated shapes must never reach the filesystem join
+    for bad in ("../evil", r"..\evil", "C:/evil", "/abs-12345678", "abc",
+                "abc-ZZZZZZZZ", "abc-12345", "a/b-cdef1234", "", "."):
+        with pytest.raises(ValueError):
+            store.site_dir(bad)
+    ok = store.site_id_for("https://example.org/docs/")
+    assert store.site_dir(ok).name == ok
+    assert store.site_dir(ok).parent == store.DATA
+
+
+def test_cli_render_unknown_site_fails_cleanly(isolated_data, monkeypatch):
+    import sys
+
+    from site_kg import cli
+    monkeypatch.setattr(sys, "argv", ["site-kg", "render", "ghost-00000000"])
+    with pytest.raises(SystemExit) as err:
+        cli.main()
+    assert "render failed" in str(err.value)

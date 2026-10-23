@@ -37,9 +37,15 @@ def _resolve_live_target(target: str, *, local: bool, replay: bool) -> tuple[str
             _die(f"not a directory: {target}")
         return "local", str(root.resolve())
     from . import store
-    if not (store.site_dir(target) / "meta.json").exists():
-        if Path(target).expanduser().is_dir():
-            _die(f"'{target}' is a local directory; pass --local")
+    # directory hint before the site lookup: a Windows path is not a valid
+    # site id, and site_dir rejects those with ValueError
+    if Path(target).expanduser().is_dir():
+        _die(f"'{target}' is a local directory; pass --local")
+    try:
+        known = (store.site_dir(target) / "meta.json").exists()
+    except ValueError:
+        known = False
+    if not known:
         _die(f"unknown site '{target}'; pass a URL or --local <path>")
     return "replay", target
 
@@ -163,9 +169,14 @@ def main(argv: list[str] | None = None) -> None:
         from . import store
         from .viewer import render_viewer
         out = store.site_dir(args.site_id) / "viewer.html"
-        render_viewer(store.load(args.site_id, "graph"), store.load(args.site_id, "meta"),
-                      out, scene=args.scene, max_nodes=args.max_nodes,
-                      external_data=args.external_data)
+        try:
+            render_viewer(store.load(args.site_id, "graph"), store.load(args.site_id, "meta"),
+                          out, scene=args.scene, max_nodes=args.max_nodes,
+                          external_data=args.external_data)
+        except (KeyError, ValueError) as e:
+            # same failure contract as render-build below and the MCP tools:
+            # clean error, no traceback (unknown site or malformed site id)
+            raise SystemExit(f"render failed: {e}")
         print(out)
     elif args.cmd == "render-build":
         from . import store

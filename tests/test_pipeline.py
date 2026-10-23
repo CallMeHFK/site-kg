@@ -173,3 +173,30 @@ def test_robots_read_runs_off_the_event_loop(monkeypatch):
     asyncio.run(run())
     assert len(ticks) >= 5, "the loop kept ticking while robots.txt was read"
 
+
+
+def test_ingest_url_clamps_its_crawl_knobs(monkeypatch):
+    # concurrency=0 parks forever on asyncio.Semaphore(0) inside fetch_pages;
+    # the clamps mirror ingest_local's max_files guard
+    import asyncio
+
+    from site_kg import mcp_server
+
+    seen = {}
+
+    async def fake_inventory(url, **kw):
+        seen.update(kw)
+        return ["https://x.example/a"], "bfs", {"errors": [], "js_render_skipped": 0}
+
+    async def fake_fetch(urls, base, **kw):
+        seen["concurrency"] = kw["concurrency"]
+        return {}, {"robots_blocked": False, "js_render_skipped": 0}
+
+    monkeypatch.setattr("site_kg.manifest.page_inventory", fake_inventory)
+    monkeypatch.setattr("site_kg.ingest.fetch_pages", fake_fetch)
+    res = asyncio.run(mcp_server.ingest_url("https://x.example/", concurrency=0,
+                                            max_pages=-5, max_depth=0))
+    assert seen["concurrency"] == 1
+    assert seen["max_pages"] == 1
+    assert seen["max_depth"] == 1
+    assert res["ok"] is False

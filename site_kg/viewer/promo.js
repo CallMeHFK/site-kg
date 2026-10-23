@@ -284,6 +284,9 @@
         var sy2 = galY + gy1 * GALS * galPop * per2;
 
         var X, Y, size, alpha, sprite;
+        // hoisted: the else branch (third act) reads flick too, and a
+        // branch-local var leaves it undefined there -> NaN alpha
+        var flick = p.lit < .5 ? .08 + .28 * Math.abs(Math.sin(t * 1.9 + p.ph * 5.3)) : 1;
 
         if (m <= 1) {
           var q = ease(Math.max(0, Math.min(1, m * 1.3 - p.st * .3)));
@@ -302,7 +305,6 @@
             al0 *= (1 - cOn) + cOn * (.3 + 1.25 * litF);
           }
           size = (sz0 + (sz1 - sz0) * q) * (1 + .9 * near);
-          var flick = p.lit < .5 ? .08 + .28 * Math.abs(Math.sin(t * 1.9 + p.ph * 5.3)) : 1;
           var al1 = (.42 + .5 * Math.abs(Math.sin(t * .75 + p.ph * 3))) * flick;
           alpha = al0 + (al1 - al0) * q;
           if (q > 0) {

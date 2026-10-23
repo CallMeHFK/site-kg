@@ -131,8 +131,11 @@ LLM_BATCH = 8
 
 CODE_HEADER = re.compile(
     r"^path:\s*(\S*)\s*\nlanguage:\s*(\S*)\s*\nsymbols:\s*(.*?)\s*\n", re.M)
-# 'v1' after a separator counts as a version; 'conv1' must not
-VER_TAGGED = re.compile(r"(?<![0-9A-Za-z])(?:v|ver|version|rev)(\d+)(?![0-9A-Za-z_.])", re.I)
+# 'v1' after a separator counts as a version; 'conv1' must not. The dotted
+# tail makes 'v2.0'/'version2.0'/'rev1.2' parse (and strip from base keys),
+# while the trailing-dot exclusion keeps 'file-v2.txt' unversioned.
+VER_TAGGED = re.compile(
+    r"(?<![0-9A-Za-z])(?:v|ver|version|rev)(\d+(?:\.\d+){0,3})(?![0-9A-Za-z_.])", re.I)
 VER_STRICT = re.compile(r"(?<![0-9A-Za-z_.])(\d+(?:\.\d+){1,3})(?![0-9A-Za-z_.])")
 IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]{2,}")
 INLINE_CODE = re.compile(r"`([^`\n]{2,60})`")

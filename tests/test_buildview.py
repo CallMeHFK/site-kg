@@ -251,3 +251,12 @@ def test_end_to_end_from_a_real_corpus(tmp_path: Path):
 def test_b64_roundtrip():
     a = array("f", (1.5, -2.25, 0.0))
     assert list(_f32(_b64(a))) == [1.5, -2.25, 0.0]
+
+
+def test_hud_fps_formula_matches_seconds_dt():
+    # dt is seconds capped at 0.1 (see loop()): a milliseconds-style guard
+    # pins the readout at 1000. Source invariant -- the HUD runs in rAF.
+    src = Path(__file__).resolve().parent.parent.joinpath(
+        "site_kg", "buildview.py").read_text(encoding="utf-8")
+    assert "1 / Math.max(dt, 1e-3)" in src
+    assert "1000 / Math.max(dt, 1)" not in src

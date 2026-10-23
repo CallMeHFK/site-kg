@@ -15,7 +15,7 @@ GRAPH = {
     "edges": [{"s": "a", "t": "b", "k": "ref"}],
 }
 REPORT = {"docs": 2, "edges": 1, "edgeTypes": {"ref": 1}, "verdict": "READY"}
-SITE_ID = "demo"
+SITE_ID = "demo-a1b2c3d4"
 
 
 @pytest.fixture
@@ -132,7 +132,7 @@ def test_live_site_id_without_replay_flag_also_replays(monkeypatch, site):
     (["live", "https://example.com", "--replay"], "--replay"),
     (["live", "https://example.com", "--local", "--replay"], "mutually exclusive"),
     (["live", "ftp://example.com"], "http"),
-    (["live", "no-such-site"], "unknown site"),
+    (["live", "no-such-site-12345678"], "unknown site"),
 ])
 def test_live_ambiguous_or_unknown_targets_fail(monkeypatch, argv, message):
     _fake_serve(monkeypatch)
