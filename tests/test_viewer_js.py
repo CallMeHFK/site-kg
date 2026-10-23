@@ -236,6 +236,31 @@ assert.equal(rec.nodes, 20);
 """)
 
 
+def test_batcher_rate_without_discovery_uses_pages():
+    """A local crawl has no discovery frame. The old fixed floor drained a
+    300-page run at five nodes a second; the page count sets the pace instead."""
+    _run(_prelude(CORE) + """
+const g = new SK.LiveGraph(256);
+g.applyBatch([{t: "progress", pages: 120, nodes: 0, edges: 0, seq: 1}]);
+assert.equal(g.discovered, 0);
+let clock = 0;
+const b = new SK.Batcher(g, {
+  windowMs: 100, maxNodes: 100, timer: false, paced: true,
+  now: function () { return clock; }
+});
+assert.equal(b._rate(), 120);
+for (let i = 0; i < 40; i++) {
+  b.push({t: "node_added", id: "n" + i, title: "N" + i, seq: 10 + i}, 0);
+}
+clock = 100;
+b.flush(100);
+assert.ok(g.n >= 1, "a 120-page run reveals a first slice, got " + g.n);
+clock = 400;
+b.flush(400);
+assert.ok(g.n >= 6, "a bigger site moves in the first second, got " + g.n);
+""")
+
+
 def test_load_snapshot_uses_live_state_shape():
     _run(_prelude(CORE) + """
 const g = new SK.LiveGraph(4);
@@ -1046,6 +1071,14 @@ const growing = B({state: "ingesting", pages: 6, nodes: 6, edges: 9,
 assert.equal(growing.phase, "growing graph");
 assert.ok(Math.abs(growing.ratio - 0.5) < 1e-9);
 assert.equal(growing.label, "6 pages \\u00b7 6 nodes \\u00b7 9 edges");
+/* A local run never emits discovery: the page count is the denominator, so
+   the bar tracks the crawl instead of sitting dead at zero. */
+const local = B({state: "ingesting", pages: 40, nodes: 10, edges: 3,
+                 discovered: 0}, []);
+assert.equal(local.phase, "growing graph");
+assert.equal(local.indeterminate, false);
+assert.ok(Math.abs(local.ratio - 0.25) < 1e-9,
+          "local run ratio, got " + local.ratio);
 const settling = B({state: "settling", pages: 12, nodes: 10, edges: 20,
                     discovered: 12}, []);
 assert.equal(settling.phase, "settling");

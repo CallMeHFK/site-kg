@@ -179,6 +179,10 @@
       backdrop-filter:blur(18px) saturate(1.3);
       -webkit-backdrop-filter:blur(18px) saturate(1.3);
       color:#e6edf3;transition:opacity .45s ease,transform .45s ease}
+ /* The card arrives on the same beat the poster leaves, so the hand-off is a
+    move, not a cut: one rises as the other falls. */
+ #build.in .b-panel{animation:bCardIn .42s cubic-bezier(.16,1,.3,1)}
+ @keyframes bCardIn{from{opacity:0;transform:translateY(10px) scale(.986)}}
  #build.out .b-panel{opacity:0;transform:translateY(-6px)}
  /* The legend owns the same corner while it is open; the build card steps
     aside instead of stacking behind it. */
@@ -190,6 +194,9 @@
  #build .b-phase{font-family:var(--display);font-weight:800;line-height:1.02;
       font-size:24px;letter-spacing:.01em;text-transform:uppercase;
       color:#f4f7fb}
+ /* Each stage word lands on its own beat instead of swapping in place. */
+ #build .b-phase.swap{animation:phaseIn .34s cubic-bezier(.16,1,.3,1)}
+ @keyframes phaseIn{from{opacity:0;transform:translateY(6px)}}
  #build.bad .b-phase{color:#ff9d95}
  #build .b-track{height:4px;border-radius:99px;background:rgba(255,255,255,.07);
       margin:13px 0 10px;overflow:hidden}
@@ -213,10 +220,172 @@
  #build .b-recent li::before{content:"";position:absolute;left:0;top:.62em;
       width:4px;height:4px;border-radius:50%;background:#4ad8ff;
       box-shadow:0 0 7px rgba(74,216,255,.8)}
- #build .b-recent li + li{opacity:.62}
+ /* The stream reads newest-first in emphasis: the page that just landed is
+    the bright one, the older lines step back. */
+ #build .b-recent li:not(:last-child){opacity:.5}
+ #build .b-recent li:last-child{color:#d5e6ff;
+      animation:bFeedIn .32s cubic-bezier(.16,1,.3,1)}
+ @keyframes bFeedIn{from{opacity:0;transform:translateY(6px)}}
+ #build .b-recent li:last-child::before{background:#9df3ff;
+      box-shadow:0 0 10px rgba(157,243,255,.95)}
  #build .b-recent:empty{display:none}
+ /* Complete: the bar closes out in green and the card stops asking to be
+    watched, then leaves the frame on its own. */
+ #build.done .b-fill{background:linear-gradient(90deg,#59c98a,#9df3c4);
+      box-shadow:0 0 16px rgba(89,201,138,.6)}
+ #build.done .b-phase{color:#c8f6dc}
 
- /* ---- launcher: a real render fills the frame, the address is the action ---- */
+ /* ---- intro film: three acts, one canvas, once per session ---- */
+.promo{
+  --mono:"SFMono-Regular",ui-monospace,"JetBrains Mono",Menlo,monospace;
+  --cyan:#5ee7ff;
+}
+html.promo-live{overflow:hidden}
+html.promo-live #launcher{
+  transform:scale(.994);opacity:.4;filter:blur(6px);
+}
+#launcher{transition:transform 1.05s cubic-bezier(.16,1,.3,1),opacity .9s ease,filter .9s ease}
+
+.promo{
+  position:fixed;inset:0;z-index:120;display:flex;align-items:center;justify-content:center;
+  overflow:hidden;opacity:1;transition:opacity .68s ease;
+  background:
+    radial-gradient(820px 560px at 50% 40%,rgba(40,94,176,.20),transparent 66%),
+    radial-gradient(560px 460px at 50% 88%,rgba(94,231,255,.07),transparent 72%),
+    #04050a;
+}
+.promo.out{opacity:0;pointer-events:none}
+.promo::after{
+  content:"";position:absolute;inset:0;z-index:1;pointer-events:none;
+  background:radial-gradient(118% 82% at 50% 42%,transparent 34%,rgba(0,0,0,.66) 100%);
+}
+#promo-canvas{
+  position:absolute;inset:0;width:100%;height:100%;display:block;
+  transition:transform 1.05s cubic-bezier(.36,.02,.2,1),opacity .82s ease;
+}
+.promo.out #promo-canvas{transform:scale(1.9);opacity:0}
+.promo-core{
+  position:absolute;left:50%;top:36%;width:min(74vw,620px);aspect-ratio:1;
+  transform:translate(-50%,-50%);z-index:1;pointer-events:none;
+  background:radial-gradient(circle,rgba(94,231,255,.13),rgba(94,231,255,.04) 42%,transparent 68%);
+  filter:blur(8px);opacity:0;transition:opacity 1.1s ease .2s;
+}
+.promo.ready .promo-core{opacity:1}
+
+.promo-acts{
+  position:absolute;left:0;right:0;top:69%;z-index:2;
+  pointer-events:none;text-align:center;
+  transition:opacity .38s ease;
+}
+.promo.in .promo-acts{opacity:0}
+.act{
+  position:absolute;left:0;right:0;top:0;
+  display:flex;flex-direction:column;align-items:center;
+  opacity:0;transform:translateY(16px) scale(.988);
+  transition:opacity .26s ease,transform .44s cubic-bezier(.16,1,.3,1);
+}
+.act.on{opacity:1;transform:none}
+.act-head{display:flex;align-items:center;gap:11px;
+  font-family:var(--mono);font-size:9px;letter-spacing:.3em;text-transform:uppercase}
+.act-head b{font-weight:400;color:#7e93ae}
+.act-head i{font-style:normal;color:#7fe9ff}
+.act-t{
+  margin:11px 0 0;font-family:var(--display);font-weight:700;
+  font-size:clamp(23px,3.1vw,36px);line-height:1;letter-spacing:-.005em;
+  text-transform:uppercase;color:#eef6ff;
+}
+
+.promo-copy{
+  position:absolute;left:0;right:0;top:62%;z-index:2;
+  transform:translateY(-50%);padding:0 22px;text-align:center;
+}
+.promo-copy::before{
+  content:"";position:absolute;left:50%;top:50%;z-index:-1;pointer-events:none;
+  width:min(1000px,112vw);height:clamp(210px,32vh,320px);
+  transform:translate(-50%,-50%);filter:blur(8px);
+  background:radial-gradient(closest-side,rgba(4,5,10,.9),rgba(4,5,10,.55) 54%,transparent 78%);
+}
+.promo-word{
+  margin:0;display:flex;align-items:baseline;justify-content:center;gap:.015em;
+  font-family:var(--display);font-weight:800;text-transform:uppercase;
+  font-size:clamp(52px,10.5vw,128px);line-height:.9;letter-spacing:-.025em;color:#f4faff;
+  text-shadow:0 0 52px rgba(94,231,255,.32);
+}
+.promo-word span,.promo-word em{
+  display:inline-block;font-style:normal;
+  opacity:0;transform:translateY(20px) scale(.97);filter:blur(11px);
+  transition:opacity .78s ease,transform .95s cubic-bezier(.16,1,.3,1),filter .78s ease;
+  transition-delay:calc(var(--i,0) * 62ms + .04s);
+}
+.promo-word em{
+  width:.3em;height:.072em;border-radius:99px;align-self:center;margin-top:.02em;
+  background:var(--cyan);color:transparent;overflow:hidden;
+  box-shadow:0 0 34px rgba(94,231,255,.75);
+}
+.promo.in .promo-word span,.promo.in .promo-word em{opacity:1;transform:none;filter:none}
+.promo-sub{
+  margin:clamp(12px,1.8vw,20px) 0 0;font-family:var(--mono);
+  font-size:clamp(9px,1vw,11px);letter-spacing:.4em;text-transform:uppercase;color:#93a9c6;
+  opacity:0;transform:translateY(9px);
+  transition:opacity .72s ease .85s,transform .72s ease .85s;
+}
+.promo.in .promo-sub{opacity:1;transform:none}
+
+.promo-foot{
+  position:absolute;left:0;right:0;bottom:clamp(24px,5.6vh,56px);z-index:2;
+  display:flex;flex-direction:column;align-items:center;gap:13px;
+  opacity:0;transition:opacity .7s ease .55s;
+}
+.promo.in .promo-foot{opacity:1}
+.promo-bar{
+  position:relative;width:min(242px,44vw);height:1px;
+  background:rgba(140,190,255,.15);overflow:hidden;
+}
+.promo-bar i{
+  position:absolute;left:0;top:0;bottom:0;width:0;
+  background:linear-gradient(90deg,rgba(94,231,255,0),#5ee7ff 58%,#ffffff);
+  box-shadow:0 0 13px rgba(94,231,255,.85);
+  transition:width 1.2s linear .35s;
+}
+.promo.in .promo-bar i{width:100%}
+.promo-meta{
+  display:flex;align-items:center;justify-content:center;gap:11px;flex-wrap:wrap;
+  font-family:var(--mono);font-size:9px;letter-spacing:.2em;text-transform:uppercase;color:#5c6e86;
+}
+.promo-meta b{font-weight:400;color:#9db4d1}
+.promo-meta s{text-decoration:none;color:#33415a}
+.promo-skip{
+  position:absolute;top:clamp(14px,2.6vh,26px);right:clamp(14px,2.6vw,28px);z-index:3;
+  display:inline-flex;align-items:center;gap:8px;cursor:pointer;
+  padding:8px 14px;border-radius:999px;
+  background:rgba(10,17,30,.46);border:1px solid rgba(140,190,255,.17);color:#93a8c3;
+  font-family:var(--mono);font-size:9.5px;letter-spacing:.18em;text-transform:uppercase;
+  opacity:0;backdrop-filter:blur(9px);
+  transition:opacity .6s ease .1s,color .2s ease,border-color .2s ease,background .2s ease;
+}
+.promo.ready .promo-skip{opacity:1}
+.promo-skip:hover{color:#effaff;border-color:rgba(94,231,255,.46);background:rgba(18,32,52,.72)}
+.promo-skip i{font-style:normal;font-size:12px;line-height:1;opacity:.8}
+
+@media (max-width:560px){
+  .promo-copy{top:60%}
+  .promo-acts{top:70%}
+  .act-t{font-size:26px}
+  .promo-core{top:30%;width:90vw}
+  .promo-sub{letter-spacing:.3em}
+  .promo-skip{top:12px;right:12px;padding:7px 11px;letter-spacing:.14em}
+  .promo-meta{gap:8px;font-size:8.5px;letter-spacing:.14em}
+}
+@media (prefers-reduced-motion:reduce){
+  .promo-word span,.promo-word em,.promo-sub,.promo-foot,.promo-skip,
+  .promo-core,.act{transition:none}
+  .promo-word span,.promo-word em{opacity:1;transform:none;filter:none}
+  .promo-sub,.promo-foot,.promo-skip,.promo-core{opacity:1;transform:none}
+  .promo-bar i{width:100%;transition:none}
+  #launcher{transition:none}
+}
+
+/* ---- launcher: a real render fills the frame, the address is the action ---- */
  #launcher{position:relative;z-index:20;background:var(--space);color:var(--ink);
            display:none;overscroll-behavior:contain}
  #launcher.on{display:block}

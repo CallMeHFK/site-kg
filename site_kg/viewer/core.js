@@ -502,6 +502,11 @@
 
   Batcher.prototype._rate = function () {
     var found = this.live && this.live.discovered ? this.live.discovered : 0;
+    /* A local or dev crawl never emits discovery, so the discovered count
+       stays zero for the whole run. Falling back to the page count keeps the
+       pacing proportional to the site: the old fixed floor drained a 300-page
+       run at five nodes a second, a metronome that took two minutes. */
+    if (!found && this.live && this.live.pages) found = this.live.pages;
     /* Roughly one page per second: a 40-page crawl unfolds over ~7s, a
        2000-page one over the same time, and a 75k-page one is capped at
        ~19s. The floor keeps the first few pages from crawling while the

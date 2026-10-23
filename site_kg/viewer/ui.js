@@ -404,17 +404,34 @@
   UI.prototype._drawBuild = function (status) {
     var box = this.buildEl;
     if (!box || !SK.launcher) return;
+    /* A poster that is already leaving no longer blocks the card: it is
+       translucent by then, so the card can rise underneath it and be in
+       place the moment the poster clears. */
     var launcherUp = this.launcherEl &&
-      this.launcherEl.classList.contains("on");
+      this.launcherEl.classList.contains("on") &&
+      !this.launcherEl.classList.contains("leave");
     if (this.cfg.mode !== "live" || launcherUp) {
       box.classList.add("hide");
       return;
     }
     var v = SK.launcher.buildView(status, this.director.recent);
+    /* The card rises while the poster is still falling: the two motions
+       overlap instead of leaving a blank beat between them. */
+    if (box.classList.contains("hide") && !this._buildIn) {
+      this._buildIn = true;
+      box.classList.add("in");
+    }
     box.classList.remove("hide");
     box.classList.toggle("bad", v.failed);
     box.classList.toggle("unknown", v.indeterminate);
-    this.buildPhaseEl.textContent = v.phase;
+    box.classList.toggle("done", v.complete);
+    if (this.buildPhaseEl.textContent !== v.phase) {
+      this.buildPhaseEl.textContent = v.phase;
+      this.buildPhaseEl.classList.remove("swap");
+      /* restart the entrance: a stage change is a beat, not a text swap */
+      void this.buildPhaseEl.offsetWidth;
+      this.buildPhaseEl.classList.add("swap");
+    }
     this.buildCountsEl.textContent = v.label;
     if (!v.indeterminate) {
       this.buildFillEl.style.transform = "scaleX(" + v.ratio.toFixed(3) + ")";
@@ -1148,7 +1165,12 @@
         } else {
           director.start("live", null);
           if (cfg.liveUrl) ui.connectLive(cfg.liveUrl, cfg.scene);
-          else ui.showLauncher();
+          else {
+            ui.showLauncher();
+            /* The poster is built first and waits behind the film, so the
+               reveal is already settled when the film lifts. */
+            if (SK.promo) SK.promo.play();
+          }
         }
 
         window.addEventListener("resize", function () {

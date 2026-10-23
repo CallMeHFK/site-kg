@@ -193,13 +193,19 @@
     var indeterminate = key === "discovering" ||
       (key === "fetching" && discovered === 0);
     /* While the graph grows, nodes are the honest progress signal: pages land
-       in a burst and would slam the bar to 100% before the first world does. */
+       in a burst and would slam the bar to 100% before the first world does.
+       A local run never emits discovery, so the page count stands in for the
+       denominator: without it the bar sat at zero for the whole crawl. */
+    var total = discovered > 0 ? discovered : pages;
     var ratio;
     if (key === "complete" || key === "settling") ratio = 1;
     else if (key === "growing") {
-      ratio = discovered > 0 ? Math.min(0.99, nodes / discovered) : 0;
+      /* Nodes top out before the links do, so the bar holds a little short of
+         full while edges wire the graph; settling closes the last stretch.
+         Without that gap the bar pinned at 99% for the whole linking pass. */
+      ratio = total > 0 ? Math.min(0.92, nodes / total) : 0;
     } else {
-      ratio = discovered > 0 ? Math.min(1, pages / discovered) : 0;
+      ratio = total > 0 ? Math.min(1, pages / total) : 0;
     }
     var titles = [];
     var list = recent || [];
