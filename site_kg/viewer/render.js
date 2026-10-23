@@ -522,6 +522,7 @@
     this._cityN = -1;
 
     this.nodeUni = {u_px: {value: 1}, u_scale: {value: 1}, u_minpx: {value: 2},
+                    u_density: {value: 1},
                     u_time: {value: 0}, u_neural: {value: 0},
                     u_fly: {value: 1}, u_driftA: {value: 0},
                     u_vol: {value: 0},
@@ -529,7 +530,9 @@
                     u_cam: {value: new THREE.Vector3()},
                     u_light: {value: new THREE.Vector3(-0.55, 0.6, 0.75).normalize()}};
     this.haloUni = {u_px: this.nodeUni.u_px, u_scale: this.nodeUni.u_scale,
-                    u_minpx: this.nodeUni.u_minpx, u_time: this.nodeUni.u_time,
+                    u_minpx: this.nodeUni.u_minpx,
+                    u_density: this.nodeUni.u_density,
+                    u_time: this.nodeUni.u_time,
                     u_neural: this.nodeUni.u_neural,
                     u_fly: this.nodeUni.u_fly, u_driftA: this.nodeUni.u_driftA,
                     u_vol: this.nodeUni.u_vol,
@@ -545,10 +548,11 @@
       + " attribute float a_birth; attribute float a_seed; attribute float a_act;"
       + " attribute vec3 color;"
       + " uniform float u_px; uniform float u_scale; uniform float u_minpx;"
+      + " uniform float u_density;"
       + " uniform float u_time; uniform float u_fly; uniform float u_driftA;"
       + " uniform float u_vol; uniform vec3 u_cam;"
       + " varying vec3 vC; varying float vD; varying float vR; varying float vAge;"
-      + " varying float vGrow; varying float vSprout;"
+      + " varying float vGrow; varying float vSprout; varying float vPix;"
       + " varying vec3 vTail; varying float vSeed; varying float vFace;"
       + " varying float vAct;"
       /* The phase is a stable per-cell seed, never a hash of the position: a
@@ -616,15 +620,29 @@
       + "                        sin(u_time*0.63 + ph*17.0));"
       + "   float grow = (0.35+0.65*born)*(1.0+0.18*sin(born*3.14159));"
       + "   vec4 mv = modelViewMatrix*vec4(p,1.0);"
-      + "   float size = a_size*u_scale*u_px*(300.0/max(-mv.z,1.0));"
+      + "   float baseSize = a_size*u_scale*u_density*u_px*(300.0/max(-mv.z,1.0));"
+      + "   float size = baseSize;"
       + "   size *= mix(1.0,1.42,vR)*grow*(1.0+flight*5.0);"
       /* On the closed head the near hemisphere carries the eye: the cells
          facing the camera keep their size and the far side shrinks back, so
          the front of the head reads as a surface of neurons instead of a flat
          scatter of dots. */
       + "   if (u_vol > 0.5) size *= mix(0.62, 1.0, face);"
-      + "   gl_PointSize = clamp(size, u_minpx*0.7, (220.0 + 280.0*flight)*u_px);"
-      + "   gl_Position = projectionMatrix*mv; }";
+      + "   float pix = clamp(size, u_minpx*0.7, (220.0 + 280.0*flight)*u_px);"
+      /* The halo gates on the node's own footprint, which the vertex shader
+         still has before the halo multiplier is applied. */
+      + "   vPix = clamp(baseSize, u_minpx*0.7, 512.0);"
+      /* Off-frustum cells would still rasterise a full sprite and, worse, feed
+         the additive halo: cull them here so a 75k graph only shades what the
+         camera can see. The 1.3 margin covers sprites whose centre sits just
+         outside the frame. */
+      + "   vec4 clip = projectionMatrix*mv;"
+      + "   vec3 ndc = clip.xyz/clip.w;"
+      + "   if (ndc.x<-1.3||ndc.x>1.3||ndc.y<-1.3||ndc.y>1.3"
+      + "      ||ndc.z<-1.0||ndc.z>1.0){"
+      + "     pix = 0.0; clip = vec4(0.0,0.0,2.0,1.0); }"
+      + "   gl_PointSize = pix;"
+      + "   gl_Position = clip; }";
     this.pgeo = new THREE.BufferGeometry();
     this.cloud = new THREE.Points(this.pgeo, new THREE.ShaderMaterial({
       uniforms: this.nodeUni, vertexShader: vs,
@@ -772,14 +790,19 @@
       uniforms: this.haloUni,
       vertexShader: vs.replace("uniform float u_minpx;",
                                "uniform float u_minpx; uniform float u_halo;")
-                       .replace("a_size*u_scale*u_px",
-                                "a_size*u_scale*u_px*u_halo")
+                       .replace("float size = baseSize;",
+                                "float size = baseSize*u_halo;")
                        .replace("clamp(size, u_minpx*0.7",
                                 "clamp(size, u_minpx*1.2"),
       fragmentShader: "varying vec3 vC; varying float vD; varying float vR;"
         + " varying float vAge; varying vec3 vTail; varying float vFace;"
+        + " varying float vPix;"
         + " uniform vec3 u_light; uniform float u_neural; uniform float u_gain;"
         + " void main(){ vec2 p = gl_PointCoord*2.0-1.0;"
+        /* The additive aura is the dominant overdraw cost at large n: skip it
+           entirely for cells that project under ~3px and fade it in by 9px,
+           so a zoomed-out graph pays for glow only where it can be seen. */
+        + "   if (vPix < 3.0) discard;"
         + "   float r2 = dot(p,p); if(r2 > 1.0) discard;"
         /* Comet tail: while a node streaks in, its glow shrinks to a bright
            head with only a faint narrow aura behind it — the tapering streak
@@ -805,7 +828,8 @@
         + "   tail *= flight * 0.6 * vD;"
         /* The aura follows its cell: a halo on the far hemisphere would
            otherwise punch straight back through the near tissue. */
-        + "   gl_FragColor = vec4(vC, (body + tail) * vAge * vFace); }",
+        + "   gl_FragColor = vec4(vC, (body + tail) * vAge * vFace"
+        + "                        * smoothstep(3.0, 9.0, vPix)); }",
       transparent: true, depthWrite: false, blending: THREE.AdditiveBlending}));
     this.halo.frustumCulled = false;
     this.halo.renderOrder = 1;
@@ -1588,6 +1612,11 @@
     }
     this._ensure();
     this._syncVisibility();
+    /* Constant world-unit sprite sizes merge into a solid shell once n grows,
+       so shrink them by sqrt(n_ref / n) with a floor. The halo shares the
+       uniform, which keeps the glow proportional to the body. */
+    var dens = live.n > 1200 ? Math.pow(1200 / live.n, 0.5) : 1;
+    this.nodeUni.u_density.value = Math.max(0.3, Math.min(1, dens));
     if (this.lodReady && this.lodVersion !== live.version) this._clearEdgeIndex();
     var selKey = this._selectionKey();
     var rebuild = this.colorDirty || live.version !== this.lastVersion ||

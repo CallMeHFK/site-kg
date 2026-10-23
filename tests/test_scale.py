@@ -209,6 +209,25 @@ def test_renderer_draw_call_and_object_budget():
     assert "new THREE.InstancedMesh(sphere, this.egoMat, 120)" in src
 
 
+def test_renderer_keeps_large_n_guards():
+    """Off-frustum culling and count-aware sizing are what keep 75k nodes from
+    turning into a solid overdraw blob; pin the mechanisms so a shader rewrite
+    cannot quietly restore the old full-screen cost."""
+    src = (VIEWER / "render.js").read_text(encoding="utf-8")
+    # density uniform is declared once and shared by the halo material
+    assert "u_density: {value: 1}" in src
+    assert "u_density: this.nodeUni.u_density" in src
+    assert "Math.pow(1200 / live.n, 0.5)" in src
+    assert "Math.max(0.3, Math.min(1, dens))" in src
+    # vertices outside the padded NDC box are clipped before rasterisation
+    assert "ndc.x<-1.3||ndc.x>1.3" in src
+    assert "pix = 0.0; clip = vec4(0.0,0.0,2.0,1.0)" in src
+    # the halo still scales from the node size, and gates on its footprint
+    assert '.replace("float size = baseSize;",' in src
+    assert "if (vPix < 3.0) discard;" in src
+    assert "smoothstep(3.0, 9.0, vPix)" in src
+
+
 def test_renderer_handles_context_loss_and_restore():
     src = (VIEWER / "render.js").read_text(encoding="utf-8")
     assert '"webglcontextlost"' in src
