@@ -614,7 +614,10 @@ class _Handler(BaseHTTPRequestHandler):
             return True
         supplied = (query.get("token") or [""])[0] or self.headers.get(
             "X-Site-KG-Token", "")
-        return hmac.compare_digest(str(supplied), str(self.server.token))
+        # bytes, not str: compare_digest raises TypeError on non-ASCII text,
+        # so one ?token=%C3%A9 killed the handler thread instead of a 401
+        return hmac.compare_digest(str(supplied).encode("utf-8"),
+                                   str(self.server.token).encode("utf-8"))
 
     # -- responses -------------------------------------------------------
 

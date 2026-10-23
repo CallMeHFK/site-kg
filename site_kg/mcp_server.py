@@ -86,6 +86,11 @@ async def ingest_url(url: str, max_pages: int = 200, max_depth: int = 4,
     to test: it ignores robots.txt and politeness delays so a deep crawl of an
     authorized target finishes fast. It forces respect_robots=False.
     """
+    # clamp like ingest_local clamps max_files: concurrency=0 would park
+    # forever on asyncio.Semaphore(0) inside fetch_pages
+    max_pages = max(1, min(max_pages, 100_000))
+    max_depth = max(1, min(max_depth, 32))
+    concurrency = max(1, min(concurrency, 64))
     urls, source, inv_stats = await manifest.page_inventory(url, max_pages=max_pages,
                                                             max_depth=max_depth, dev=dev)
     seed_hint = None
@@ -141,7 +146,7 @@ def site_stats(site_id: str) -> dict:
     try:
         g = store.load(site_id, "graph")
         meta = store.load(site_id, "meta")
-    except KeyError as e:
+    except (KeyError, ValueError) as e:
         return {"ok": False, "error": str(e)}
     deg = {}
     for e in g["edges"]:
@@ -159,7 +164,7 @@ def search(site_id: str, query: str, limit: int = 10) -> dict:
     try:
         s = store.load(site_id, "search")
         g = store.load(site_id, "graph")
-    except KeyError as e:
+    except (KeyError, ValueError) as e:
         return {"ok": False, "error": str(e)}
     titles = {n["i"]: n["t"] for n in g["nodes"]}
     urls = {n["i"]: n["u"] for n in g["nodes"]}
@@ -175,7 +180,7 @@ def get_page(site_id: str, page_id: str) -> dict:
     """Full markdown body of one page, with title and source URL."""
     try:
         d = store.get_doc(site_id, page_id)
-    except KeyError as e:
+    except (KeyError, ValueError) as e:
         return {"ok": False, "error": str(e)}
     if not d:
         return {"ok": False, "error": f"unknown page '{page_id}'"}
@@ -189,7 +194,7 @@ def neighbors(site_id: str, page_id: str, depth: int = 1) -> dict:
     depth = min(depth, 2)
     try:
         g = store.load(site_id, "graph")
-    except KeyError as e:
+    except (KeyError, ValueError) as e:
         return {"ok": False, "error": str(e)}
     adj: dict[str, set[str]] = {}
     etype: dict[frozenset, str] = {}
@@ -233,7 +238,7 @@ def render_site(site_id: str, scene: str = "planets", max_nodes: int | None = No
     try:
         g = store.load(site_id, "graph")
         meta = store.load(site_id, "meta")
-    except KeyError as e:
+    except (KeyError, ValueError) as e:
         return {"ok": False, "error": str(e)}
     if mode == "live":
         from .live import serve_live
@@ -264,7 +269,7 @@ def render_build(site_id: str) -> dict:
     try:
         g = store.load(site_id, "graph")
         meta = store.load(site_id, "meta")
-    except KeyError as e:
+    except (KeyError, ValueError) as e:
         return {"ok": False, "error": str(e)}
     from .buildview import render_build_viewer
     out = store.site_dir(site_id) / "build.html"
@@ -283,7 +288,7 @@ def ask(site_id: str, question: str, top_k: int = 4) -> dict:
     try:
         from . import semantic
         search = store.load(site_id, "search")
-    except KeyError as e:
+    except (KeyError, ValueError) as e:
         return {"ok": False, "error": str(e)}
     except RuntimeError as e:
         return {"ok": False, "error": str(e)}

@@ -120,3 +120,18 @@ def test_pack_is_gzip_base64():
 def test_pack_is_deterministic():
     assert payload.pack_html_payload(b"hello" * 100) == \
            payload.pack_html_payload(b"hello" * 100)
+
+
+def test_layout_roundtrip_survives_out_of_range_coords():
+    # the >1.0 branch exists exactly for callers that leak raw coords: the
+    # header records scale=Q/best, so quantization must use that scale too
+    nodes = [{"i": "a", "x": 1.6, "y": -0.5, "z": 0.9, "c": 0, "d": 0},
+             {"i": "b", "x": -1.2, "y": 0.3, "z": -1.0, "c": 1, "d": 1}]
+    patches = [{"seq": 1, "ms": 10, "rows": [{"i": 0, "x": 1.4, "y": -1.1, "z": 0.2}]}]
+    out = payload.decode_layout(payload.encode_layout(nodes, patches))
+    for nd, got in zip(nodes, out["nodes"]):
+        for k in ("x", "y", "z"):
+            assert abs(got[k] - nd[k]) <= 1e-4
+    row = out["patches"][0]["rows"][0]
+    assert abs(row["x"] - 1.4) <= 1e-4
+    assert abs(row["y"] + 1.1) <= 1e-4

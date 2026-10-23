@@ -38,7 +38,16 @@ def site_id_for(url: str) -> str:
     return f"{slug}-{hashlib.sha256(url.encode()).hexdigest()[:8]}"
 
 
+# the generated shape: optional [a-z0-9-] slug, '-', 8 hex chars. The class
+# excludes every path metacharacter, so a fullmatch can never escape DATA.
+_SITE_ID_RE = re.compile(r"^[a-z0-9-]*-[0-9a-f]{8}$")
+
+
 def site_dir(site_id: str) -> Path:
+    # site_id is a caller-controlled parameter of every MCP tool; joining DATA
+    # with an unvalidated "../evil" or absolute path escapes the data dir
+    if not _SITE_ID_RE.fullmatch(site_id):
+        raise ValueError(f"malformed site id {site_id!r}")
     return DATA / site_id
 
 

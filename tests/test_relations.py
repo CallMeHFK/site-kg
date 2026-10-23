@@ -597,3 +597,27 @@ def test_fail_open_notes_carry_the_reason(monkeypatch):
     assert any(e["k"] == "similar_to" for e in edges)   # keyless still ran
     assert any("llm router skipped: RuntimeError: connection refused" in n
                for n in rep["relationNotes"])
+
+
+def test_v_prefixed_dotted_versions_parse_and_chain():
+    # ids styled like real page ids carry the version, so base keys group
+    docs = [
+        _doc("docs/v1.0/guide", PROSE, url="https://s.example/docs/v1.0/guide"),
+        _doc("docs/v2.0/guide", PROSE, url="https://s.example/docs/v2.0/guide"),
+        _doc("docs/v3.1/guide", PROSE, url="https://s.example/docs/v3.1/guide"),
+    ]
+    assert relations._version(docs[0]) == (1, 0)
+    assert relations._version(docs[1]) == (2, 0)
+    assert relations._version(docs[2]) == (3, 1)
+    # the dotted tag also strips from base keys, so the three pages are one family
+    assert len({relations._base_key(d) for d in docs}) == 1
+    edges, _ = relations.build_relations(docs, mode="supersedes", have={("a", "b")})
+    pairs = {(e["s"], e["t"]) for e in edges if e["k"] == "supersedes"}
+    assert pairs == {("docs/v3.1/guide", "docs/v2.0/guide"),
+              ("docs/v2.0/guide", "docs/v1.0/guide")}
+
+
+def test_extension_lookalikes_stay_unversioned():
+    assert relations._version({"id": "shot_v2.png", "url": ""}) is None
+    assert relations._version({"id": "conv1", "url": ""}) is None
+    assert relations._version({"id": "plain_v3", "url": ""}) == (3,)
