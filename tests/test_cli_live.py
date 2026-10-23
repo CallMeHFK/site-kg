@@ -21,7 +21,7 @@ SITE_ID = "demo-a1b2c3d4"
 @pytest.fixture
 def isolated_data(tmp_path, monkeypatch):
     monkeypatch.setattr(store, "DATA", tmp_path / "sites")
-    for cache in (store._inventory_cached, store._shard_cached, store._meta_cached):
+    for cache in (store._shard_cached, store._meta_cached):
         cache.cache_clear()
     return tmp_path / "sites"
 

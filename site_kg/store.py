@@ -8,11 +8,18 @@ chapter; the store shards by hash bucket so no corpus shape (drivers/ with
 31k files) can recreate one giant shard. Sites built before sharding keep a
 docs.json alongside and are still read, transparently.
 
-Freshness without cache invalidation: every cache is keyed by the content's
-own stat (mtime_ns/size of the shard or meta file, mtime of the docs dir for
-the inventory), so a re-ingest from ANY process -- cli ingest-local, a crawl
+Freshness without cache invalidation: the shard and meta caches are keyed
+by the file's own stat (mtime_ns/size/ino of a shard, mtime_ns/ino of
+meta.json), so a re-ingest from ANY process -- cli ingest-local, a crawl
 job, another agent -- is picked up on the next read, and nothing needs a
-cache_clear() hook in save_site. save_site writes every shard via tmp-file +
+cache_clear() hook in save_site. st_ino is load-bearing: os.replace can land
+in the same filesystem timestamp tick as the previous save, and with an
+equal file size the (mtime_ns, size) pair alone collides and serves the whole
+previous generation (#26); the file index differs from the object it
+replaces, same tick or not. Mounts whose st_ino is unstable per lookup
+degrade to a read miss on every get_page (correct, just slower); mounts
+reporting a constant st_ino degrade to the pre-#26 behaviour. save_site
+writes every shard via tmp-file +
 os.replace and commits meta.json (which carries docBuckets) last, so a
 concurrent reader sees either the old or the new set, never torn JSON; the
 residual window is a transient clean miss on a page whose bucket layout is
@@ -134,7 +141,7 @@ def _unknown_site(site_id: str) -> KeyError:
 
 
 @lru_cache(maxsize=64)
-def _meta_cached(site_id: str, mtime_ns: int) -> dict:
+def _meta_cached(site_id: str, mtime_ns: int, ino: int) -> dict:
     return json.loads((site_dir(site_id) / "meta.json").read_text())
 
 
@@ -147,28 +154,13 @@ def _meta(site_id: str) -> dict:
     except OSError:
         return {}
     try:
-        return _meta_cached(site_id, st.st_mtime_ns)
+        return _meta_cached(site_id, st.st_mtime_ns, st.st_ino)
     except (OSError, json.JSONDecodeError):
         return {}
 
 
-@lru_cache(maxsize=64)
-def _inventory_cached(site_id: str, dir_mtime_ns: int) -> tuple[str, ...]:
-    return tuple(sorted(p.stem for p in _docs_dir(site_id).glob("*.json")))
-
-
-def _shard_names(site_id: str) -> tuple[str, ...]:
-    """Shard inventory, keyed by the docs dir mtime -- which every shard
-    mutation bumps, since shards only change via unlink/os.replace in-place."""
-    try:
-        mtime = _docs_dir(site_id).stat().st_mtime_ns
-    except OSError:
-        return ()
-    return _inventory_cached(site_id, mtime)
-
-
 @lru_cache(maxsize=16)
-def _shard_cached(site_id: str, bucket: str, mtime_ns: int, size: int) -> dict:
+def _shard_cached(site_id: str, bucket: str, mtime_ns: int, size: int, ino: int) -> dict:
     return json.loads((_docs_dir(site_id) / f"{bucket}.json").read_text())
 
 
@@ -179,14 +171,17 @@ def get_doc(site_id: str, page_id: str) -> dict | None:
         raise _unknown_site(site_id)
     docs = _docs_dir(site_id)
     if docs.is_dir():
-        names = _shard_names(site_id)
-        n = _meta(site_id).get("docBuckets") or max(len(names), 1)
+        # bucket count uncached: a directory's stat cannot see a same-tick
+        # resave (its inode never moves when entries are replaced), and a
+        # wrong count here must be a clean miss (None), never stale content
+        n = _meta(site_id).get("docBuckets") or max(len(tuple(docs.glob("*.json"))), 1)
         p = docs / f"{_bucket(page_id, n)}.json"
         try:
             st = p.stat()
         except OSError:
             return None  # mid-save: this shard has not landed yet
-        return _shard_cached(site_id, p.stem, st.st_mtime_ns, st.st_size).get(page_id)
+        return _shard_cached(site_id, p.stem, st.st_mtime_ns, st.st_size,
+                             st.st_ino).get(page_id)
     legacy = d / "docs.json"
     if legacy.exists():  # pre-shard site: fall back to the single-file read
         return json.loads(legacy.read_text()).get(page_id)
