@@ -22,7 +22,7 @@ def _ingest(src) -> str:
 def isolated_data(tmp_path, monkeypatch):
     monkeypatch.setattr(store, "DATA", tmp_path / "sites")
     # content-keyed caches live at module scope: drop entries from prior tests
-    for cache in (store._inventory_cached, store._shard_cached, store._meta_cached):
+    for cache in (store._shard_cached, store._meta_cached):
         cache.cache_clear()
     return tmp_path / "sites"
 
@@ -186,3 +186,42 @@ def test_cli_render_unknown_site_fails_cleanly(isolated_data, monkeypatch):
     with pytest.raises(SystemExit) as err:
         cli.main()
     assert "render failed" in str(err.value)
+
+
+def test_resave_in_colliding_stat_serves_new_generation(isolated_data, tmp_path):
+    # issue #26: os.replace inside one timestamp tick with an equal-size file
+    # gives the new shard the old (mtime_ns, size) key. Rewinding the mtime to
+    # the exact generation-1 value forces that collision deterministically;
+    # only a key component that changes per replace (st_ino) still misses.
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "a.md").write_text("# A\n\nv1\n")
+    site_id = _ingest(src)
+    assert "v1" in store.get_doc(site_id, "a")["body"]  # populate gen-1 cache
+    shard = next((store._docs_dir(site_id)).glob("*.json"))
+    gen1 = shard.stat()  # one stat: mtime, size and ino come from one object
+    stale_mtime, atime, stale_size = gen1.st_mtime_ns, gen1.st_atime_ns, gen1.st_size
+
+    (src / "a.md").write_text("# A\n\nv2\n")  # same byte length as v1
+    _ingest(src)
+    assert shard.stat().st_size == stale_size, "bodies must stay byte-equal for the #26 key"
+    os.utime(shard, ns=(atime, stale_mtime))  # force the #26 key collision
+
+    assert "v2" in store.get_doc(site_id, "a")["body"]
+
+
+def test_meta_cache_survives_a_colliding_mtime(isolated_data):
+    built = {"graph": {"nodes": [], "edges": []}, "search": {}, "docs": {},
+             "report": {}}
+    sid = store.site_id_for("https://s.example/26")
+    store.save_site(sid, "https://s.example/26", built, extra={"marker": "v1"})
+    assert store._meta(sid)["marker"] == "v1"  # populate gen-1 cache
+    meta = store.site_dir(sid) / "meta.json"
+    gen1 = meta.stat()
+    stale_mtime, atime, stale_size = gen1.st_mtime_ns, gen1.st_atime_ns, gen1.st_size
+
+    store.save_site(sid, "https://s.example/26", built, extra={"marker": "v2"})
+    assert meta.stat().st_size == stale_size, "meta must stay equal-size for the #26 key"
+    os.utime(meta, ns=(atime, stale_mtime))  # same mtime, same-size meta
+
+    assert store._meta(sid)["marker"] == "v2"
