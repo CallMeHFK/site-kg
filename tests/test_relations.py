@@ -423,7 +423,8 @@ def test_symbol_ranking_is_score_ordered_and_deterministic():
                    "the zeta_helper is defined elsewhere\nzeta_helper\n")
     p_user["title"] = "about alpha_fn usage"  # title bonus applies to alpha_fn
     p_def3 = _code("lib_d.py", "lib/d.py", ["zeta_helper"], "pass")
-    edges = relations._symbol_edges(_profiles([p_def1, p_def2, p_user, p_def3]))
+    edges = relations._symbol_edges(
+        _profiles([p_def1, p_def2, p_user, p_def3]), [])
     from_user = [e[1] for e in edges if e[0] == "lib_c.py"]
     # alpha_fn: 3 mentions + 2 title bonus; gamma_helper: 3 mentions; both
     # beat zeta_helper's 2, and equal mentions fall back to (-score, symbol)
@@ -545,3 +546,54 @@ def test_heading_edges_stay_bounded_under_pure_ratio_window(monkeypatch):
     monkeypatch.setattr(relations, "HEAD_POST_K", 64)
     edges = relations._heading_edges(profiles)
     assert 0 < len(edges) <= 400 * relations.HEAD_CAP
+
+
+# ---- semantic_similar: threshold, cap and tie-break survive the pair pass ----
+def test_embed_edges_threshold_before_cap_and_id_tiebreak(monkeypatch):
+    # no gateway: vectors are handed in directly. e0 sits near six neighbours
+    # over the bar (the cap must drop the farthest, e6) and orthogonal to e7.
+    vec = {"e0": [1.0, 0.0], "e1": [1.0, 0.05], "e2": [1.0, 0.10],
+           "e3": [1.0, 0.15], "e4": [1.0, 0.20], "e5": [1.0, 0.25],
+           "e6": [1.0, 0.30], "e7": [0.0, 1.0]}
+    monkeypatch.setattr("site_kg.semantic.discover_models",
+                        lambda: {"embed": "test-embed"}, raising=False)
+    monkeypatch.setattr("site_kg.semantic.embed",
+                        lambda texts, model: [vec[t.split("\n")[0]] for t in texts],
+                        raising=False)
+    docs = [_doc(i, PROSE, title=i) for i in vec]
+    edges, _ = relations.build_relations(docs, mode="semantic_similar")
+    pairs = {(e["s"], e["t"]) for e in edges if e["k"] == "semantic_similar"}
+    assert all(s < t for s, t in pairs)
+    assert {(s, t) for s, t in pairs if "e0" in (s, t)} == {
+        ("e0", "e1"), ("e0", "e2"), ("e0", "e3"), ("e0", "e4"), ("e0", "e5")}
+    assert not any("e7" in p for p in pairs)          # orthogonal: under the bar
+    for pid in vec:  # a node never nominates past the cap from its own row
+        assert sum(1 for s, _t in pairs if s == pid) <= relations.EMBED_CAP
+    for s, t in pairs:  # and every emitted pair really is over the bar
+        dot = sum(x * y for x, y in zip(vec[s], vec[t]))
+        n = (math.sqrt(sum(x * x for x in vec[s]))
+             * math.sqrt(sum(y * y for y in vec[t])))
+        assert dot / (n + 1e-12) >= relations.EMBED_THRESHOLD
+
+
+# ---- skip paths report themselves instead of going silently empty -----------
+def test_symbol_budget_skip_is_reported_not_silent():
+    docs = [_code(f"f{i:04d}.py", f"pkg/m{i}.py", ["load_token"],
+                  "def load_token(x):\n    return x\n")
+            for i in range(relations.MAX_SYMBOL_DOCS + 1)]
+    profiles = [relations.profile_of(d) for d in docs]
+    notes: list[str] = []
+    assert relations._symbol_edges(profiles, notes) == []
+    assert any(n.startswith("mentions_symbol skipped:") for n in notes)
+
+
+def test_fail_open_notes_carry_the_reason(monkeypatch):
+    def boom(*_a, **_k):
+        raise RuntimeError("connection refused: gw unreachable")
+
+    monkeypatch.setattr("site_kg.semantic.discover_models", boom, raising=False)
+    docs = [_doc("a", PROSE), _doc("b", PROSE.replace("driver", "driver"))]
+    edges, rep = relations.build_relations(docs, mode="llm", have={("a", "z")})
+    assert any(e["k"] == "similar_to" for e in edges)   # keyless still ran
+    assert any("llm router skipped: RuntimeError: connection refused" in n
+               for n in rep["relationNotes"])
