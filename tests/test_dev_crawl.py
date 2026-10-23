@@ -61,19 +61,21 @@ class _Resp:
     status_code = 200
     text = '<html><body><a href="/b/">b</a></body></html>'
 
-    def __init__(self) -> None:
+    def __init__(self, url: str = "https://x.example/") -> None:
         self.headers = {"content-type": "text/html"}
+        self.url = url  # bfs keys pages by the final URL after any redirects
 
 
 class _Client:
     async def get(self, url, **_kw):
-        return _Resp()
+        return _Resp(url)
 
 
 def test_bfs_respects_robots_by_default(monkeypatch):
     monkeypatch.setattr(ingest, "_robots", lambda base: Deny())
     stats: dict = {"errors": {}}
-    urls = asyncio.run(manifest.bfs(_Client(), "https://x.example/", 10, 3, stats))
+    urls = asyncio.run(manifest.bfs(_Client(), "https://x.example/", 10, 3, stats,
+                                    delay=0.0))
     assert urls == []
     assert stats["robots_blocked"] == 1          # the seed was refused
 
@@ -82,7 +84,7 @@ def test_bfs_dev_mode_crawls_past_robots(monkeypatch):
     monkeypatch.setattr(ingest, "_robots", lambda base: Deny())
     stats: dict = {"errors": {}}
     urls = asyncio.run(manifest.bfs(_Client(), "https://x.example/", 10, 3, stats,
-                                    respect_robots=False))
+                                    respect_robots=False, delay=0.0))
     assert urls == ["https://x.example/", "https://x.example/b/"]
     assert stats.get("robots_blocked", 0) == 0
 
@@ -94,8 +96,9 @@ def test_page_inventory_passes_dev_to_bfs(monkeypatch):
         return None
 
     async def fake_bfs(client, base, max_pages, max_depth, stats, on_discover=None,
-                       on_page_found=None, respect_robots=True):
+                       on_page_found=None, respect_robots=True, delay=0.2):
         seen["respect_robots"] = respect_robots
+        seen["delay"] = delay
         return ["https://x.example/"]
 
     # stub the higher-priority discovery sources so no real network is touched
@@ -105,8 +108,10 @@ def test_page_inventory_passes_dev_to_bfs(monkeypatch):
     monkeypatch.setattr(manifest, "bfs", fake_bfs)
     asyncio.run(manifest.page_inventory("https://x.example/zzz", dev=True))
     assert seen["respect_robots"] is False
+    assert seen["delay"] == 0.0                 # dev drops the politeness delay too
     asyncio.run(manifest.page_inventory("https://x.example/zzz"))
     assert seen["respect_robots"] is True
+    assert seen["delay"] == 0.2
 
 
 # ---- CLI: --dev-crawl threads through with deep defaults -------------------
