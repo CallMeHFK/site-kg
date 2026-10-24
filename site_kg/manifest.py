@@ -1,14 +1,17 @@
 """Page inventory for a docs site: Sphinx objects.inv -> sitemap.xml -> BFS."""
 from __future__ import annotations
 
+import asyncio
 import re
 import zlib
-from urllib.parse import urljoin, urlparse
+from urllib.parse import quote, urljoin, urlparse
 
 import httpx
 
 INV_LINE = re.compile(r"^(.+?)\s+(\S+):(\S+)\s+(-?\d+)\s+(\S+)\s+(.*)$")
 UA = {"User-Agent": "site-kg/0.1 (+https://github.com/CallMeHFK/site-kg)"}
+
+_sleep = asyncio.sleep  # module-level so tests can observe politeness delays
 
 
 def _base_prefix(base: str) -> str:
@@ -35,7 +38,43 @@ def page_id(base: str, url: str) -> str:
         p = p[len(pre):]
     p = p.strip("/")
     p = re.sub(r"\.(html?|php|aspx?)$", "", p, flags=re.I)
-    return p.replace("/", "_") or "index"
+    p = p.replace("/", "_")
+    # the id becomes a filename (write_corpus) and a node id: percent-encode
+    # FIRST so distinct paths stay distinct ('a:b' and 'a/b' must not fold to
+    # one id and overwrite each other's corpus file), then keep it inside
+    # [A-Za-z0-9._-] with no dot-runs and no leading/trailing punctuation, so
+    # a hostile path can neither smuggle a separator nor '..' past the corpus
+    # dir. Single dots survive: suffix-versioned ids like guide_v1.2 feed the
+    # supersedes dimension.
+    p = quote(p, safe="._-")
+    p = re.sub(r"[^A-Za-z0-9._-]+", "_", p)
+    p = re.sub(r"\.{2,}", "-", p)  # '-' so a..b cannot fold onto the a_b id
+    p = re.sub(r"^[._-]+|[._-]+$", "_", p)
+    return p if re.search(r"[A-Za-z0-9]", p) else "index"
+
+
+async def follow_checked(client: httpx.AsyncClient, url: str, *,
+                         rp=None, base: str | None = None,
+                         max_hops: int = 5) -> tuple[httpx.Response | None, str | None]:
+    """GET whose redirect hops are followed manually, never by httpx: every
+    hop is re-checked against robots (``rp``) and, from the first hop on,
+    against the seed's site scope, so a 3xx cannot walk the crawler into a
+    robots-disallowed path or another host. Returns (response, None) on
+    success or (None, reason) with reason in {robots, robots_redirect,
+    offsite_redirect, too_many_hops}."""
+    for hop in range(max_hops + 1):
+        if rp and not rp.can_fetch(UA["User-Agent"], url):
+            return None, ("robots" if hop == 0 else "robots_redirect")
+        if hop and base is not None and not same_site(base, url):
+            return None, "offsite_redirect"
+        r = await client.get(url, follow_redirects=False)
+        if r.status_code not in (301, 302, 303, 307, 308):
+            return r, None
+        loc = r.headers.get("location", "")
+        if not loc:
+            return r, None  # a redirect without Location: treat as final
+        url = urljoin(url, loc)
+    return None, "too_many_hops"
 
 
 async def from_objects_inv(client: httpx.AsyncClient, base: str) -> list[str] | None:
@@ -113,7 +152,7 @@ async def from_doxygen_navtree(client: httpx.AsyncClient, base: str) -> list[str
 
 async def bfs(client: httpx.AsyncClient, base: str, max_pages: int, max_depth: int,
               stats: dict, on_discover=None, on_page_found=None,
-              respect_robots: bool = True) -> list[str]:
+              respect_robots: bool = True, delay: float = 0.2) -> list[str]:
     """Same-site BFS over <a href>. Pages that fetch as client-side shells are
     re-rendered headlessly so their links are discoverable. Renderer failures
     degrade to the static HTML and are counted in stats.
@@ -123,8 +162,11 @@ async def bfs(client: httpx.AsyncClient, base: str, max_pages: int, max_depth: i
     sitting silent for the whole crawl. ``failed`` counts fetches that errored
     or returned non-HTML, rather than swallowing them. ``on_page_found(url,
     html)`` fires for each page that settles with HTML, so the caller can add
-    the node while the crawl is still running. Honours robots.txt unless
-    ``respect_robots=False`` (only for sites you are authorized to test)."""
+    the node while the crawl is still running -- at the FINAL url, after any
+    redirects. Honours robots.txt per hop and keeps every hop inside the
+    seed's site scope unless ``respect_robots=False`` (only for sites you are
+    authorized to test); ``delay`` paces the discovery fetches like
+    fetch_pages paces its own."""
     from .ingest import _robots_async
     from .render import ambient_proxy, internal_links, is_js_shell, try_render_urls
 
@@ -138,17 +180,29 @@ async def bfs(client: httpx.AsyncClient, base: str, max_pages: int, max_depth: i
             on_discover(found, depth, failed)
 
     seen, queue, out = {base}, [(base, 0)], []
+    settled: set[str] = set()  # final URLs that already landed (via alias or direct)
     while queue and len(out) < max_pages:
         url, depth = queue.pop(0)
+        if url in settled:  # a redirect alias already landed on this exact URL
+            continue
         if rp and not rp.can_fetch(UA["User-Agent"], url):
             stats["robots_blocked"] = stats.get("robots_blocked", 0) + 1
             continue
         try:
-            r = await client.get(url, follow_redirects=True)
+            r, reason = await follow_checked(client, url, rp=rp, base=base)
         except Exception as exc:
             failed += 1
             stats["errors"][type(exc).__name__] = \
                 stats["errors"].get(type(exc).__name__, 0) + 1
+            notify(len(out), depth)
+            await _sleep(delay)
+            continue
+        await _sleep(delay)
+        if r is None:
+            failed += 1
+            stats["errors"][reason] = stats["errors"].get(reason, 0) + 1
+            if reason.startswith("robots"):
+                stats["robots_blocked"] = stats.get("robots_blocked", 0) + 1
             notify(len(out), depth)
             continue
         if r.status_code != 200 or "text/html" not in r.headers.get("content-type", ""):
@@ -157,6 +211,13 @@ async def bfs(client: httpx.AsyncClient, base: str, max_pages: int, max_depth: i
             stats["errors"][key] = stats["errors"].get(key, 0) + 1
             notify(len(out), depth)
             continue
+        # downstream consumers (ids, relative-link resolution, the streamed
+        # node url) must see where the page actually lives, not the seed alias
+        final = str(r.url)
+        url = final
+        settled.add(final)
+        if final not in seen:
+            seen.add(final)
         html = r.text
         if is_js_shell(html):
             rendered, err = await try_render_urls([url], proxy=ambient_proxy(url))
@@ -194,7 +255,8 @@ async def page_inventory(base: str, max_pages: int = 500, max_depth: int = 4,
     unchanged. Fast inventory sources still report once so the caller sees the
     page count before fetching starts. ``on_page_found(url, html)`` is only
     available on the BFS path, which already has each page's HTML in hand.
-    ``dev=True`` (authorized testing only) skips the BFS robots.txt check."""
+    ``dev=True`` (authorized testing only) skips the BFS robots.txt check
+    and its politeness delay."""
     stats: dict = {"errors": {}, "failed": 0, "discovered": 0}
 
     def report(urls: list[str]) -> None:
@@ -202,7 +264,10 @@ async def page_inventory(base: str, max_pages: int = 500, max_depth: int = 4,
         if on_discover is not None:
             on_discover(len(urls), 0, stats["failed"])
 
-    async with httpx.AsyncClient(headers=UA, timeout=30, follow_redirects=True) as client:
+    # no follow_redirects here: the manifest probes must not let a 3xx walk
+    # them onto another host; a redirecting probe simply misses and the
+    # inventory falls through to bfs, which follows hops with per-hop checks
+    async with httpx.AsyncClient(headers=UA, timeout=30) as client:
         inv = await from_objects_inv(client, base)
         if inv:
             urls = inv[:max_pages]
@@ -220,5 +285,6 @@ async def page_inventory(base: str, max_pages: int = 500, max_depth: int = 4,
             return urls, "sitemap", stats
         urls = await bfs(client, base, max_pages, max_depth, stats,
                          on_discover=on_discover, on_page_found=on_page_found,
-                         respect_robots=not dev)
+                         respect_robots=not dev,
+                         delay=0.0 if dev else 0.2)
         return urls, "bfs", stats

@@ -13,7 +13,7 @@ import html2text
 import httpx
 from bs4 import BeautifulSoup
 
-from .manifest import CONTENT_RE, UA, page_id, same_site
+from .manifest import CONTENT_RE, UA, follow_checked, page_id, same_site
 
 # content regions first; generic main/body last (framework nav lives inside them)
 MAIN_SELECTORS = ["#doc-content", ".vp-doc", ".markdown-body", ".theme-default-content",
@@ -93,10 +93,27 @@ async def fetch_pages(urls: list[str], base: str, concurrency: int = 4, delay: f
         async with sem:
             page, reason = None, None
             try:
-                r = await client.get(url, follow_redirects=True)
-                if r.status_code == 200 and "text/html" in r.headers.get("content-type", ""):
+                r, hop_reason = await follow_checked(client, url, rp=rp, base=base)
+                if r is None:
+                    reason = hop_reason
+                    if hop_reason.startswith("robots"):
+                        stats["robots_blocked"] += 1
+                    elif hop_reason == "offsite_redirect":
+                        stats["offsite_redirect"] = stats.get("offsite_redirect", 0) + 1
+                    else:
+                        stats["errors"][hop_reason] = stats["errors"].get(hop_reason, 0) + 1
+                elif r.status_code == 200 and "text/html" in r.headers.get("content-type", ""):
                     page = r.text
-                    out[url] = page
+                    # key by where the page actually lives: ids, relative-link
+                    # resolution and the streamed node url must match reality,
+                    # and two aliases of one target must not become two docs
+                    final = str(r.url)
+                    if final in out and final != url:
+                        stats["redirect_merged"] = stats.get("redirect_merged", 0) + 1
+                        reason, page = "redirect_merged", None
+                    else:
+                        out[final] = page
+                        url = final  # stream the node under its real url (matches bfs)
                 elif r.status_code == 200:
                     stats["skipped"] += 1
                     reason = "not-html"
