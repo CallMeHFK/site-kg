@@ -29,11 +29,14 @@ always matches docBuckets and can stand in for a missing meta.
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
 import re
+import threading
 import time
+from contextlib import contextmanager
 from functools import lru_cache
 from pathlib import Path
 
@@ -66,6 +69,70 @@ def reset_corpus(corpus_dir: Path) -> None:
         shutil.rmtree(corpus_dir)
 
 
+_SITE_LOCKS: dict[str, threading.Lock] = {}
+_SITE_LOCKS_GUARD = threading.Lock()
+
+
+def _lock_dir() -> Path:
+    # resolved per call: tests repoint DATA, locks must follow it
+    return DATA.parent / ".locks"
+
+
+def _site_thread_lock(site_id: str) -> threading.Lock:
+    with _SITE_LOCKS_GUARD:
+        return _SITE_LOCKS.setdefault(site_id, threading.Lock())
+
+
+@contextmanager
+def site_lock(site_id: str, *, stale_after: float = 120.0):
+    """Serialize re-ingest per site across threads AND processes: the
+    reset(rmtree) -> write -> save sequence must never interleave with
+    itself, whatever the entrypoint (MCP tool thread pool, CLI, live crawl
+    worker). The cross-process half is an O_CREAT|O_EXCL lock file under
+    data/.locks/: a background heartbeat refreshes its mtime every
+    stale_after/3, so a live holder -- however long the ingest -- never
+    looks stale; only a crashed holder stops beating and is stolen. The
+    holder's token is checked before cleanup, so a (timer-skew) stolen lock
+    is never unlinked by its victim."""
+    with _site_thread_lock(site_id):
+        lock_dir = _lock_dir()
+        lock_dir.mkdir(parents=True, exist_ok=True)
+        lock = lock_dir / f"{site_id}.lock"
+        token = f"{os.getpid()}-{time.time_ns()}"
+        while True:
+            try:
+                fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                break
+            except FileExistsError:
+                try:
+                    age = time.time() - lock.stat().st_mtime
+                except OSError:
+                    continue  # released inside the race window: retry create
+                if age < stale_after:
+                    time.sleep(0.05)
+                    continue
+                with contextlib.suppress(OSError):  # crashed holder: steal it
+                    lock.unlink()
+        stop_beat = threading.Event()
+
+        def heartbeat() -> None:
+            while not stop_beat.wait(stale_after / 3):
+                with contextlib.suppress(OSError):
+                    os.utime(lock, None)  # a live holder never looks stale
+
+        keeper = threading.Thread(target=heartbeat, daemon=True)
+        keeper.start()
+        try:
+            os.write(fd, token.encode())
+            os.close(fd)
+            yield
+        finally:
+            stop_beat.set()
+            with contextlib.suppress(OSError):
+                if lock.read_text() == token:  # still ours (not stolen)
+                    lock.unlink()
+
+
 def list_sites() -> list[dict]:
     if not DATA.exists():
         return []
@@ -95,11 +162,32 @@ def _docs_dir(site_id: str) -> Path:
     return site_dir(site_id) / "docs"
 
 
+def _retry_win32(action) -> None:
+    """os.replace / unlink raise PermissionError on Windows while another
+    thread or process holds the target open for reading (CPython opens
+    without FILE_SHARE_DELETE). A bounded backoff bridges the reader's
+    open-file lifetime: measured ~55% of save attempts hit this while an MCP
+    read was in flight (#30), each failure losing a whole ingest."""
+    for attempt in range(7):
+        try:
+            action()
+            return
+        except PermissionError:
+            if attempt == 6:
+                raise
+            time.sleep(0.01 * (2 ** attempt))  # 10ms .. 320ms, ~630ms total
+
+
 def _write_json(path: Path, obj: dict, *, indent: int | None = None) -> None:
     """tmp file + os.replace: a concurrent reader never sees a torn JSON."""
     tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     tmp.write_text(json.dumps(obj, ensure_ascii=False, indent=indent))
-    os.replace(tmp, path)
+    try:
+        _retry_win32(lambda: os.replace(tmp, path))
+    except OSError:
+        with contextlib.suppress(OSError):
+            tmp.unlink()  # never orphan the pid-scoped scratch file
+        raise
 
 
 def save_site(site_id: str, base_url: str, built: dict,
@@ -114,7 +202,7 @@ def save_site(site_id: str, base_url: str, built: dict,
     keep = {str(b) for b in range(n_buckets)}
     for stale in docs_dir.glob("*.json"):  # bucket count shrank between ingests
         if stale.stem not in keep:
-            stale.unlink()
+            _retry_win32(lambda p=stale: p.unlink(missing_ok=True))
     # all buckets are written even when empty: the shard inventory then always
     # equals docBuckets and a reader can derive the layout without meta.json
     buckets: dict[str, dict] = {b: {} for b in keep}
@@ -124,7 +212,7 @@ def save_site(site_id: str, base_url: str, built: dict,
         _write_json(docs_dir / f"{bucket}.json", shard)
     # commit order for a concurrent reader: shards first, the legacy single
     # file goes away, then meta.json with docBuckets lands last
-    (d / "docs.json").unlink(missing_ok=True)  # superseded single-file format
+    _retry_win32(lambda: (d / "docs.json").unlink(missing_ok=True))
     meta = {
         "url": base_url,
         "docBuckets": n_buckets,
