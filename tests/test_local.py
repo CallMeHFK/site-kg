@@ -376,3 +376,43 @@ def test_dotfiles_never_match_plain_files(tmp_path: Path):
     assert "notes" in ids
     assert ".notes" not in ids and ".license" not in ids
     assert stats["skipped_ext"] == 2
+
+
+def test_hub_and_go_edges_stay_exact_at_directory_scale(tmp_path):
+    # #32: the once-per-corpus by_dir/go_dirs indexes must reproduce the
+    # per-hub rescan's edge output exactly (verified byte-identical against
+    # the pre-index code on larger corpora; this pins the grouping semantics)
+    src = tmp_path / "src"
+    for d in range(5):
+        dd = src / f"p{d}"
+        dd.mkdir(parents=True)
+        (dd / "README.md").write_text(f"# p{d}\n")
+        (dd / "a.py").write_text("import os\n")
+        (dd / "b.go").write_text(f'package p{d}\nimport "example.com/root/p{(d + 1) % 5}"\n')
+    stats = local.build_local_corpus(src, tmp_path / "corpus")
+    edges = json.loads((tmp_path / "corpus" / "_edges.json").read_text())
+    contains = sorted((e["s"], e["t"]) for e in edges if e["k"] == "contains")
+    imports = sorted((e["s"], e["t"]) for e in edges if e["k"] == "imports")
+    # every README links its two siblings; every b.go import fans out to all
+    # three files of the next package (README, a.py, b.go)
+    assert len(contains) == 10
+    assert len(imports) == 15
+    assert stats["files"] == 15
+
+
+def test_go_import_fanout_respects_the_cap(tmp_path):
+    # MAX_PKG_EDGE_TARGETS: one import links at most that many files of the
+    # target package, lowest rels first (deterministic truncation)
+    src = tmp_path / "src"
+    pkg = src / "pkg"
+    pkg.mkdir(parents=True)
+    for i in range(25):
+        (pkg / f"f{i:02d}.go").write_text(f"package pkg\nvar V{i} = {i}\n")
+    (src / "main.go").write_text('package main\nimport "example.com/root/pkg"\n')
+    local.build_local_corpus(src, tmp_path / "corpus")
+    edges = json.loads((tmp_path / "corpus" / "_edges.json").read_text())
+    targets = sorted(e["t"] for e in edges
+                     if e["s"] == "main.go" and e["k"] == "imports")
+    assert len(targets) == local.MAX_PKG_EDGE_TARGETS
+    assert targets == sorted(f"pkg_f{i:02d}.go"
+                             for i in range(local.MAX_PKG_EDGE_TARGETS))

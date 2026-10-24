@@ -322,8 +322,13 @@ def _go_module_prefix(root: Path) -> str:
 
 
 def _code_refs(lang: str, text: str, rel: str, known: dict[str, str],
-               go_prefix: str) -> list[str]:
-    """Import/include targets of one code file, as relpath keys of `known`."""
+               go_prefix: str, by_dir: dict[str, list[str]] | None = None,
+               go_dirs: set[str] | None = None) -> list[str]:
+    """Import/include targets of one code file, as relpath keys of `known`.
+    `by_dir`/`go_dirs` are the once-per-corpus indexes from
+    build_local_corpus; they default to empty for direct small callers --
+    pass both or neither (go_dirs alone would not be consulted, by_dir
+    alone silently drops the no-go.mod fallback edges)."""
     from_dir = str(Path(rel).parent)
     from_dir = "" if from_dir == "." else from_dir
     hits: list[str] = []
@@ -361,6 +366,8 @@ def _code_refs(lang: str, text: str, rel: str, known: dict[str, str],
             add(_resolve_path(m.group(1), from_dir, known, [""])
                 or _resolve_path(m.group(1), "", known, [""]))
     elif lang == "go":
+        by_dir = by_dir if by_dir is not None else {}
+        go_dirs = go_dirs if go_dirs is not None else set()
         imps = [m.group(1) for m in GO_IMPORT_ONE.finditer(text)]
         for blk in GO_IMPORT_BLOCK.finditer(text):
             imps += GO_QUOTED.findall(blk.group(1))
@@ -368,12 +375,12 @@ def _code_refs(lang: str, text: str, rel: str, known: dict[str, str],
             rel_dir = (imp[len(go_prefix):].lstrip("/")
                        if go_prefix and imp.startswith(go_prefix) else None)
             if rel_dir is None:
-                # no go.mod match: suffix match against known dirs
-                dirs = {str(Path(k).parent) for k in known if k.endswith(".go")}
-                rel_dir = next((d for d in sorted(dirs) if imp.endswith("/" + d) or imp == d), None)
+                # no go.mod match: suffix match against the go dirs (index
+                # built once; the per-import rebuild was quadratic, see #32)
+                rel_dir = next((d for d in sorted(go_dirs)
+                                if imp.endswith("/" + d) or imp == d), None)
             if rel_dir is not None:
-                pkg_files = sorted(k for k in known
-                                   if str(Path(k).parent) == (rel_dir or "."))
+                pkg_files = sorted(by_dir.get(rel_dir or ".", ()))
                 for t in pkg_files[:MAX_PKG_EDGE_TARGETS]:
                     add(t)
     elif lang == "rust":
@@ -410,8 +417,16 @@ def build_local_corpus(root: Path, out_dir: Path, max_files: int = 2000,
     files, stats = _walk(root, max_files, respect_gitignore)
     known = _ids_for(files, root)
     by_stem: dict[str, list[str]] = {}
+    # directory and go-package indexes, built once: the hub loop and the Go
+    # import resolver used to rescan all of `known` per item (quadratic at
+    # 75k-file scale, see #32)
+    by_dir: dict[str, list[str]] = {}
+    go_dirs: set[str] = set()
     for rel in known:
         p = Path(rel)
+        by_dir.setdefault(str(p.parent), []).append(rel)
+        if p.suffix.lower() == ".go":
+            go_dirs.add(str(p.parent))
         if p.suffix.lower() in DOC_EXTS:
             # Obsidian-style keys: case/underscore/hyphen-insensitive
             key = re.sub(r"[-_\s]+", " ", p.stem.lower()).strip()
@@ -477,15 +492,17 @@ def build_local_corpus(root: Path, out_dir: Path, max_files: int = 2000,
             header = (f"path: {rel}\nlanguage: {lang}\n"
                       f"symbols: {', '.join(syms) if syms else '(none detected)'}\n\n")
             put(rel, rel, header + text)
-            for tgt in _code_refs(lang, text, rel, known, go_prefix):
+            for tgt in _code_refs(lang, text, rel, known, go_prefix,
+                                  by_dir, go_dirs):
                 edges.setdefault((known[rel], known[tgt]), "imports")
 
     # README/index files are hubs: contains edges to their directory siblings
+    # (grouped by the once-per-corpus index -- the per-hub rescan of `known`
+    # was quadratic at scale, see #32)
     for rel, pid in known.items():
         if Path(rel).stem.lower() in ("readme", "index"):
-            d = Path(rel).parent
-            members = [known[r] for r in known
-                       if Path(r).parent == d and r != rel]
+            d = str(Path(rel).parent)
+            members = [known[r] for r in by_dir.get(d, ()) if r != rel]
             for m_pid in sorted(members)[:200]:
                 edges.setdefault((pid, m_pid), "contains")
 
