@@ -6,6 +6,7 @@ ask, render_site, render_build.
 """
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
@@ -53,17 +54,20 @@ async def ingest_local(path: str, max_files: int = 2000, respect_gitignore: bool
     site_id = store.site_id_for(source)
     corpus = store.site_dir(site_id) / "corpus"
 
-    def _build() -> tuple[dict, dict]:
-        store.reset_corpus(corpus)
-        stats = local.build_local_corpus(root, corpus, max_files=max_files,
-                                         respect_gitignore=respect_gitignore)
-        return stats, graphmod.build_graph(corpus, relations=relations)
+    def _build() -> tuple[dict, dict | None, dict | None]:
+        with store.site_lock(site_id):
+            store.reset_corpus(corpus)
+            stats = local.build_local_corpus(root, corpus, max_files=max_files,
+                                             respect_gitignore=respect_gitignore)
+            if not stats["files"]:
+                return stats, None, None
+            built = graphmod.build_graph(corpus, relations=relations)
+            return stats, built, store.save_site(site_id, source, built)
 
-    stats, built = await anyio.to_thread.run_sync(_build)
+    stats, _built, meta = await anyio.to_thread.run_sync(_build)
     if not stats["files"]:
         return {"ok": False, "error": "no usable doc/code files found",
                 "root": str(root), "scan_stats": stats}
-    meta = store.save_site(site_id, source, built)
     return {"ok": True, "site_id": site_id, "root": str(root),
             "scan_stats": stats, **meta}
 
@@ -119,14 +123,20 @@ async def ingest_url(url: str, max_pages: int = 200, max_depth: int = 4,
                 "discovered": len(urls), **stats}
     site_id = store.site_id_for(url)
     corpus = store.site_dir(site_id) / "corpus"
-    store.reset_corpus(corpus)
-    ingestmod.write_corpus(pages, url, corpus)
-    built = graphmod.build_graph(corpus, relations=relations)
-    # persist the fetch-side count only: it means "corpus pages that kept static
-    # HTML". The BFS probe attempts the same shell pages, so summing both phases
-    # would double-count one page as two.
-    meta = store.save_site(site_id, url, built, extra={
-        "js_render_skipped": stats.get("js_render_skipped", 0)})
+    import anyio
+
+    def _persist() -> dict:
+        with store.site_lock(site_id):
+            store.reset_corpus(corpus)
+            ingestmod.write_corpus(pages, url, corpus)
+            built = graphmod.build_graph(corpus, relations=relations)
+            # persist the fetch-side count only: it means "corpus pages that
+            # kept static HTML". The BFS probe attempts the same shell pages,
+            # so summing both phases would double-count one page as two.
+            return store.save_site(site_id, url, built, extra={
+                "js_render_skipped": stats.get("js_render_skipped", 0)})
+
+    meta = await anyio.to_thread.run_sync(_persist)
     return {"ok": True, "site_id": site_id, "inventory_source": source,
             "discovered": len(urls), "fetched": len(pages), "fetch_stats": stats,
             **({"inventory_stats": inv_stats} if inv_stats["errors"]
@@ -220,6 +230,7 @@ def neighbors(site_id: str, page_id: str, depth: int = 1) -> dict:
 
 
 _LIVE_HANDLES: dict[str, object] = {}
+_LIVE_LOCK = threading.Lock()
 
 
 @mcp.tool()
@@ -242,14 +253,16 @@ def render_site(site_id: str, scene: str = "planets", max_nodes: int | None = No
         return {"ok": False, "error": str(e)}
     if mode == "live":
         from .live import serve_live
-        old = _LIVE_HANDLES.pop(site_id, None)
-        if old is not None:
-            old.close()
-        try:
-            handle = serve_live(site_id, scene=scene, max_nodes=max_nodes, replay=True)
-        except ValueError as e:
-            return {"ok": False, "error": str(e)}
-        _LIVE_HANDLES[site_id] = handle
+        with _LIVE_LOCK:  # two concurrent live renders must not both serve
+            old = _LIVE_HANDLES.pop(site_id, None)
+            if old is not None:
+                old.close()
+            try:
+                handle = serve_live(site_id, scene=scene, max_nodes=max_nodes,
+                                    replay=True)
+            except ValueError as e:
+                return {"ok": False, "error": str(e)}
+            _LIVE_HANDLES[site_id] = handle
         return {"ok": True, "live_url": handle.url, "run_id": handle.run_id,
                 "last_seq": handle.last_seq}
     out = store.site_dir(site_id) / "viewer.html"

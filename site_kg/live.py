@@ -374,12 +374,13 @@ class LiveHub:
             raise RuntimeError("all fetches failed")
         site_id = store.site_id_for(target)
         corpus = store.site_dir(site_id) / "corpus"
-        store.reset_corpus(corpus)
-        # every page already streamed in on_page/on_page_found, so the corpus
-        # write must not replay the same node_added burst
-        ingestmod.write_corpus(pages, target, corpus)
-        built = graphmod.build_graph(corpus, events=self.emit, announced=announced)
-        store.save_site(site_id, target, built)
+        with store.site_lock(site_id):
+            store.reset_corpus(corpus)
+            # every page already streamed in on_page/on_page_found, so the corpus
+            # write must not replay the same node_added burst
+            ingestmod.write_corpus(pages, target, corpus)
+            built = graphmod.build_graph(corpus, events=self.emit, announced=announced)
+            store.save_site(site_id, target, built)
         return built
 
     def _ingest_local(self, target: str) -> dict:
@@ -387,15 +388,16 @@ class LiveHub:
         source = f"file://{root}"
         site_id = store.site_id_for(source)
         corpus = store.site_dir(site_id) / "corpus"
-        store.reset_corpus(corpus)
-        announced: set[str] = set()
-        stats = localmod.build_local_corpus(root, corpus, max_files=2000,
-                                            events=self._node_emitter(announced))
-        if not stats.get("files"):
-            raise RuntimeError("no usable doc/code files found")
-        self.emit({"t": "progress", "pages": int(stats.get("files", 0))})
-        built = graphmod.build_graph(corpus, events=self.emit, announced=announced)
-        store.save_site(site_id, source, built)
+        with store.site_lock(site_id):
+            store.reset_corpus(corpus)
+            announced: set[str] = set()
+            stats = localmod.build_local_corpus(root, corpus, max_files=2000,
+                                                events=self._node_emitter(announced))
+            if not stats.get("files"):
+                raise RuntimeError("no usable doc/code files found")
+            self.emit({"t": "progress", "pages": int(stats.get("files", 0))})
+            built = graphmod.build_graph(corpus, events=self.emit, announced=announced)
+            store.save_site(site_id, source, built)
         return built
 
     # -- streaming -------------------------------------------------------
@@ -558,6 +560,10 @@ class LiveServer(ThreadingHTTPServer):
 
 class _Handler(BaseHTTPRequestHandler):
     server: LiveServer
+    # a stalled SSE client must not pin its handler thread forever: writes to
+    # a full TCP window raise socket.timeout (an OSError) after 60s and the
+    # finally-unsubscribe frees the thread (#30)
+    timeout = 60
 
     def log_message(self, format: str, *args) -> None:
         pass
@@ -673,7 +679,12 @@ class _Handler(BaseHTTPRequestHandler):
                         self.wfile.flush()
                         idle = time.monotonic()
                     continue
-                if ev is None:
+                if ev is None:  # defensive: close() sends a lag dict, never None
+                    break
+                if ev.get("t") == "lagged":
+                    # this consumer fell too far behind; end the stream and let
+                    # the viewer reconnect with since=<last seq it received>
+                    self._sse(ev)
                     break
                 self._sse(ev)
                 idle = time.monotonic()

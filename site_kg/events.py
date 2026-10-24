@@ -1,5 +1,4 @@
 """Append-only event log and live graph state for the live delivery mode."""
-
 from __future__ import annotations
 
 import contextlib
@@ -7,6 +6,11 @@ import json
 import queue
 import threading
 from pathlib import Path
+
+# a subscriber that falls this far behind is too slow to ever catch up (its
+# socket window is full): end its stream with a lag marker instead of growing
+# without bound -- the viewer reconnects with since=<last seq it saw>
+SUBSCRIBER_MAX_BACKLOG = 256
 
 
 class EventLog:
@@ -28,6 +32,21 @@ class EventLog:
     def last_seq(self) -> int:
         with self._lock:
             return self._seq
+
+    def _fan_out(self, out: dict) -> None:
+        # caller holds self._lock; put_nowait never blocks, so no deadlock
+        for q in self._subscribers:
+            try:
+                q.put_nowait(out)
+            except queue.Full:
+                self._lag(q, out)
+
+    def _lag(self, q: queue.Queue, out: dict) -> None:
+        with contextlib.suppress(queue.Empty):
+            while True:
+                q.get_nowait()
+        with contextlib.suppress(queue.Full):
+            q.put_nowait({"t": "lagged", "seq": out["seq"]})
 
     def append(self, ev: dict) -> dict | None:
         with self._lock:
@@ -55,15 +74,14 @@ class EventLog:
                 self._fh.flush()
             else:
                 self._events.append(out)
-            for q in self._subscribers:
-                q.put(out)
+            self._fan_out(out)
             return out
 
     def subscribe(self, since: int) -> tuple[queue.Queue, list[dict]]:
         with self._lock:
             if self._closed:
                 raise RuntimeError("event log is closed")
-            q: queue.Queue = queue.Queue()
+            q: queue.Queue = queue.Queue(maxsize=SUBSCRIBER_MAX_BACKLOG)
             self._subscribers.append(q)
             hi = self._seq
             backlog: list[dict] = []
@@ -92,7 +110,7 @@ class EventLog:
                 self._fh.close()
                 self._fh = None
             for q in self._subscribers:
-                q.put(None)
+                self._lag(q, {"seq": self._seq})  # bounded: never blocks on a full queue
             self._subscribers.clear()
 
 
